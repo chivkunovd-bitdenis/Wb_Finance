@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  
+  <style>
+    :root { --primary: #5e35b1; --bg: #f4f6f8; --dark: #344767; }
+    body { font-family: 'Montserrat', sans-serif; background: var(--bg); color: var(--dark); padding-bottom: 60px; }
+    /* AI Intelligence Module Styles */
+ .cyb-ai-container {
+      position: relative;
+      margin-bottom: 25px;
+      border-radius: 16px;
+      padding: 2px;
+      z-index: 1;
+      overflow: hidden;
+    }
+
+    .cyb-ai-container::before {
+      content: "";
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: conic-gradient(from 0deg, #4285f4, #9b72cb, #d96570, #f4b400, #4285f4);
+      animation: spin-border 4s linear infinite;
+      z-index: -1;
+    }
+
+    @keyframes spin-border {
+      100% { transform: rotate(360deg); }
+    }
+
+    .cyb-glass-card {
+      position: relative;
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 25px;
+      height: 100%;
+    }
+
+   .cyb-ai-text {
+      font-family: 'Montserrat', sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--dark);
+      min-height: 60px;
+      max-height: 600px;
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 10px;
+      border-left: 3px solid #9b72cb;
+      resize: vertical;
+      overflow-y: auto;
+    }
+
+    .cyb-ai-text h3 {
+      color: #5e35b1;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-top: 15px;
+    }
+
+    /* СТАЛО (только жирный шрифт): */
+    .cyb-ai-text strong {
+      font-weight: 700;
+      color: inherit; /* Наследуем цвет текста, чтобы не было жесткого черного */
+    }
+    .thinking-process {
+      background: #f8f9fa;
+      font-style: italic;
+      font-size: 0.85em;
+      border-left: 3px solid #ddd;
+      padding: 12px;
+      margin-bottom: 15px;
+      color: #6c757d;
+    }
+
+    .cyb-digital-btn {
+      background: linear-gradient(135deg, #4285f4, #9b72cb);
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      transition: 0.3s;
+      box-shadow: 0 4px 15px rgba(155, 114, 203, 0.3);
+    }
+
+    .cyb-digital-btn:hover {
+      box-shadow: 0 6px 20px rgba(155, 114, 203, 0.5);
+      transform: translateY(-2px);
+    }
+
+    .cyb-digital-btn:disabled {
+      background: #ccc;
+      box-shadow: none;
+    }
+
+    .gemini-sparkle {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      background: linear-gradient(135deg, #4285f4, #9b72cb, #d96570, #f4b400);
+      clip-path: polygon(50% 0%, 60% 40%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0% 50%, 40% 40%);
+      animation: gemini-pulse 2s infinite ease-in-out;
+      vertical-align: middle;
+      margin-right: 10px;
+      margin-bottom: 4px;
+    }
+
+    @keyframes gemini-border-glow {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
+    @keyframes gemini-pulse {
+      0% { transform: scale(0.9) rotate(0deg); opacity: 0.8; }
+      50% { transform: scale(1.1) rotate(15deg); opacity: 1; }
+      100% { transform: scale(0.9) rotate(0deg); opacity: 0.8; }
+    }
+    /* Навигация и карточки */
+    .navbar-custom { background: #fff; padding: 15px 20px; margin-bottom: 25px; border-radius: 0 0 15px 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; }
+    .nav-tabs-custom { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #ddd; }
+    .nav-item-custom { cursor: pointer; padding: 10px 20px; font-weight: 600; color: #adb5bd; border-bottom: 3px solid transparent; transition: 0.2s; }
+    .nav-item-custom.active { color: var(--primary); border-bottom: 3px solid var(--primary); }
+    .dashboard-card { background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 20px; border: none; height: 100%; }
+    
+    /* Показатели */
+    .stat-val { font-size: 1.6rem; font-weight: 700; color: #2d3436; }
+    .stat-lbl { font-size: 0.75rem; color: #adb5bd; font-weight: 700; text-transform: uppercase; margin-bottom: 10px; }
+    
+    /* Графики и таблицы */
+    .main-chart-container { height: 350px; position: relative; }
+    .mini-chart-container { height: 220px; position: relative; }
+    .table-wrapper { height: 500px; overflow: auto; border-radius: 12px; border: 1px solid #eee; background: #fff; margin-bottom: 30px; }
+    .custom-table { border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; }
+    .custom-table th { background: var(--dark); color: #fff; padding: 12px 20px 12px 12px; position: sticky; top: 0; z-index: 10; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .custom-table td { padding: 10px; border-bottom: 1px solid #f1f4f8; overflow: hidden; text-overflow: ellipsis; word-break: break-word; }
+    .custom-table td.sku-name-cell { white-space: normal; min-width: 0; }
+    .custom-table th .th-inner { position: relative; padding-right: 8px; }
+    .custom-table .col-resizer { position: absolute; top: 0; right: 0; width: 8px; cursor: col-resize; height: 100%; z-index: 11; }
+    .custom-table .col-resizer:hover { background: rgba(255,255,255,0.2); }
+    .custom-table .col-resizer:active { background: rgba(255,255,255,0.35); }
+    .custom-table tfoot { position: sticky; bottom: 0; background: #f8f9fa; font-weight: 700; border-top: 2px solid var(--dark); }
+    
+    /* Лоадеры */
+    #loader-2026 { display: none; background: #cce5ff; color: #004085; padding: 10px 15px; border-radius: 8px; margin-bottom: 10px; align-items: center; border: 1px solid #b8daff; width: fit-content; transition: opacity 0.3s ease; }
+    #archive-loader { display: none; background: #fff3cd; color: #856404; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; align-items: center; border: 1px solid #ffeeba; width: fit-content; transition: opacity 0.3s ease; }
+    #loader-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: #fff; z-index: 9999; display: flex; flex-direction:column; align-items:center; justify-content:center; }
+    
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    
+    /* SaaS Модуль Авторизации */
+    .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); position: fixed; top: 0; left: 0; width: 100%; z-index: 1000; }
+    .login-card { background: #fff; padding: 40px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); width: 100%; max-width: 400px; text-align: center; }
+    .login-title { font-weight: 700; color: var(--primary); margin-bottom: 10px; letter-spacing: 1px; }
+    .login-input { border-radius: 8px; padding: 12px 15px; margin-bottom: 15px; border: 1px solid #ddd; background: #f9f9f9; }
+    .login-input:focus { box-shadow: none; border-color: var(--primary); background: #fff; }
+    .login-btn { width: 100%; padding: 12px; border-radius: 8px; font-weight: 600; letter-spacing: 0.5px; }
+  </style>
+</head>
+<body>
+
+  <div id="loader-overlay">
+    <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>
+    <div class="mt-3 fw-bold" id="loader-text">Инициализация...</div>
+  </div>
+
+  <div id="login-container" class="login-wrapper" style="display: none;">
+    <div class="login-card">
+      <h3 class="login-title" id="authTitle">ВХОД В СИСТЕМУ</h3>
+      <p class="text-muted small mb-4" id="authSubtitle">Введите данные для доступа к дашбордам</p>
+      
+      <input type="email" id="loginEmail" class="form-control login-input" placeholder="Логин (Email)">
+      <input type="password" id="loginPass" class="form-control login-input" placeholder="Пароль">
+      <input type="text" id="loginWbKey" class="form-control login-input" placeholder="Ключ API статистики WB (только чтение)" style="display: none;">
+      
+      <button class="btn btn-primary login-btn mt-2" id="authBtn" onclick="performAuth()">Войти</button>
+      
+      <div class="mt-3 small">
+        <span id="authToggleText" class="text-muted">Нет аккаунта?</span> 
+        <span id="authToggleBtn" class="text-primary fw-bold text-decoration-none" style="cursor: pointer;" onclick="toggleAuthMode()">Зарегистрироваться</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="container-fluid px-3">
+    <nav id="navbar" class="navbar-custom" style="display:none;">
+      <div class="fw-bold text-primary" style="font-size: 1.1rem;">WB FINANCE PRO</div>
+      <div class="d-flex align-items-center gap-2">
+         <input type="date" id="dateFrom" class="form-control form-control-sm" style="width:135px;">
+         <input type="date" id="dateTo" class="form-control form-control-sm" style="width:135px;">
+         <button class="btn btn-primary btn-sm px-3" onclick="applyLocalFilters()">Показать</button>
+         <button class="btn btn-outline-primary btn-sm ms-2" onclick="triggerUpdate()">ОБНОВИТЬ WB</button>
+         <button class="btn btn-sm text-muted ms-2" onclick="logout()">Выход</button>
+      </div>
+    </nav>
+
+    <div id="main-content" style="display:none;">
+      <div id="loader-2026">🔄 Загрузка данных 2026 и воронки… <span class="spinner-border spinner-border-sm ms-2"></span></div>
+      <div id="archive-loader">🔄 Фоновая загрузка 2025... <div class="spinner-border spinner-border-sm ms-2"></div></div>
+      
+  <div class="nav-tabs-custom">
+        <div class="nav-item-custom active" onclick="switchTab('tab-dashboard', this)">📊 Дашборд</div>
+        <div class="nav-item-custom" onclick="switchTab('tab-sku', this)">📦 Артикулы</div>
+        <div class="nav-item-custom" onclick="switchTab('tab-articles', this)">⚙️ Себестоимость</div>
+      </div>
+
+      <div id="tab-dashboard" class="tab-content active">
+
+      <div class="cyb-ai-container shadow-sm">
+        <div class="cyb-glass-card">
+       <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <h5 class="fw-bold mb-0">
+                <span style="background: -webkit-linear-gradient(45deg, #4285f4, #9b72cb, #d96570, #f4b400); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">✦</span> AI CFO
+              </h5>
+              <div class="small text-muted mt-1">Аудит текущих показателей маржинальности и затрат AI Финансовым директором</div>
+            </div>
+            <div class="d-flex gap-2 align-items-center">
+              <button id="aiToggleBtn" class="btn btn-sm btn-light text-muted border-0 fw-bold" onclick="toggleAiBlock()" style="display: none;">▲ Свернуть</button>
+              <button id="aiBtn" class="cyb-digital-btn" onclick="askAi(event)">Запустить анализ</button>
+            </div>
+          </div>
+          <div id="ai-response" class="cyb-ai-text">
+            Система готова к анализу данных. Нажмите кнопку для получения рекомендаций...
+          </div>
+        </div>
+      </div>
+        <div class="row g-3 mb-3">
+        <div class="col-md-4">
+          <div class="dashboard-card text-center">
+            <div class="stat-lbl">Выручка</div>
+            <div class="stat-val" id="kpi-sales">0 ₽</div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="dashboard-card text-center">
+            <div class="stat-lbl">Маржа</div>
+            <div class="stat-val" id="kpi-profit">0 ₽</div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="dashboard-card text-center">
+            <div class="stat-lbl">ROI</div>
+            <div class="stat-val" id="kpi-roi">0%</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-3 mb-4">
+        <div class="col-12">
+          <div class="dashboard-card">
+            <div class="stat-lbl">Динамика выручки</div>
+            <div class="main-chart-container"><canvas id="chartSales"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="dashboard-card">
+            <div class="stat-lbl">Доля логистики %</div>
+            <div class="mini-chart-container"><canvas id="chartLog"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="dashboard-card">
+            <div class="stat-lbl">Доля рекламы %</div>
+            <div class="mini-chart-container"><canvas id="chartAds"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="dashboard-card">
+            <div class="stat-lbl">Доля хранения %</div>
+            <div class="mini-chart-container"><canvas id="chartStor"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="dashboard-card">
+            <div class="stat-lbl">Маржинальность %</div>
+            <div class="mini-chart-container"><canvas id="chartMargin"></canvas></div>
+          </div>
+        </div>
+      </div>
+        <div class="table-wrapper shadow-sm">
+          <table class="custom-table resizable-cols" id="dataTable">
+           <thead>
+              <tr>
+                <th>Дата</th><th>Выручка</th><th>Заказы ₽</th><th>Ком</th><th>% комиссии</th>
+                <th>Лог</th><th>% логистики</th><th>Штрафы</th><th>Себес</th>
+                <th>% себеса</th><th>Рекл</th><th>% рекламы</th><th>Хран</th>
+                <th>% хранения</th><th>Маржа</th><th>% маржи</th><th>ROI</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+            <tfoot id="tableTotal"></tfoot>
+          </table>
+        </div>
+      </div>
+      
+      <div id="tab-sku" class="tab-content">
+          <div class="table-wrapper shadow-sm">
+            <table class="custom-table resizable-cols">
+              <thead>
+                <tr>
+                  <th>Артикул ВБ</th><th>Товар</th><th>Выручка</th><th>Заказы ₽</th><th>Ком</th><th>% комиссии</th>
+                  <th>Лог</th><th>% логистики</th><th>Штрафы</th><th>Себес</th>
+                  <th>% себеса</th><th>Рекл</th><th>% рекламы</th><th>Маржа</th>
+                  <th>% маржи</th><th>ROI</th><th>Доп</th>
+                </tr>
+              </thead>
+              <tbody id="skuBody"></tbody>
+            </table>
+          </div>
+      </div>
+
+      <div id="tab-articles" class="tab-content">
+        <div class="dashboard-card d-flex justify-content-between align-items-center mb-3">
+          <h5 class="fw-bold mb-0">Себестоимость</h5>
+          <button class="btn btn-success btn-sm" onclick="saveArticlesCost()">Сохранить</button>
+        </div>
+        <div class="table-wrapper shadow-sm">
+          <table class="custom-table resizable-cols">
+            <thead><tr><th>NM ID</th><th>Название</th><th>Себестоимость, ₽</th></tr></thead>
+            <tbody id="articlesBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЕ ===
+    let chartInstances = {};
+    let MY_LICENSE = localStorage.getItem('wb_saas_license') || "";
+    let masterData = { pnl: [], sku: [], articles: [] };
+    let currentChunkIdx = 0;
+    let isLoginMode = true; 
+    let isSyncing = false; // глобальная переменная — добавить в начало скрипта
+    
+    const archiveMonths = [
+      { f: "2025-01-01", t: "2025-01-31", n: "Янв" }, { f: "2025-02-01", t: "2025-02-28", n: "Фев" },
+      { f: "2025-03-01", t: "2025-03-31", n: "Мар" }, { f: "2025-04-01", t: "2025-04-30", n: "Апр" },
+      { f: "2025-05-01", t: "2025-05-31", n: "Май" }, { f: "2025-06-01", t: "2025-06-30", n: "Июн" },
+      { f: "2025-07-01", t: "2025-07-31", n: "Июл" }, { f: "2025-08-01", t: "2025-08-31", n: "Авг" },
+      { f: "2025-09-01", t: "2025-09-30", n: "Сен" }, { f: "2025-10-01", t: "2025-10-31", n: "Окт" },
+      { f: "2025-11-01", t: "2025-11-30", n: "Ноя" }, { f: "2025-12-01", t: "2025-12-31", n: "Дек" }
+    ];
+
+    // === ЗАЩИТНЫЕ УТИЛИТЫ DOM ===
+    function updateTextSafe(id, text) {
+      const el = document.getElementById(id);
+      if (el) el.innerText = text;
+    }
+    
+    function updateColorSafe(id, color) {
+      const el = document.getElementById(id);
+      if (el) el.style.color = color;
+    }
+    
+    function hideLoader() {
+      const loader = document.getElementById('loader-overlay');
+      if (loader) loader.style.display = 'none';
+    }
+
+    function formatDisplayDateClient(iso) { 
+      if (!iso) return ""; const parts = iso.split('-'); 
+      return (parts.length > 2) ? `${parts[2]}.${parts[1]}` : iso; 
+    }
+
+    // --- Ресайз столбцов: минимум по ширине заголовка, при избытке места — растягиваем на весь экран, иначе скролл ---
+    function getColMinWidth(colIndex, totalCols) {
+      if (colIndex === 0) return totalCols === 3 ? 90 : 100;
+      if (colIndex === 1) return 180;
+      if (totalCols === 3 && colIndex === 2) return 120;
+      return 72;
+    }
+    function updateTableWidth(table, colgroup) {
+      var cols = colgroup.querySelectorAll('col');
+      var sum = 0;
+      for (var c = 0; c < cols.length; c++) {
+        sum += parseInt(cols[c].style.width, 10) || 70;
+      }
+      table.style.width = Math.max(sum, 100) + 'px';
+    }
+    function initResizableColumns(table) {
+      if (!table || table.dataset.colsResizable === '1') return;
+      var head = table.querySelector('thead tr');
+      if (!head) return;
+      var ths = head.querySelectorAll('th');
+      var n = ths.length;
+      var wrapper = table.closest('.table-wrapper');
+      var containerW = (wrapper && wrapper.offsetWidth > 100) ? wrapper.offsetWidth : (document.documentElement && document.documentElement.clientWidth ? Math.max(1200, document.documentElement.clientWidth - 80) : 1400);
+      var minWidths = [];
+      var totalMin = 0;
+      for (var i = 0; i < n; i++) {
+        var mw = getColMinWidth(i, n);
+        minWidths.push(mw);
+        totalMin += mw;
+      }
+      var colgroup = document.createElement('colgroup');
+      var extra = Math.max(0, containerW - totalMin);
+      var addPerCol = extra > 0 ? Math.floor(extra / n) : 0;
+      for (i = 0; i < n; i++) {
+        var col = document.createElement('col');
+        var w = minWidths[i] + addPerCol;
+        col.style.width = w + 'px';
+        col.dataset.colIndex = i;
+        col.dataset.minWidth = minWidths[i];
+        colgroup.appendChild(col);
+      }
+      table.insertBefore(colgroup, table.firstChild);
+      updateTableWidth(table, colgroup);
+      for (i = 0; i < n; i++) {
+        var th = ths[i];
+        var col = colgroup.children[i];
+        var text = th.innerHTML.trim();
+        th.innerHTML = '';
+        var inner = document.createElement('span');
+        inner.className = 'th-inner';
+        inner.textContent = text;
+        th.appendChild(inner);
+        var resizer = document.createElement('div');
+        resizer.className = 'col-resizer';
+        resizer.dataset.colIndex = i;
+        th.appendChild(resizer);
+      }
+      var resizing = false, startX = 0, startW = 0, curCol = null, curColEl = null;
+      function onMove(e) {
+        if (!resizing || !curColEl) return;
+        var dw = e.clientX - startX;
+        var minW = parseInt(curColEl.dataset.minWidth, 10) || 40;
+        var newW = Math.max(minW, startW + dw);
+        curColEl.style.width = newW + 'px';
+        updateTableWidth(table, colgroup);
+      }
+      function onUp() {
+        resizing = false;
+        curCol = null;
+        curColEl = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      table.addEventListener('mousedown', function(e) {
+        var resizer = e.target.closest('.col-resizer');
+        if (!resizer) return;
+        e.preventDefault();
+        var idx = parseInt(resizer.dataset.colIndex, 10);
+        curCol = idx;
+        curColEl = colgroup.children[idx];
+        startX = e.clientX;
+        startW = curColEl.offsetWidth || parseInt(window.getComputedStyle(curColEl).width, 10) || minWidths[idx];
+        resizing = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+      table.dataset.colsResizable = '1';
+    }
+
+    window.onload = function() {
+      const d = new Date(); d.setDate(d.getDate() - 30);
+      document.getElementById('dateFrom').value = d.toISOString().split('T')[0];
+      document.getElementById('dateTo').value = new Date().toISOString().split('T')[0];
+      checkAuth();
+      setTimeout(function() {
+        var t1 = document.getElementById('dataTable');
+        var t2 = document.querySelector('#tab-sku .custom-table');
+        var t3 = document.querySelector('#tab-articles .custom-table');
+        if (t1) initResizableColumns(t1);
+        if (t2) initResizableColumns(t2);
+        if (t3) initResizableColumns(t3);
+      }, 100);
+    };
+
+    // === БЛОК STATE MANAGEMENT (ЗАЩИТА ОТ БЕЛОГО ЭКРАНА) ===
+    function showLoginScreen() {
+      const loader = document.getElementById('loader-overlay');
+      const setupContainer = document.getElementById('login-container');
+      const mainContent = document.getElementById('main-content');
+      const navbar = document.getElementById('navbar');
+
+      if (loader) loader.style.display = 'none';
+      if (mainContent) mainContent.style.display = 'none';
+      if (navbar) navbar.style.display = 'none';
+      
+      if (setupContainer) setupContainer.style.display = 'flex';
+    }
+
+    function toggleAuthMode() {
+      isLoginMode = !isLoginMode;
+      document.getElementById('authTitle').innerText = isLoginMode ? "ВХОД В СИСТЕМУ" : "РЕГИСТРАЦИЯ";
+      document.getElementById('authSubtitle').innerText = isLoginMode ? "Введите данные для доступа к дашбордам" : "Создайте аккаунт и подключите свой магазин";
+      document.getElementById('authBtn').innerText = isLoginMode ? "Войти" : "Создать аккаунт";
+      document.getElementById('authToggleText').innerText = isLoginMode ? "Нет аккаунта?" : "Уже есть аккаунт?";
+      document.getElementById('authToggleBtn').innerText = isLoginMode ? "Зарегистрироваться" : "Войти";
+      document.getElementById('loginWbKey').style.display = isLoginMode ? "none" : "block";
+    }
+
+    // === ЗАЩИЩЕННАЯ ФУНКЦИЯ ИНИЦИАЛИЗАЦИИ ===
+    function checkAuth() {
+  try {
+    const loader = document.getElementById('loader-overlay');
+    if (loader) loader.style.display = 'flex';
+
+    if (!MY_LICENSE) {
+      hideLoader();
+      showLoginScreen();
+      return;
+    }
+    
+    const cachedData = localStorage.getItem('wb_saas_data_cache_' + MY_LICENSE);
+    if (cachedData && cachedData.startsWith('{')) {
+      masterData = JSON.parse(cachedData);
+      
+      const loginContainer = document.getElementById('login-container');
+      if (loginContainer) loginContainer.style.display = 'none';
+      document.getElementById('navbar').style.display = 'flex'; 
+      document.getElementById('main-content').style.display = 'block';
+      
+      try {
+        renderArticles();
+        applyLocalFilters();
+      } catch (renderErr) {
+        console.error("Ошибка при первичной отрисовке интерфейса:", renderErr);
+      }
+      
+      hideLoader();
+      
+      // Есть кэш — тихий фоновый синк
+      triggerAutoSync();
+      
+      return;
+    }
+
+    // Нет кэша — стандартная загрузка с бэкенда
+    google.script.run
+      .withFailureHandler(err => { 
+        hideLoader();
+        alert("Критический сбой связи с сервером: " + (err.message || err));
+        showLoginScreen();
+      })
+      .withSuccessHandler(res => { 
+        if (res && res.hasKeys) {
+          const loginContainer = document.getElementById('login-container');
+          if (loginContainer) loginContainer.style.display = 'none';
+          document.getElementById('navbar').style.display = 'flex'; 
+          document.getElementById('main-content').style.display = 'block'; 
+          
+          if (res.hasData) {
+            // Данные есть в БД — грузим и показываем
+            fetchInitialData(() => {
+              triggerAutoSync();
+            }); 
+          } else {
+            // Новый пользователь: сначала последний месяц, потом фоном 2026 и при необходимости 2025
+            document.getElementById('loader-text').innerText = "Первая синхронизация с Wildberries...";
+            google.script.run
+              .withFailureHandler(err => {
+                hideLoader();
+                alert("Ошибка первой загрузки:\n" + (err.message || err));
+              })
+              .withSuccessHandler((syncRes) => {
+                if (syncRes && syncRes.success) {
+                  fetchInitialData(function () { triggerLoad2026ThenMaybe2025(); });
+                } else {
+                  hideLoader();
+                  alert("Ошибка синхронизации: " + (syncRes ? syncRes.error : "Неизвестная ошибка"));
+                }
+              })
+              .runUpdateBatchWrapper(MY_LICENSE);
+          }
+        } else {
+          hideLoader();
+          alert("Ваш токен недействителен или удален.");
+          showLoginScreen();
+          logout();
+        }
+      })
+      .apiCheckSystemState(MY_LICENSE);
+
+  } catch (e) {
+    hideLoader();
+    console.error("Сбой инициализации:", e);
+    alert("Ошибка загрузки кэша. Система сброшена.");
+    localStorage.removeItem('wb_saas_data_cache_' + MY_LICENSE);
+    showLoginScreen();
+  }
+}
+
+    function performAuth() {
+      const l = document.getElementById('loginEmail').value.trim();
+      const p = document.getElementById('loginPass').value.trim();
+      const wb = document.getElementById('loginWbKey').value.trim();
+      
+      if (!l || !p) { 
+        alert("Пожалуйста, заполните логин и пароль"); 
+        return; 
+      }
+      if (!isLoginMode && !wb) { 
+        alert("Для регистрации необходимо указать API-ключ"); 
+        return; 
+      }
+      
+      const loader = document.getElementById('loader-overlay');
+      if (loader) loader.style.display = 'flex';
+ 
+ const successHandler = (res) => {
+  if (res && res.success) {
+    localStorage.setItem('wb_saas_license', res.licenseKey);
+    MY_LICENSE = res.licenseKey;
+    checkAuth(); 
+  } else {
+    hideLoader();
+    // Показываем сообщение от сервера — там уже написано про активацию
+    alert(res.message || "Неверный логин или пароль");
+  }
+};
+      
+      const failureHandler = (err) => {
+        hideLoader();
+        alert((isLoginMode ? "Ошибка входа: " : "Ошибка регистрации: ") + (err.message || err));
+        showLoginScreen();
+      };
+
+      if (isLoginMode) {
+        google.script.run.withSuccessHandler(successHandler).withFailureHandler(failureHandler).apiLogin(l, p);
+      } else {
+        google.script.run.withSuccessHandler(successHandler).withFailureHandler(failureHandler).apiRegister(l, p, wb);
+      }
+    }
+
+    function logout() { 
+      if (MY_LICENSE) {
+        localStorage.removeItem('wb_saas_data_cache_' + MY_LICENSE);
+      }
+      localStorage.removeItem('wb_saas_license'); 
+      
+      // Сброс глобальных переменных состояния
+      MY_LICENSE = "";
+      masterData = { pnl: [], sku: [], articles: [] };
+      
+      // Возврат на экран авторизации
+      showLoginScreen(); 
+    }
+
+    // === БЛОК ЗАГРУЗКИ ДАННЫХ (С ТАЙМАУТОМ) ===
+    function fetchInitialData(callback) {
+  const loader = document.getElementById('loader-overlay');
+  if (loader) loader.style.display = 'flex';
+  document.getElementById('loader-text').innerText = "Сбор данных для дашбордов...";
+
+  // Увеличен лимит ожидания до 60 секунд (60000 мс) для тяжелых баз
+  const safetyTimer = setTimeout(() => {
+    if (loader && loader.style.display === 'flex') {
+      showLoginScreen();
+      alert("Превышено время ожидания данных (60с). Попробуйте обновить страницу.");
+    }
+  }, 60000);
+
+  google.script.run
+    .withFailureHandler(err => { 
+      clearTimeout(safetyTimer);
+      showLoginScreen();
+      alert("Ошибка при получении данных:\n" + (err.message || err)); 
+    })
+    .withSuccessHandler(p => {
+      clearTimeout(safetyTimer);
+      try {
+        masterData.pnl = p.pnl || []; 
+        masterData.sku = p.sku || []; 
+        masterData.articles = p.articles || [];
+        
+        // 💾 СОХРАНЕНИЕ В КЭШ
+        localStorage.setItem('wb_saas_data_cache_' + MY_LICENSE, JSON.stringify(masterData));
+        
+        renderArticles(); 
+        hideLoader(); 
+        applyLocalFilters();
+        
+        if (callback) callback();
+      } catch(e) {
+        showLoginScreen();
+        alert("Ошибка обработки интерфейса: " + e.message);
+      }
+    })
+    .apiGetDashboardPayload(MY_LICENSE);
+}
+
+  function triggerUpdate() { 
+  const dF = document.getElementById('dateFrom').value;
+  const dT = document.getElementById('dateTo').value;
+  
+  if (!dF || !dT) {
+    alert("Укажите период для обновления данных");
+    return;
+  }
+
+  isSyncing = true;
+  const loader = document.getElementById('loader-overlay');
+  if (loader) loader.style.display = 'flex'; 
+  document.getElementById('loader-text').innerText = "Перезапись данных с " + dF + " по " + dT + "...";
+  
+  google.script.run
+    .withFailureHandler(err => { 
+      isSyncing = false;
+      hideLoader(); 
+      alert("Сбой обновления:\n" + (err.message || err)); 
+    })
+    .withSuccessHandler((res) => {
+      isSyncing = false;
+      if (!res || !res.success) {
+        hideLoader();
+        alert("Сбой обновления:\n" + (res ? res.error : "Неизвестная ошибка"));
+        return;
+      }
+      localStorage.removeItem('wb_saas_data_cache_' + MY_LICENSE);
+      fetchInitialData();
+    })
+    .apiForceReloadPeriod(MY_LICENSE, dF, dT); 
+}
+
+    function loadNextArchiveChunk() {
+      if (currentChunkIdx >= archiveMonths.length) { 
+        document.getElementById('archive-loader').innerHTML = "✅ Архив синхронизирован";
+        setTimeout(() => document.getElementById('archive-loader').style.display='none', 3000);
+        return; 
+      }
+      
+      let c = archiveMonths[currentChunkIdx];
+      document.getElementById('archive-loader').innerHTML = `🔄 Архив 2025 (${c.n})... <div class="spinner-border spinner-border-sm ms-2"></div>`;
+      
+      google.script.run
+        .withFailureHandler(err => { 
+          console.error("Сбой чанка", err);
+          alert("Ошибка при загрузке архива (" + c.n + "):\n" + (err.message || err));
+          currentChunkIdx++; loadNextArchiveChunk(); 
+        })
+        .withSuccessHandler((res) => { 
+          if (res && res.delta) {
+            masterData.pnl = masterData.pnl.filter(r => r.d < c.f || r.d > c.t).concat(res.delta.pnl);
+            masterData.sku = masterData.sku.filter(r => r.d < c.f || r.d > c.t).concat(res.delta.sku);
+            masterData.articles = res.delta.articles;
+            
+            // 💾 ДОЗАПИСЬ ФОНОВОГО АРХИВА В КЭШ
+            localStorage.setItem('wb_saas_data_cache_' + MY_LICENSE, JSON.stringify(masterData));
+            
+            applyLocalFilters();
+          }
+          currentChunkIdx++; 
+          loadNextArchiveChunk(); 
+        })
+        .apiLoadArchiveChunk(MY_LICENSE, c.f, c.t);
+    }
+
+    // === БЛОК ЛОГИКИ И ОТРИСОВКИ ===
+    function applyLocalFilters() {
+      const dF = document.getElementById('dateFrom').value;
+      const dT = document.getElementById('dateTo').value;
+      renderDashboard(processDashboardData(masterData.pnl, dF, dT));
+      renderSku(processSkuData(masterData.sku, dF, dT));
+    }
+
+    function processDashboardData(h, dF, dT) {
+      let f = h.filter(r => r.d >= dF && r.d <= dT).sort((a,b) => a.d.localeCompare(b.d));
+      if (!f.length) return { empty: true };
+      let totals = { sales:0, margin:0, cogs:0, comm:0, log:0, pen:0, ads:0, stor:0, orderSum:0 };
+      let dates=[], chartSales=[], chartLog=[], chartAds=[], chartStor=[], chartMargin=[], tableData=[];
+      
+      f.forEach(r => {
+        totals.sales+=r.s; totals.margin+=r.m; totals.cogs+=r.cg; totals.comm+=r.c; totals.log+=r.l; totals.pen+=r.p; totals.ads+=r.a; totals.stor+=r.st; totals.orderSum+=(r.orderSum||0);
+        dates.push(formatDisplayDateClient(r.d)); 
+        chartSales.push(r.s); 
+        chartLog.push(r.s>0?r.l/r.s*100:0); 
+        chartAds.push(r.s>0?r.a/r.s*100:0);
+        chartStor.push(r.s>0?r.st/r.s*100:0);
+        chartMargin.push(r.s>0?r.m/r.s*100:0);
+        
+        const marginColor = r.m >= 0 ? '#10ac84' : '#ee5253';
+        const marginVal = `<span style="color:${marginColor}; font-weight:bold;">${Math.round(r.m).toLocaleString()}</span>`;
+        
+        tableData.push({ values: [ 
+          formatDisplayDateClient(r.d), Math.round(r.s).toLocaleString(), Math.round(r.orderSum||0).toLocaleString(), Math.round(r.c).toLocaleString(), 
+          (r.s>0?r.c/r.s*100:0).toFixed(1)+"%", Math.round(r.l).toLocaleString(), (r.s>0?r.l/r.s*100:0).toFixed(1)+"%", 
+          Math.round(r.p).toLocaleString(), Math.round(r.cg).toLocaleString(), (r.s>0?r.cg/r.s*100:0).toFixed(1)+"%", Math.round(r.a).toLocaleString(), 
+          (r.s>0?r.a/r.s*100:0).toFixed(1)+"%", Math.round(r.st).toLocaleString(), (r.s>0?r.st/r.s*100:0).toFixed(1)+"%", 
+          marginVal, (r.s>0?r.m/r.s*100:0).toFixed(1)+"%", (r.cg>0?r.m/r.cg*100:0).toFixed(0)+"%" 
+        ]});
+      });
+      return { empty: false, dates, chartSales, chartLog, chartAds, chartStor, chartMargin, totals, tableData };
+    }
+
+    function renderDashboard(d) {
+      const tb = document.querySelector('#dataTable tbody'); 
+      const tf = document.getElementById('tableTotal');
+      
+      if (d.empty) { 
+        updateTextSafe('kpi-sales', "0 ₽");
+        updateTextSafe('kpi-profit', "0 ₽");
+        updateTextSafe('kpi-roi', "0%");
+        if (tb) tb.innerHTML = "<tr><td colspan='17' class='text-center py-4'>Нет данных</td></tr>"; 
+        if (tf) tf.innerHTML = "";
+        return; 
+      }
+      
+      const t = d.totals;
+      updateTextSafe('kpi-sales', Math.round(t.sales).toLocaleString() + " ₽");
+      updateTextSafe('kpi-profit', Math.round(t.margin).toLocaleString() + " ₽");
+      updateColorSafe('kpi-profit', t.margin >= 0 ? "#10ac84" : "#ee5253");
+      updateTextSafe('kpi-roi', (t.cogs > 0 ? Math.round(t.margin/t.cogs*100) : 0) + "%");
+      
+      updateChart('chartSales', d.dates, d.chartSales, '#5e35b1', false); 
+      updateChart('chartLog', d.dates, d.chartLog, '#ff9f43', true); 
+      updateChart('chartAds', d.dates, d.chartAds, '#ee5253', true); 
+      updateChart('chartStor', d.dates, d.chartStor, '#0abde3', true); 
+      updateChart('chartMargin', d.dates, d.chartMargin, '#10ac84', true); 
+      
+      if (tb) {
+        tb.innerHTML = ""; 
+        d.tableData.forEach(r => tb.insertAdjacentHTML('beforeend', `<tr>${r.values.map(v=>`<td>${v}</td>`).join('')}</tr>`));
+      }
+      
+      if (tf) {
+        tf.innerHTML = `<tr>
+          <td>ИТОГО</td>
+          <td>${Math.round(t.sales).toLocaleString()}</td>
+          <td>${Math.round(t.orderSum||0).toLocaleString()}</td>
+          <td>${Math.round(t.comm).toLocaleString()}</td>
+          <td>${(t.sales>0?t.comm/t.sales*100:0).toFixed(1)}%</td>
+          <td>${Math.round(t.log).toLocaleString()}</td>
+          <td>${(t.sales>0?t.log/t.sales*100:0).toFixed(1)}%</td>
+          <td>${Math.round(t.pen).toLocaleString()}</td>
+          <td>${Math.round(t.cogs).toLocaleString()}</td>
+          <td>${(t.sales>0?t.cogs/t.sales*100:0).toFixed(1)}%</td>
+          <td>${Math.round(t.ads).toLocaleString()}</td>
+          <td>${(t.sales>0?t.ads/t.sales*100:0).toFixed(1)}%</td>
+          <td>${Math.round(t.stor).toLocaleString()}</td>
+          <td>${(t.sales>0?t.stor/t.sales*100:0).toFixed(1)}%</td>
+          <td style="color:${t.margin>=0?'#10ac84':'#ee5253'}">${Math.round(t.margin).toLocaleString()}</td>
+          <td>${(t.sales>0?t.margin/t.sales*100:0).toFixed(1)}%</td>
+          <td>${(t.cogs>0?t.margin/t.cogs*100:0).toFixed(0)}%</td>
+        </tr>`;
+      }
+    }
+
+    function updateChart(id, l, d, c, p) {
+      if (chartInstances[id]) chartInstances[id].destroy();
+      chartInstances[id] = new Chart(document.getElementById(id), {
+        type:'line', data:{ labels:l, datasets:[{ data:d, borderColor:c, backgroundColor:c+'15', fill:true, tension:0.3, pointRadius:2 }] },
+        options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ ticks:{ font:{size:10}, callback:v=>p?v+'%':v.toLocaleString() } } } }
+      });
+    }
+
+    function processSkuData(h, dF, dT) {
+      let m={}; 
+      h.forEach(r => { 
+        if (r.d<dF || r.d>dT) return; 
+        if(!m[r.nm]) m[r.nm]={ nm:r.nm, name:r.n, img:r.img, t:{s:0,c:0,l:0,p:0,a:0,cg:0,m:0,orderSum:0}, details:[] }; 
+        let sm=m[r.nm]; sm.t.s+=r.s; sm.t.c+=r.c; sm.t.l+=r.l; sm.t.p+=r.p; sm.t.a+=r.a; sm.t.cg+=r.cg; sm.t.m+=r.m; sm.t.orderSum+=(r.orderSum||0); 
+        sm.details.push({ d:formatDisplayDateClient(r.d), s:r.s, c:r.c, l:r.l, p:r.p, cg:r.cg, a:r.a, m:r.m, orderSum:r.orderSum||0 }); 
+      });
+      return Object.values(m).map(i=>({ nm_id:i.nm, name:i.name, img:i.img, sales:i.t.s, comm:i.t.c, log:i.t.l, pen:i.t.p, ad:i.t.a, cogs:i.t.cg, margin:i.t.m, orderSum:i.t.orderSum||0, roi:i.t.cg>0?Math.round(i.t.m/i.t.cg*100):0, details:i.details })).sort((a,b)=>b.sales-a.sales);
+    }
+
+    function renderSku(d) {
+      const tb=document.getElementById('skuBody'); tb.innerHTML=""; 
+      if (!d || d.length === 0) { tb.innerHTML = "<tr><td colspan='17' class='text-center py-4'>Нет данных</td></tr>"; return; }
+      d.forEach(i => {
+        let tr=`<tr>
+          <td>${i.nm_id || ''}</td>
+          <td class="sku-name-cell"><div class="d-flex align-items-center"><img src="${i.img}" width="30" class="me-2 rounded"><span title="${(i.name || '').replace(/"/g, '&quot;')}">${i.name || ''}</span></div></td>
+          <td class="fw-bold">${Math.round(i.sales).toLocaleString()}</td>
+          <td>${Math.round(i.orderSum||0).toLocaleString()}</td>
+          <td>${Math.round(i.comm).toLocaleString()}</td><td>${(i.sales>0?i.comm/i.sales*100:0).toFixed(0)}%</td>
+          <td>${Math.round(i.log).toLocaleString()}</td><td>${(i.sales>0?i.log/i.sales*100:0).toFixed(0)}%</td>
+          <td>${Math.round(i.pen).toLocaleString()}</td><td>${Math.round(i.cogs).toLocaleString()}</td>
+          <td>${(i.sales>0?i.cogs/i.sales*100:0).toFixed(1)}%</td>
+          <td class="text-primary fw-bold">${Math.round(i.ad).toLocaleString()}</td><td>${(i.sales>0?i.ad/i.sales*100:0).toFixed(0)}%</td>
+          <td style="color:${i.margin>=0?'#10ac84':'#ee5253'}">${Math.round(i.margin).toLocaleString()}</td>
+          <td>${(i.sales>0?i.margin/i.sales*100:0).toFixed(0)}%</td><td>${i.roi}%</td>
+          <td><button class="btn btn-sm btn-light" onclick="this.parentElement.parentElement.nextElementSibling.style.display=this.parentElement.parentElement.nextElementSibling.style.display==='none'?'table-row':'none'">▼</button></td>
+        </tr>
+        <tr style="display:none;" class="bg-light"><td colspan="17" class="p-3">
+          <table class="table table-sm text-center table-bordered" style="font-size:0.75rem; background:#fff;">
+            <thead><tr class="table-secondary">
+              <th>Дата</th><th>Выручка</th><th>Заказы ₽</th><th>% комиссии</th><th>Логистика</th><th>% логистики</th>
+              <th>Штрафы</th><th>Себес</th><th>Реклама</th><th>% рекламы</th><th>Маржа</th><th>% маржи</th><th>ROI</th>
+            </tr></thead>
+            <tbody>${i.details.map(dd => `<tr>
+              <td>${dd.d}</td><td>${Math.round(dd.s).toLocaleString()}</td>
+              <td>${Math.round(dd.orderSum||0).toLocaleString()}</td>
+              <td>${(dd.s>0?(dd.c/dd.s*100):0).toFixed(0)}%</td>
+              <td>${Math.round(dd.l).toLocaleString()}</td>
+              <td>${(dd.s>0?(dd.l/dd.s*100):0).toFixed(0)}%</td>
+              <td>${Math.round(dd.p)}</td><td>${Math.round(dd.cg)}</td>
+              <td>${Math.round(dd.a).toLocaleString()} ₽</td>
+              <td class="text-primary fw-bold">${(dd.s>0?(dd.a/dd.s*100):0).toFixed(1)}%</td>
+              <td style="font-weight:bold; color:${dd.m>=0?'green':'red'}">${Math.round(dd.m).toLocaleString()}</td>
+              <td>${(dd.s>0?(dd.m/dd.s*100):0).toFixed(1)}%</td>
+              <td>${(dd.cg>0?Math.round(dd.m/dd.cg*100):0)}%</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </td></tr>`;
+        tb.insertAdjacentHTML('beforeend', tr);
+      });
+    }
+
+ function switchTab(id, el) { 
+      document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active')); 
+      document.querySelectorAll('.nav-item-custom').forEach(t=>t.classList.remove('active')); 
+      document.getElementById(id).classList.add('active'); el.classList.add('active'); 
+    }
+    
+    // === УТИЛИТА СВОРАЧИВАНИЯ БЛОКА ИИ ===
+    function toggleAiBlock() {
+      const resp = document.getElementById('ai-response');
+      const btn = document.getElementById('aiToggleBtn');
+      if (resp.style.display === 'none') {
+        resp.style.display = 'block';
+        btn.innerText = '▲ Свернуть';
+      } else {
+        resp.style.display = 'none';
+        btn.innerText = '▼ Развернуть';
+      }
+    }
+    
+    function renderArticles() { 
+      const tb=document.getElementById('articlesBody'); tb.innerHTML=""; 
+      masterData.articles.forEach(i => tb.insertAdjacentHTML('beforeend', `<tr><td>${i.nm_id}</td><td>${i.sa_name}</td><td><input type="number" class="form-control form-control-sm article-cost" data-nm="${i.nm_id}" value="${i.cost}" style="width:100px"></td></tr>`)); 
+    }
+    
+    function saveArticlesCost() { 
+      let items=[]; document.querySelectorAll('.article-cost').forEach(i=>items.push({nm_id:i.dataset.nm, cost:i.value})); 
+      const loader = document.getElementById('loader-overlay');
+      if (loader) loader.style.display='flex'; 
+      document.getElementById('loader-text').innerText = "Сохранение себестоимости...";
+      
+      google.script.run
+        .withFailureHandler(err => { 
+          hideLoader();
+          alert("Ошибка сохранения: " + (err.message || err)); 
+        })
+        .withSuccessHandler(()=>fetchInitialData())
+        .apiSaveArticlesCost(MY_LICENSE, items); 
+    }
+    // === AI INTELLIGENCE MODULE LOGIC ===
+// === УТИЛИТА АНИМАЦИИ ТЕКСТА ИИ ===
+// === УТИЛИТА АНИМАЦИИ ТЕКСТА ИИ (MARKDOWN PARSER) ===
+// === УТИЛИТА АНИМАЦИИ ТЕКСТА ИИ (MARKDOWN PARSER) ===
+// === УТИЛИТА АНИМАЦИИ ТЕКСТА ИИ (MARKDOWN PARSER) ===
+// === УТИЛИТА АНИМАЦИИ ТЕКСТА ИИ (DOM WALKER EDITION) ===
+// === УТИЛИТА РЕНДЕРИНГА ОТЧЕТА ИИ (PREMIUM RENDER) ===
+function typeWriter(text, elementId) {
+  const el = document.getElementById(elementId);
+  if (!el || !text) return;
+  
+  // Подготовка к плавному появлению (Fade-in)
+  el.style.opacity = '0';
+  el.style.transition = 'opacity 0.6s ease-in-out';
+  el.innerHTML = ""; 
+
+  let thinkingBlock = "";
+  let mainText = text;
+
+  // 1. Изолируем и парсим блок мыслей (Thinking Process)
+  const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/);
+  if (thinkingMatch) {
+    const rawThinking = thinkingMatch[1].trim();
+    const parsedThinking = (typeof marked !== 'undefined')
+      ? marked.parse(rawThinking)
+      : rawThinking.replace(/\n/g, '<br>');
+
+    // Оформляем мысли: приглушенный цвет, курсив, рамка
+    thinkingBlock = `<div class="thinking-process" style="opacity: 0.75; font-size: 0.85em; background: #f8f9fa; border-left: 3px solid #ced4da; padding: 12px; margin-bottom: 20px; border-radius: 0 8px 8px 0;">
+      <div class="fw-bold mb-2" style="color: #6c757d;">🔍 Технический лог анализа (CFO):</div>
+      ${parsedThinking}
+    </div>`;
+    
+    // Вырезаем мысли из основного текста
+    mainText = text.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
+  }
+
+  // 2. Парсим основной финансовый отчет
+  const parsedMainText = (typeof marked !== 'undefined') 
+    ? marked.parse(mainText) 
+    : mainText.replace(/\n/g, '<br>');
+
+  // 3. Мгновенно собираем идеальный DOM (без разрывов тегов)
+  el.innerHTML = thinkingBlock + `<div class="ai-premium-report">${parsedMainText}</div>`;
+  
+  // 4. Запускаем анимацию плавного проявления
+  setTimeout(() => {
+    el.style.opacity = '1';
+    el.scrollTop = 0; // Скроллим в самое начало отчета для удобства чтения
+  }, 50);
+}
+
+    function getTimeSeriesData(dF, dT) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Изолируем вызов воронки: если она упадет, Time-Series продолжит формироваться без нее
+      try {
+        await checkAndFetchFunnel(); 
+      } catch (fErr) {
+        console.warn("getTimeSeriesData: Воронка недоступна, формируем Time-Series без нее.", fErr);
+      }
+
+      const cacheKey = `time_series_data_${MY_LICENSE}_${dF}_${dT}`;
+      const cachedStr = localStorage.getItem(cacheKey);
+      
+      if (cachedStr && cachedStr.startsWith('[')) {
+        resolve(JSON.parse(cachedStr));
+        return;
+      }
+
+      google.script.run
+        .withFailureHandler(err => reject(err))
+        .withSuccessHandler(res => {
+          if (res && Array.isArray(res)) {
+            localStorage.setItem(cacheKey, JSON.stringify(res));
+            resolve(res);
+          } else {
+            reject(new Error("Бэкенд вернул некорректный формат Time-Series"));
+          }
+        })
+        .apiGetTimeSeriesPayload(MY_LICENSE, dF, dT);
+        
+    } catch (err) {
+       reject(err);
+    }
+  });
+}
+function downloadDebugJson(data) {
+  try {
+    const debugString = (typeof data === 'string') ? data : JSON.stringify(data, null, 2);
+    const blob = new Blob([debugString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `CFO_DEBUG_${new Date().getTime()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.warn("🛠️ [DEBUG] Дамп данных выгружен успешно.");
+  } catch (err) {
+    console.error("🚨 [DEBUG_ERR]:", err);
+  }
+}
+
+function triggerAutoSync() {
+  if (isSyncing) return;
+  isSyncing = true;
+  const loader2026 = document.getElementById('loader-2026');
+  if (loader2026) loader2026.style.display = 'flex';
+
+  google.script.run
+    .withFailureHandler(err => {
+      isSyncing = false;
+      if (loader2026) loader2026.style.display = 'none';
+      console.warn("Фоновый автосинк не удался:", err);
+      // Даже при падении синка: если в текущих данных нет 2025 — запускаем загрузку архива, иначе пользователь так и не увидит лоадер
+      var hasDec3125 = (masterData.pnl || []).some(function (r) { return r.d === "2025-12-31"; });
+      if (!hasDec3125) {
+        var archiveEl = document.getElementById('archive-loader');
+        if (archiveEl) { archiveEl.style.display = 'flex'; archiveEl.innerHTML = '🔄 Фоновая загрузка 2025... <div class="spinner-border spinner-border-sm ms-2"></div>'; }
+        currentChunkIdx = 0;
+        loadNextArchiveChunk();
+      }
+    })
+    .withSuccessHandler((res) => {
+      isSyncing = false;
+      if (loader2026) loader2026.style.display = 'none';
+      if (res && res.success && res.payload) {
+        try {
+          masterData.pnl = res.payload.pnl || [];
+          masterData.sku = res.payload.sku || [];
+          masterData.articles = res.payload.articles || [];
+          localStorage.setItem('wb_saas_data_cache_' + MY_LICENSE, JSON.stringify(masterData));
+          renderArticles();
+          applyLocalFilters();
+          // После 2026: проверка 31.12.25 — если нет, запуск архива 2025
+          const hasDec3125 = (res.payload.pnl || []).some(function (r) { return r.d === "2025-12-31"; });
+          if (!hasDec3125) {
+            const archiveEl = document.getElementById('archive-loader');
+            if (archiveEl) { archiveEl.style.display = 'flex'; archiveEl.innerHTML = '🔄 Фоновая загрузка 2025... <div class="spinner-border spinner-border-sm ms-2"></div>'; }
+            currentChunkIdx = 0;
+            loadNextArchiveChunk();
+          }
+        } catch (e) {
+          console.warn("Ошибка отрисовки после автосинка:", e);
+        }
+      }
+    })
+    .runUpdateBatchWrapper(MY_LICENSE);
+}
+
+function triggerLoad2026ThenMaybe2025() {
+  const loader2026 = document.getElementById('loader-2026');
+  if (loader2026) loader2026.style.display = 'flex';
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+  google.script.run
+    .withFailureHandler(function (err) {
+      if (loader2026) loader2026.style.display = 'none';
+      console.warn("Фоновая загрузка 2026 не удалась:", err);
+    })
+    .withSuccessHandler(function (res) {
+      if (!res || !res.success) {
+        if (loader2026) loader2026.style.display = 'none';
+        return;
+      }
+      fetchInitialData(function () {
+        if (loader2026) loader2026.style.display = 'none';
+        var hasDec3125 = (masterData.pnl || []).some(function (r) { return r.d === "2025-12-31"; });
+        if (!hasDec3125) {
+          var archiveEl = document.getElementById('archive-loader');
+          if (archiveEl) { archiveEl.style.display = 'flex'; archiveEl.innerHTML = '🔄 Фоновая загрузка 2025... <div class="spinner-border spinner-border-sm ms-2"></div>'; }
+          currentChunkIdx = 0;
+          loadNextArchiveChunk();
+        }
+        // Воронка — отдельный вызов (избегаем таймаута GAS), по завершении обновляем дашборд
+        google.script.run
+          .withFailureHandler(function () {})
+          .withSuccessHandler(function () { fetchInitialData(); })
+          .apiSyncFunnelData(MY_LICENSE);
+      });
+    })
+    .apiForceReloadPeriod(MY_LICENSE, "2026-01-01", yesterdayStr);
+}
+
+async function askAi(event) {
+  const e = event || window.event;
+  const dF = document.getElementById('dateFrom').value;
+  const dT = document.getElementById('dateTo').value;
+  const tsKey = `time_series_data_${MY_LICENSE}_${dF}_${dT}`;
+
+  // 1. DEBUG FIRST (Срабатывает мгновенно, до лоадеров и падений)
+  if (e && (e.altKey || e.ctrlKey || e.metaKey)) {
+    const debugBundle = {
+      license: MY_LICENSE,
+      period: { dF, dT },
+      timeSeriesCache: localStorage.getItem(tsKey) || "TimeSeries Cache Empty",
+      funnelCache: localStorage.getItem('wb_saas_funnel_cache_' + MY_LICENSE) || "Funnel Cache Empty"
+    };
+    downloadDebugJson(debugBundle);
+    return;
+  }
+
+  const btn = document.getElementById('aiBtn');
+  const container = document.getElementById('ai-response');
+  const toggleBtn = document.getElementById('aiToggleBtn');
+
+  btn.disabled = true;
+  btn.innerText = "ЗАПУСК...";
+
+  // ПРИНУДИТЕЛЬНО РАЗВОРАЧИВАЕМ ОКНО И ПОКАЗЫВАЕМ ТУМБЛЕР
+  container.style.display = 'block';
+  if(toggleBtn) {
+    toggleBtn.style.display = 'block';
+    toggleBtn.innerText = '▲ Свернуть';
+  }
+
+  container.innerHTML = '<div style="color: var(--primary); font-weight: 600;"><span class="spinner-border spinner-border-sm me-2"></span> Синхронизация данных WB...</div>';
+
+  try {
+    // 2. ЗАГРУЗКА ДАННЫХ
+    try {
+      await checkAndFetchFunnel(); 
+    } catch (fErr) {
+      console.warn("⚠️ Воронка недоступна, продолжаем анализ без неё.");
+    }
+
+    container.innerHTML = '<div><span class="spinner-border spinner-border-sm me-2"></span> Анализ динамики по SKU...</div>';
+    const timeSeriesData = await getTimeSeriesData(dF, dT);
+
+    if (!timeSeriesData || timeSeriesData.length === 0) {
+      throw new Error("Данные для анализа отсутствуют за выбранный период.");
+    }
+
+    container.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Нейросеть (CFO) изучает паттерны...';
+
+    // 1. Создание маппинга nm_id -> sa_name
+    const articleMap = {};
+    if (masterData && masterData.articles) {
+      masterData.articles.forEach(a => {
+        articleMap[a.nm_id] = a.sa_name;
+      });
+    }
+
+    // 2. Обогащение timeSeriesData полем supplierArticle
+    const enrichedData = timeSeriesData.map(item => ({
+      ...item,
+      supplierArticle: articleMap[item.nm_id] || `ID: ${item.nm_id}`
+    }));
+
+    // 3. ПОЛНЫЙ СИСТЕМНЫЙ ПРОМПТ (БЕЗ СОКРАЩЕНИЙ)
+    const customPrompt = `
+  Ты — Финансовый Директор (CFO) и Data Scientist e-commerce бизнеса на Wildberries.
+  Твоя задача: найти скрытые закономерности, точки потерь и драйверы роста на основе ежедневной динамики продаж и юнит-экономики по артикулам (SKU).
+  
+  СЛОВАРЬ ТЕРМИНОВ (ОБЯЗАТЕЛЬНО К ПРИМЕНЕНИЮ):
+  - margin: В предоставленных данных это СТРОГО ЧИСТАЯ ПРИБЫЛЬ в рублях. Это финальные деньги, которые остаются после вычета абсолютно ВСЕХ расходов (себестоимость, логистика, комиссия ВБ, налоги, хранение, штрафы и реклама).
+  - sales: Грязная выручка (сумма заказов/выкупов до вычетов).
+  
+  КРИТИЧЕСКОЕ ТРЕБОВАНИЕ К ЯЗЫКУ:
+  КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать английские слова из JSON (margin, sales, openCount, cartCount, orderCount, logSum, adsSum). 
+  Используй ТОЛЬКО русские бизнес-термины: Чистая прибыль, Выручка, Переходы в карточку, Добавления в корзину, Заказы, Логистика, Реклама. Текст должен звучать естественно для русскоязычного селлера.
+  
+  МАССИВ ДАННЫХ ДЛЯ АНАЛИЗА:
+  ${JSON.stringify(enrichedData)}
+  
+  ПРАВИЛА АНАЛИЗА (ЖЕСТКИЕ ОГРАНИЧЕНИЯ):
+  - ЗАПРЕТ НА ФАНТАЗИИ: Опирайся ТОЛЬКО на цифры. Запрещено ссылаться на "сезонность", "алгоритмы ВБ" или "погоду". 
+  - ТОЧНОСТЬ: Любой вывод обязан подкрепляться конкретной датой, SKU и цифрой.
+  - ФОРМАТИРОВАНИЕ: Выделяй важные цифры и ключевые термины жирным шрифтом (используй **текст**). Обязательно разделяй мысли на абзацы для легкости чтения. Исключи воду.
+  
+  ОБЯЗАТЕЛЬНЫЙ ЧЕКЛИСТ ДЛЯ ПОИСКА АНОМАЛИЙ (Проверь каждый пункт):
+  1. Выгорание рекламы: Растет ли сумма рекламы при стагнирующих переходах/заказах?
+  2. Каннибализация логистикой: Есть ли дни с резким скачком логистики при неизменных заказах?
+  3. Токсичный трафик: Всплески переходов без роста корзин на фоне трат на рекламу.
+  4. Эластичность цены: Дало ли снижение чистой прибыли (скидка) математически оправданный прирост заказов?
+  5. Дырявая корзина: Падает ли конверсия в заказ при высокой корзине?
+  6. Донор-Реципиент: Какой SKU сжигает чистую прибыль других артикулов на рекламу без ROI?
+  7. Кассовый разрыв выкупа: Растет ли логистика при падении заказов через несколько дней?
+  8. Спираль хранения: Растет ли ежедневно хранение при падающих заказах?
+  9. Точка безубыточности: Превышен ли предельный % рекламы, уводящий дневную прибыль в минус?
+  
+  ОТВЕТЬ СТРОГО ПО ПУНКТАМ:
+  1. КРИТИЧЕСКИЕ АНОМАЛИИ (Где теряем деньги прямо сейчас).
+  2. ТОЧКИ СВЕРХПРИБЫЛИ (Что масштабировать).
+  3. СТРАТЕГИЧЕСКИЙ ВЫВОД.
+  4. ACTION PLAN (3 жестких указания к действию на сегодня).
+
+ПРАВИЛА ОФОРМЛЕНИЯ И ЛОГИКИ:
+1. Обязательный блок размышлений: Перед генерацией самого отчета ты ОБЯЗАН написать свои мысли в тегах <thinking>...</thinking>. В этом блоке сопоставь метрики (расход на рекламу vs прибыль, конверсии) и найди аномалии. Этот блок должен быть скрыт от финального читателя, но обязателен для твоего процесса.
+2. Использование артикулов: В финальном отчете СТРОГО запрещено использовать числовые идентификаторы Wildberries (nm_id / nmId) как основные. Если в данных есть "Артикул продавца" (supplierArticle), используй ТОЛЬКО его (например: LEGGINGS-STIRRUPS-BLK). Если передан только nm_id, оформляй его так: [SKU: 12345678].
+3. Форматирование (Strict Markdown): 
+   - Не используй сплошное полотно текста. 
+   - Используй жирный шрифт (**текст**) для выделения всех сумм (в рублях), процентов и ключевых метрик.
+   - Используй эмодзи только как визуальные якоря для разделов (🔴 для убытков/критичного, 🟢 для точек роста, 📊 для заголовка, ⚡ для экшен-плана).
+   - Разделяй смысловые блоки горизонтальной линией (---).
+   - Заголовки оформляй жирным капсом, а не через ##.
+4. Структура отчета:
+   - EXECUTIVE SUMMARY (краткая выжимка ситуации на 2 предложения).
+   - 🔴 ЗОНЫ КРИТИЧЕСКИХ ПОТЕРЬ (где бизнес теряет деньги прямо сейчас: убыточная реклама, дорогая логистика при нулевой выручке, низкая конверсия).
+   - 🟢 ТОЧКИ СВЕРХПРИБЫЛИ (товары с идеальной юнит-экономикой, которые приносят прибыль без рекламы).
+   - ⚡ ACTION PLAN (3-4 жестких, конкретных указания к действию на сегодня с прогнозом экономии/заработка).
+5. Тон: Профессиональный, прямой, без воды. Называй вещи своими именами (не "возможно, стоит снизить", а "немедленно отключить", "каннибализация прибыли").
+`;
+    // 4. ВЫЗОВ LLM
+    google.script.run
+      .withFailureHandler(err => {
+        btn.disabled = false;
+        btn.innerText = "ЗАПУСТИТЬ АНАЛИЗ";
+        container.innerHTML = `<div class="alert alert-danger">Ошибка API: ${err}</div>`;
+      })
+      .withSuccessHandler(res => {
+        btn.disabled = false;
+        btn.innerText = "ЗАПУСТИТЬ АНАЛИЗ";
+        if (res && res.success) {
+          container.innerHTML = ""; 
+          typeWriter(res.text, 'ai-response');
+        } else {
+          container.innerHTML = `<div class="alert alert-warning">${res.error}</div>`;
+        }
+      })
+      .apiGetAiAnalysis(MY_LICENSE, { customPrompt: customPrompt });
+
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerText = "ЗАПУСТИТЬ АНАЛИЗ";
+    container.innerHTML = `<div style="color: #ee5253; background: rgba(238,82,83,0.1); padding: 15px; border-radius: 8px; border: 1px solid #ee5253;">
+      <div class="fw-bold">❌ Ошибка инициализации: ${err.message}</div>
+      <div class="small mt-1">Попробуйте обновить данные WB или используйте Alt+Click для диагностики.</div>
+    </div>`;
+  }
+}
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
