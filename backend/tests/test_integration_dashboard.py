@@ -1,0 +1,626 @@
+"""
+Интеграционные тесты: реальная БД, полный пайплайн.
+
+Проверяют:
+- структуру ответов API (как контракт для фронта);
+- что данные, записанные в БД, возвращаются через API без искажений;
+- цепочку: данные в формате WB → raw_sales → recalculate_pnl → pnl_daily → GET /dashboard/pnl;
+- при наличии WB_API_KEY в .env — структуру ответа реального WB API.
+
+Требуется работающая PostgreSQL (DATABASE_URL). Запуск: pytest tests/test_integration_dashboard.py -v
+"""
+import os
+from datetime import date
+from unittest.mock import patch, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.db import get_db
+from app.models.user import User
+from app.models.article import Article
+from app.models.raw_sales import RawSale
+from app.models.pnl_daily import PnlDaily
+from app.models.sku_daily import SkuDaily
+from app.models.funnel_daily import FunnelDaily
+from app.models.operational_expense import OperationalExpense
+from app.core.security import create_access_token
+from celery_app.tasks import sync_sales, recalculate_pnl
+from app.services.wb_client import fetch_sales
+
+
+# Ключи, которые должен возвращать наш парсер WB (контракт для raw_sales)
+WB_SALES_ROW_KEYS = {
+    "date", "nm_id", "doc_type", "retail_price", "ppvz_for_pay",
+    "delivery_rub", "penalty", "additional_payment", "storage_fee", "quantity",
+    "subject_name",
+}
+
+# Ожидаемые ключи ответов API (контракт для фронта)
+STATE_KEYS = {
+    "has_data",
+    "min_date",
+    "max_date",
+    "has_2025",
+    "has_2026",
+    "has_funnel",
+    "funnel_ytd_backfill",
+}
+FUNNEL_YTD_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
+PNL_DAY_KEYS = {
+    "date", "revenue", "commission", "logistics", "penalties", "storage",
+    "ads_spend", "cogs", "tax", "operation_expenses", "margin",
+}
+SKU_DAY_KEYS = {
+    "date", "nm_id", "revenue", "commission", "logistics", "penalties", "storage",
+    "ads_spend", "cogs", "tax", "margin", "open_count", "cart_count", "order_count", "order_sum",
+}
+ARTICLE_KEYS = {"nm_id", "vendor_code", "name", "subject_name", "cost_price"}
+FUNNEL_DAY_KEYS = {
+    "date", "nm_id", "vendor_code", "open_count", "cart_count", "order_count",
+    "order_sum", "buyout_percent", "cr_to_cart", "cr_to_order",
+}
+
+
+@pytest.fixture
+def authenticated_client(real_db_session):
+    """Клиент с JWT и сессией БД, в которой создан пользователь."""
+    user = User(
+        id="a0000000-0000-4000-8000-000000000001",
+        email="int@example.com",
+        password_hash="$2b$12$fake",
+        wb_api_key="test-wb-key",
+        is_active=True,
+    )
+    real_db_session.add(user)
+    real_db_session.commit()
+    token = create_access_token(data={"sub": str(user.id)})
+
+    def get_db_override():
+        yield real_db_session
+
+    app.dependency_overrides[get_db] = get_db_override
+    try:
+        with TestClient(app) as c:
+            yield c, real_db_session, str(user.id), token
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_dashboard_state_structure_and_has_data_false(authenticated_client):
+    """GET /dashboard/state без данных: полная структура ответа и has_data=False."""
+    client, _session, _user_id, token = authenticated_client
+    r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    data = r.json()
+    assert set(data.keys()) == STATE_KEYS
+    assert data["has_data"] is False
+    assert data["min_date"] is None
+    assert data["max_date"] is None
+    assert data["has_2025"] is False
+    assert data["has_2026"] is False
+    assert data["has_funnel"] is False
+    assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
+
+
+def test_dashboard_state_structure_and_has_data_true(authenticated_client):
+    """В БД есть pnl_daily → GET /dashboard/state возвращает has_data=True и даты."""
+    client, session, user_id, token = authenticated_client
+    d = date(2025, 3, 15)
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=d,
+            revenue=100_000,
+            commission=15_000,
+            logistics=5_000,
+            penalties=0,
+            storage=1_000,
+            ads_spend=10_000,
+            cogs=40_000,
+            tax=6_000,
+            margin=3_000,
+        )
+    )
+    session.commit()
+
+    r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    data = r.json()
+    assert set(data.keys()) == STATE_KEYS
+    assert data["has_data"] is True
+    assert data["min_date"] == "2025-03-15"
+    assert data["max_date"] == "2025-03-15"
+    assert data["has_2025"] is True
+    assert data["has_2026"] is False
+    assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
+
+
+def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):
+    """Данные из pnl_daily возвращаются через GET /dashboard/pnl без искажений."""
+    client, session, user_id, token = authenticated_client
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=date(2025, 3, 10),
+            revenue=50_000,
+            commission=7_500,
+            logistics=2_000,
+            penalties=500,
+            storage=500,
+            ads_spend=5_000,
+            cogs=20_000,
+            tax=3_000,
+            margin=1_500,
+        )
+    )
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=date(2025, 3, 11),
+            revenue=60_000,
+            commission=9_000,
+            logistics=2_500,
+            penalties=0,
+            storage=600,
+            ads_spend=6_000,
+            cogs=24_000,
+            tax=3_600,
+            margin=1_800,
+        )
+    )
+    session.commit()
+
+    r = client.get(
+        "/dashboard/pnl",
+        params={"date_from": "2025-03-10", "date_to": "2025-03-11"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 2
+    for item in items:
+        assert set(item.keys()) == PNL_DAY_KEYS
+    by_date = {x["date"]: x for x in items}
+    assert by_date["2025-03-10"]["revenue"] == 50000.0
+    assert by_date["2025-03-10"]["margin"] == 1500.0
+    assert by_date["2025-03-11"]["revenue"] == 60000.0
+    assert by_date["2025-03-11"]["margin"] == 1800.0
+
+
+def test_dashboard_articles_response_structure(authenticated_client):
+    """GET /dashboard/articles: структура как контракт для фронта."""
+    client, session, user_id, token = authenticated_client
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=12345678,
+            vendor_code="ART-01",
+            name="Товар тест",
+            cost_price=500.50,
+        )
+    )
+    session.commit()
+
+    r = client.get("/dashboard/articles", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert set(items[0].keys()) == ARTICLE_KEYS
+    assert items[0]["nm_id"] == 12345678
+    assert items[0]["cost_price"] == 500.5
+
+
+def test_dashboard_articles_vendor_code_fallback_from_funnel_latest_non_null(authenticated_client):
+    """
+    Регрессия: если Article.vendor_code пустой, API должен подставить vendor_code
+    из последней non-null записи funnel_daily по (user_id, nm_id), независимо от выбранного дня на фронте.
+    """
+    client, session, user_id, token = authenticated_client
+    nm_id = 777
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=nm_id,
+            vendor_code=None,
+            name="Товар без vendor_code",
+            cost_price=100,
+        )
+    )
+    session.add_all(
+        [
+            FunnelDaily(
+                user_id=user_id,
+                date=date(2025, 3, 10),
+                nm_id=nm_id,
+                vendor_code="OLD",
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=1,
+            ),
+            FunnelDaily(
+                user_id=user_id,
+                date=date(2025, 3, 11),
+                nm_id=nm_id,
+                vendor_code="NEW",
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=1,
+            ),
+            # Более поздняя дата, но vendor_code пустой — не должна “перебить” NEW.
+            FunnelDaily(
+                user_id=user_id,
+                date=date(2025, 3, 12),
+                nm_id=nm_id,
+                vendor_code=None,
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=1,
+            ),
+        ]
+    )
+    session.commit()
+
+    r = client.get("/dashboard/articles", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    items = r.json()
+    by_nm = {x["nm_id"]: x for x in items}
+    assert by_nm[nm_id]["vendor_code"] == "NEW"
+
+
+def test_dashboard_articles_vendor_code_article_value_has_priority_over_funnel(authenticated_client):
+    """Если vendor_code задан в articles, он не должен подменяться данными из funnel_daily."""
+    client, session, user_id, token = authenticated_client
+    nm_id = 778
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=nm_id,
+            vendor_code="ART",
+            name="Товар с vendor_code",
+            cost_price=100,
+        )
+    )
+    session.add(
+        FunnelDaily(
+            user_id=user_id,
+            date=date(2025, 3, 11),
+            nm_id=nm_id,
+            vendor_code="FUNNEL",
+            open_count=1,
+            cart_count=1,
+            order_count=1,
+            order_sum=1,
+        )
+    )
+    session.commit()
+
+    r = client.get("/dashboard/articles", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    items = r.json()
+    by_nm = {x["nm_id"]: x for x in items}
+    assert by_nm[nm_id]["vendor_code"] == "ART"
+
+
+def test_dashboard_articles_vendor_code_blank_string_falls_back_to_funnel(authenticated_client):
+    """Если в articles vendor_code пустой/пробельный, должен сработать fallback из funnel_daily."""
+    client, session, user_id, token = authenticated_client
+    nm_id = 779
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=nm_id,
+            vendor_code="   ",
+            name="Товар с пустым vendor_code",
+            cost_price=100,
+        )
+    )
+    session.add(
+        FunnelDaily(
+            user_id=user_id,
+            date=date(2025, 3, 11),
+            nm_id=nm_id,
+            vendor_code="FUNNEL-VC",
+            open_count=1,
+            cart_count=1,
+            order_count=1,
+            order_sum=1,
+        )
+    )
+    session.commit()
+
+    r = client.get("/dashboard/articles", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    items = r.json()
+    by_nm = {x["nm_id"]: x for x in items}
+    assert by_nm[nm_id]["vendor_code"] == "FUNNEL-VC"
+
+
+def test_dashboard_sku_response_structure_and_values_from_db(authenticated_client):
+    """Данные из sku_daily возвращаются через GET /dashboard/sku без искажений."""
+    client, session, user_id, token = authenticated_client
+    session.add(
+        SkuDaily(
+            user_id=user_id,
+            date=date(2025, 3, 12),
+            nm_id=111,
+            revenue=20_000,
+            commission=3_000,
+            logistics=500,
+            penalties=0,
+            storage=200,
+            ads_spend=2_000,
+            cogs=8_000,
+            tax=1_200,
+            margin=1_100,
+            open_count=100,
+            cart_count=30,
+            order_count=10,
+            order_sum=20_000,
+        )
+    )
+    session.commit()
+
+    r = client.get(
+        "/dashboard/sku",
+        params={"date_from": "2025-03-12", "date_to": "2025-03-12"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert set(items[0].keys()) == SKU_DAY_KEYS
+    assert items[0]["date"] == "2025-03-12"
+    assert items[0]["nm_id"] == 111
+    assert items[0]["revenue"] == 20000.0
+    assert items[0]["margin"] == 1100.0
+    assert items[0]["order_count"] == 10
+
+
+def test_dashboard_funnel_response_structure(authenticated_client):
+    """GET /dashboard/funnel: структура ответа как контракт для фронта."""
+    client, session, user_id, token = authenticated_client
+    session.add(
+        FunnelDaily(
+            user_id=user_id,
+            date=date(2025, 3, 14),
+            nm_id=222,
+            vendor_code="FUN-1",
+            open_count=50,
+            cart_count=15,
+            order_count=5,
+            order_sum=10_000,
+            buyout_percent=80.0,
+            cr_to_cart=30.0,
+            cr_to_order=10.0,
+        )
+    )
+    session.commit()
+
+    r = client.get(
+        "/dashboard/funnel",
+        params={"date_from": "2025-03-14", "date_to": "2025-03-14"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert set(items[0].keys()) == FUNNEL_DAY_KEYS
+    assert items[0]["date"] == "2025-03-14"
+    assert items[0]["nm_id"] == 222
+    assert items[0]["order_count"] == 5
+    assert items[0]["buyout_percent"] == 80.0
+
+
+def test_full_flow_wb_shape_to_raw_to_pnl_to_api(authenticated_client):
+    """
+    Полный пайплайн: данные в формате WB → sync_sales (raw_sales) → recalculate_pnl (pnl_daily) → GET /dashboard/pnl.
+    Проверяем структуру на каждом шаге и что итоговый ответ API совпадает с ожидаемой агрегацией.
+    """
+    client, session, user_id, token = authenticated_client
+    # Артикул для себестоимости
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=999,
+            vendor_code="TEST",
+            name="Test",
+            cost_price=100,
+        )
+    )
+    session.commit()
+
+    # Формат ответа WB (как в wb_client.fetch_sales)
+    wb_shaped = [
+        {
+            "date": "2025-03-20",
+            "nm_id": 999,
+            "doc_type": "Продажа",
+            "retail_price": 1000,
+            "ppvz_for_pay": 850,
+            "delivery_rub": 50,
+            "penalty": 0,
+            "additional_payment": 0,
+            "storage_fee": 10,
+            "quantity": 1,
+        },
+    ]
+
+    # Чтобы задача не закрывала сессию теста
+    session.close = MagicMock()
+    with patch("celery_app.tasks.fetch_sales", return_value=wb_shaped):
+        with patch("celery_app.tasks.SessionLocal", return_value=session):
+            with patch("celery_app.tasks.recalculate_pnl") as mock_rec:
+                mock_rec.delay.return_value = MagicMock(id="rec-1")
+                res = sync_sales(user_id, "2025-03-20", "2025-03-20")
+    assert res["ok"] is True
+    assert res["count"] == 1
+
+    # В raw_sales должна быть одна запись
+    raw = session.query(RawSale).filter(RawSale.user_id == user_id, RawSale.date == date(2025, 3, 20)).all()
+    assert len(raw) == 1
+    assert raw[0].nm_id == 999
+    assert float(raw[0].retail_price) == 1000
+    assert (raw[0].doc_type or "").strip().lower() == "продажа"
+
+    # Пересчёт P&L вручную (recalculate_pnl в тесте с той же сессией)
+    with patch("celery_app.tasks.SessionLocal", return_value=session):
+        rec_res = recalculate_pnl(user_id, "2025-03-20", "2025-03-20")
+    assert rec_res["ok"] is True
+    assert rec_res["count"] == 1
+
+    # Читаем через API и проверяем структуру и значения
+    r = client.get(
+        "/dashboard/pnl",
+        params={"date_from": "2025-03-20", "date_to": "2025-03-20"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    assert set(items[0].keys()) == PNL_DAY_KEYS
+    # revenue = 1000, commission = 1000 - 850 = 150, tax = 1000*0.06 = 60, cogs = 100, margin = 1000 - 150 - 50 - 10 - 100 - 60 = 630
+    assert items[0]["date"] == "2025-03-20"
+    assert items[0]["revenue"] == 1000.0
+    assert items[0]["commission"] == 150.0
+    assert items[0]["cogs"] == 100.0
+    assert items[0]["tax"] == 60.0
+    assert items[0]["margin"] == 630.0
+
+
+def test_pnl_deducts_operational_expenses_from_margin(authenticated_client):
+    """Операционные расходы уменьшают margin в pnl_daily и отображаются в GET /dashboard/pnl."""
+    client, session, user_id, token = authenticated_client
+
+    d = date(2025, 3, 20)
+    session.add(
+        Article(
+            user_id=user_id,
+            nm_id=999,
+            vendor_code="TEST",
+            name="Test",
+            cost_price=100,
+        )
+    )
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=d,
+            nm_id=999,
+            doc_type="Продажа",
+            retail_price=1000,
+            ppvz_for_pay=850,
+            delivery_rub=50,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=10,
+            quantity=1,
+        )
+    )
+    session.add(
+        OperationalExpense(
+            user_id=user_id,
+            date=d,
+            amount=25.5,
+            comment="Оплата отгрузки/фулфилмента",
+        )
+    )
+    session.commit()
+
+    # Чтобы recalculate_pnl работал в той же транзакции, подменяем SessionLocal на нашу session.
+    session.close = MagicMock()
+    with patch("celery_app.tasks.SessionLocal", return_value=session):
+        rec_res = recalculate_pnl(user_id, d.isoformat(), d.isoformat())
+
+    assert rec_res["ok"] is True
+
+    r = client.get(
+        "/dashboard/pnl",
+        params={"date_from": d.isoformat(), "date_to": d.isoformat()},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    assert items[0]["operation_expenses"] == 25.5
+    assert items[0]["margin"] == 604.5
+
+
+def test_pnl_only_operational_expenses_creates_day_and_is_negative_margin(authenticated_client):
+    """Если в период есть только OperationalExpense, pnl_daily всё равно должен появиться и margin=-operation_expenses."""
+    client, session, user_id, token = authenticated_client
+
+    d = date(2025, 3, 20)
+    amount = 25.5
+    session.add(
+        OperationalExpense(
+            user_id=user_id,
+            date=d,
+            amount=amount,
+            comment="Оплата отгрузки/фулфилмента",
+        )
+    )
+    session.commit()
+
+    # Чтобы recalculate_pnl работал в той же транзакции, подменяем SessionLocal на нашу session.
+    session.close = MagicMock()
+    with patch("celery_app.tasks.SessionLocal", return_value=session):
+        rec_res = recalculate_pnl(user_id, d.isoformat(), d.isoformat())
+
+    assert rec_res["ok"] is True
+    assert rec_res["count"] == 1
+
+    r = client.get(
+        "/dashboard/pnl",
+        params={"date_from": d.isoformat(), "date_to": d.isoformat()},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    assert items[0]["operation_expenses"] == amount
+    assert items[0]["margin"] == -amount
+
+
+def test_real_wb_sales_response_structure():
+    """
+    Реальный запрос к WB API: ответ после парсинга имеет ожидаемую структуру.
+    Пропуск, если WB_API_KEY не задан (например в .env).
+    """
+    try:
+        from pathlib import Path
+        from dotenv import load_dotenv
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+    except ImportError:
+        pass
+    wb_key = (os.getenv("WB_API_KEY") or "").strip()
+    if not wb_key:
+        pytest.skip("WB_API_KEY не задан — тест реального WB пропущен")
+    from datetime import timedelta
+    end = date.today() - timedelta(days=1)
+    start = end - timedelta(days=1)
+    date_from = start.isoformat()
+    date_to = end.isoformat()
+    import requests
+    try:
+        rows = fetch_sales(date_from, date_to, wb_key)
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else None
+        if code == 429:
+            pytest.skip("WB API rate limit (429) — пропускаем real-test")
+        raise
+    assert isinstance(rows, list)
+    for row in rows:
+        assert set(row.keys()) == WB_SALES_ROW_KEYS, f"Структура строки WB не совпадает: {row.keys()}"
+        assert row["date"] is not None
+        assert "nm_id" in row and "quantity" in row
