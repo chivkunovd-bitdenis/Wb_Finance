@@ -420,6 +420,53 @@ def test_dashboard_funnel_response_structure(authenticated_client):
     assert items[0]["buyout_percent"] == 80.0
 
 
+def test_dashboard_funnel_vendor_code_fallback_from_latest_non_null(authenticated_client):
+    """
+    Регрессия под запрос из фронта:
+    если на выбранный день FunnelDaily.vendor_code пустой,
+    API должен подставить vendor_code из последней non-null записи этого nm_id.
+    """
+    client, session, user_id, token = authenticated_client
+    nm_id = 333
+    session.add(
+        FunnelDaily(
+            user_id=user_id,
+            date=date(2025, 3, 10),
+            nm_id=nm_id,
+            vendor_code=None,
+            open_count=1,
+            cart_count=1,
+            order_count=1,
+            order_sum=1,
+        )
+    )
+    session.add(
+        FunnelDaily(
+            user_id=user_id,
+            date=date(2025, 3, 11),
+            nm_id=nm_id,
+            vendor_code="LATEST-VC",
+            open_count=1,
+            cart_count=1,
+            order_count=1,
+            order_sum=1,
+        )
+    )
+    session.commit()
+
+    r = client.get(
+        "/dashboard/funnel",
+        params={"date_from": "2025-03-10", "date_to": "2025-03-10"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert items[0]["nm_id"] == nm_id
+    assert items[0]["vendor_code"] == "LATEST-VC"
+
+
 def test_full_flow_wb_shape_to_raw_to_pnl_to_api(authenticated_client):
     """
     Полный пайплайн: данные в формате WB → sync_sales (raw_sales) → recalculate_pnl (pnl_daily) → GET /dashboard/pnl.

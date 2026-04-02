@@ -446,27 +446,76 @@ def get_funnel(
     db: Session = Depends(get_db),
 ):
     """Воронка по дням и артикулам. Опционально фильтр по датам."""
-    q = db.query(FunnelDaily).filter(FunnelDaily.user_id == current_user.id)
+    def _normalize_vendor_code(v: str | None) -> str | None:
+        """Treat None/empty/whitespace as missing."""
+        if v is None:
+            return None
+        s = v.strip()
+        return s if s else None
+
+    # seller_article (vendor_code) используется фронтом как атрибут артикула,
+    # но в FunnelDaily он может отсутствовать на некоторых днях.
+    # Поэтому подтягиваем latest non-null vendor_code для (user_id, nm_id)
+    # и используем его как fallback для строк, где vendor_code пустой.
+    latest_vendor_code_sq = (
+        db.query(
+            FunnelDaily.user_id.label("user_id"),
+            FunnelDaily.nm_id.label("nm_id"),
+            FunnelDaily.vendor_code.label("vendor_code"),
+            func.row_number()
+            .over(
+                partition_by=(FunnelDaily.user_id, FunnelDaily.nm_id),
+                order_by=(FunnelDaily.date.desc(), FunnelDaily.updated_at.desc(), FunnelDaily.id.desc()),
+            )
+            .label("rn"),
+        )
+        .filter(
+            FunnelDaily.user_id == current_user.id,
+            FunnelDaily.vendor_code.isnot(None),
+            func.length(func.btrim(FunnelDaily.vendor_code)) > 0,
+        )
+        .subquery()
+    )
+
+    q = (
+        db.query(
+            FunnelDaily,
+            latest_vendor_code_sq.c.vendor_code.label("latest_vendor_code"),
+        )
+        .outerjoin(
+            latest_vendor_code_sq,
+            (latest_vendor_code_sq.c.user_id == FunnelDaily.user_id)
+            & (latest_vendor_code_sq.c.nm_id == FunnelDaily.nm_id)
+            & (latest_vendor_code_sq.c.rn == 1),
+        )
+        .filter(FunnelDaily.user_id == current_user.id)
+    )
     if date_from:
         q = q.filter(FunnelDaily.date >= date_type.fromisoformat(date_from))
     if date_to:
         q = q.filter(FunnelDaily.date <= date_type.fromisoformat(date_to))
     rows = q.order_by(FunnelDaily.date, FunnelDaily.nm_id).all()
-    return [
-        FunnelDayResponse(
-            date=r.date.isoformat(),
-            nm_id=r.nm_id,
-            vendor_code=r.vendor_code,
-            open_count=r.open_count,
-            cart_count=r.cart_count,
-            order_count=r.order_count,
-            order_sum=_num(r.order_sum),
-            buyout_percent=_num(r.buyout_percent),
-            cr_to_cart=_num(r.cr_to_cart),
-            cr_to_order=_num(r.cr_to_order),
+
+    result: list[FunnelDayResponse] = []
+    for r, latest_vendor_code in rows:
+        day_vendor_code = _normalize_vendor_code(r.vendor_code)
+        resolved_vendor_code = day_vendor_code or _normalize_vendor_code(latest_vendor_code)
+        result.append(
+            FunnelDayResponse(
+                date=r.date.isoformat(),
+                nm_id=r.nm_id,
+                vendor_code=resolved_vendor_code,
+                open_count=r.open_count,
+                cart_count=r.cart_count,
+                order_count=r.order_count,
+                order_sum=_num(r.order_sum),
+                buyout_percent=_num(r.buyout_percent),
+                cr_to_cart=_num(r.cr_to_cart),
+                cr_to_order=_num(r.cr_to_order),
+            )
         )
-        for r in rows
-    ]
+
+    return result
 
 
 @router.get("/sku", response_model=list[SkuDayResponse])
