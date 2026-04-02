@@ -1,0 +1,30 @@
+:root {
+  /* === DESIGN TOKENS (light mode) === */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f5;
+  --bg-tertiary: #f0efeb;
+  --text-primary: #1a1a18;
+  --text-secondary: #5c5c58;
+  --text-tertiary: #9c9a92;
+  --border-light: rgba(0, 0, 0, 0.08);
+  --border-mid: rgba(0, 0, 0, 0.14);
+  --accent: #5b4fd4;
+  --accent-light: #f0effe;
+  --accent-mid: #7c6ff7;
+  --green: #16a34a;
+  --green-light: #dcfce7;
+  --red: #dc2626;
+  --red-light: #fee2e2;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Backward-compatible aliases used by existing styles */
+  --primary: var(--accent);
+  --bg: var(--bg-tertiary);
+  --dark: var(--text-primary);
+  --border: var(--border-light);
+
+  --accent-bg: rgba(91, 79, 212, 0.08);
+  --accent-border: rgba(91, 79, 212, 0.35);
+}
+

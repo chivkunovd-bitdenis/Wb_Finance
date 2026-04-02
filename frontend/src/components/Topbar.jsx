@@ -1,0 +1,46 @@
+export default function Topbar({
+  title,
+  dateFromDraft,
+  dateToDraft,
+  setDateFromDraft,
+  setDateToDraft,
+  onApply,
+  onUpdateWb,
+  onOpenBilling,
+  updating,
+  updateSyncing,
+}) {
+  return (
+    <div className="topbar">
+      <div className="topbar-title">{title}</div>
+      <div className="date-group">
+        <input
+          type="date"
+          value={dateFromDraft}
+          onChange={(e) => setDateFromDraft(e.target.value)}
+        />
+        <span className="date-sep">—</span>
+        <input
+          type="date"
+          value={dateToDraft}
+          onChange={(e) => setDateToDraft(e.target.value)}
+        />
+      </div>
+      <button className="btn-primary" onClick={onApply} disabled={updateSyncing || updating}>
+        Показать
+      </button>
+      <button className="btn-outline" onClick={onUpdateWb} disabled={updating}>
+        {updating ? '...' : 'Обновить WB'}
+      </button>
+      <button className="btn-primary" onClick={onOpenBilling}>
+        Подписка
+      </button>
+      {updateSyncing && (
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: -4 }}>
+          Обновляем выбранный период…
+        </span>
+      )}
+    </div>
+  );
+}
+
