@@ -1,0 +1,40 @@
+name: Deploy to server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy via SSH
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH → pull → rebuild → migrate
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+
+            # Убедиться что папка существует и это git-репозиторий
+            if [ ! -d "/root/wb-finance/.git" ]; then
+              echo "ERROR: /root/wb-finance is not a git repo. Run first-time setup first."
+              exit 1
+            fi
+
+            cd /root/wb-finance
+
+            # Подтянуть последний код
+            git pull origin main
+
+            # Пересобрать и поднять все контейнеры
+            docker compose up -d --build
+
+            # Применить миграции БД
+            docker compose exec -T api alembic upgrade head
+
+            echo "Deploy finished successfully"

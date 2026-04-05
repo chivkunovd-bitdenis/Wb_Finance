@@ -143,7 +143,10 @@ export default function Layout() {
             await api.triggerInitialSync();
           } catch (e) {
             console.warn('Ошибка запуска первой синхронизации', e);
-            setInitialError(e?.message || 'Не удалось запустить синхронизацию. Проверь WB API ключ.');
+            setInitialError(
+              e?.message ||
+                'Не удалось запустить синхронизацию. Проверь WB API ключ; если ключ есть — возможно, не запущен celery_worker/redis на сервере.',
+            );
             setInitialLoading(false);
             return;
           }
@@ -160,7 +163,9 @@ export default function Layout() {
             if (state.has_data && waitForFunnelAfterInitial && !state.has_funnel) {
               setInitialError('Базовые данные загружены, но воронка еще не готова. Проверь задачу sync_funnel в воркере.');
             } else {
-              setInitialError('Синхронизация не завершилась за 3 минуты. Проверь WB API ключ и логи воркера.');
+              setInitialError(
+              'Синхронизация не завершилась за 3 минуты. Проверь WB API ключ и логи celery_worker (очередь Redis).',
+            );
             }
             setInitialLoading(false);
             return;
@@ -192,7 +197,10 @@ export default function Layout() {
               authLogout();
               return;
             }
-            setInitialError(e2?.message || 'Не удалось запустить синхронизацию. Проверь WB API ключ.');
+            setInitialError(
+              e2?.message ||
+                'Не удалось запустить синхронизацию. Проверь WB API ключ; если ключ есть — возможно, не запущен celery_worker/redis на сервере.',
+            );
           }
         }
         setInitialLoading(false);

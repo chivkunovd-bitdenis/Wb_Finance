@@ -24,6 +24,23 @@ function getToken() {
   return lsGet(TOKEN_KEY);
 }
 
+/** Человекочитаемый текст из тела ошибки FastAPI (`detail` или validation). */
+export function parseApiErrorText(bodyText, status) {
+  const raw = (bodyText || '').trim();
+  if (!raw) return status ? `Ошибка сервера (${status})` : 'Ошибка сервера';
+  try {
+    const j = JSON.parse(raw);
+    if (typeof j.detail === 'string') return j.detail;
+    if (Array.isArray(j.detail)) {
+      const parts = j.detail.map((x) => (x && typeof x.msg === 'string' ? x.msg : null)).filter(Boolean);
+      if (parts.length) return parts.join('; ');
+    }
+  } catch {
+    /* not JSON */
+  }
+  return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
+}
+
 function headers(withAuth = true) {
   const h = { 'Content-Type': 'application/json' };
   const t = getToken();
@@ -101,7 +118,10 @@ export async function saveArticlesCost(items) {
 export async function getDashboardState() {
   const res = await apiFetch(`${API_BASE}/dashboard/state`, { headers: headers() });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(parseApiErrorText(t, res.status));
+  }
   return res.json();
 }
 
@@ -218,7 +238,10 @@ export async function triggerInitialSync() {
     headers: headers(),
   });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(parseApiErrorText(t, res.status));
+  }
   return res.json();
 }
 
