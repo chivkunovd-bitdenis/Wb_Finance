@@ -53,7 +53,9 @@ services:
       - ./backend/celery_app:/app/celery_app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # Миграции до uvicorn: иначе on_event(alembic) может зависнуть/ронять процесс → Caddy 502.
+    command: >
+      sh -c "alembic upgrade heads && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   celery_worker:
     restart: unless-stopped

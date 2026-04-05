@@ -142,10 +142,12 @@ docker compose ps
 
 ## Шаг 7. Миграции базы данных
 
-После первого запуска применить миграции:
+Контейнер **`api`** при каждом запуске сначала выполняет **`alembic upgrade heads`**, затем стартует uvicorn (см. `command` в `docker-compose.yml`). Отдельный шаг после первого `docker compose up` обычно не нужен.
+
+Если контейнер `api` не запущен или нужно прогнать миграции вручную:
 
 ```bash
-docker compose exec api alembic upgrade head
+docker compose exec api alembic upgrade heads
 ```
 
 ---
