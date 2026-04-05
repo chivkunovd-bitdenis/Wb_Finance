@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: wb_finance
@@ -16,6 +17,7 @@ services:
       retries: 5
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -26,36 +28,100 @@ services:
       retries: 5
 
   api:
+    restart: unless-stopped
     build:
       context: ./backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
       PYTHONPATH: /app
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
+      # AI daily brief + внешние вызовы к LLM выключены по умолчанию
+      DAILY_BRIEF_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./backend/.env:/app/.env
+      - ./backend/app:/app/app
+      - ./backend/celery_app:/app/celery_app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   celery_worker:
+    restart: unless-stopped
     build:
       context: ./backend
       dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
     environment:
       PYTHONPATH: /app
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
+      DAILY_BRIEF_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./backend/.env:/app/.env
+      - ./backend/app:/app/app
+      - ./backend/celery_app:/app/celery_app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
     command: celery -A celery_app.celery worker --loglevel=info
+
+  celery_beat:
+    restart: unless-stopped
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
+      REDIS_URL: redis://redis:6379/0
+      DAILY_BRIEF_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/.env:/app/.env
+      - ./backend/app:/app/app
+      - ./backend/celery_app:/app/celery_app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+    command: celery -A celery_app.celery beat --loglevel=info
+
+  caddy:
+    restart: unless-stopped
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./landing:/var/www/landing:ro
+      - ./frontend/dist:/var/www/app:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
