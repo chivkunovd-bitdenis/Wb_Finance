@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api';
 
 const PLAN_PRICE = 1490;
@@ -28,6 +29,8 @@ function formatDate(dateStr) {
 }
 
 export default function Billing({ billingStatus, onRefreshStatus }) {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [wbApiKey, setWbApiKey] = useState('');
   const [msg, setMsg] = useState('');
@@ -43,11 +46,44 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const isActive = status === 'active';
   const showTrialForm = !isLifetime && status === 'inactive' && !trialEndsAt && !periodEndsAt;
 
+  useEffect(() => {
+    if (searchParams.get('payment') !== 'return') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sync = await api.syncYookassaReturn();
+        if (cancelled) return;
+        if (sync.activated) {
+          setMsg('Оплата прошла успешно, подписка активирована.');
+          setMsgType('success');
+        } else if (sync.detail === 'still_pending') {
+          setMsg('Платёж ещё обрабатывается. Обновите страницу через минуту или дождитесь уведомления.');
+          setMsgType('error');
+        } else if (sync.detail === 'canceled') {
+          setMsg('Платёж отменён.');
+          setMsgType('error');
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setMsg(e?.message || 'Не удалось проверить статус оплаты');
+          setMsgType('error');
+        }
+      } finally {
+        if (!cancelled) await onRefreshStatus?.();
+        if (!cancelled) navigate('/billing', { replace: true });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, navigate, onRefreshStatus]);
+
   const handlePay = async () => {
     setLoading(true);
     setMsg('');
     try {
-      const data = await api.createCheckout(PLAN_PRICE, `${window.location.origin}/billing`);
+      const returnUrl = `${window.location.origin}/billing?payment=return`;
+      const data = await api.createCheckout(PLAN_PRICE, returnUrl);
       window.location.href = data.confirmation_url;
     } catch (e) {
       setMsg(e?.message || 'Не удалось создать оплату');
@@ -167,14 +203,27 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
               )}
             </div>
             {!isLifetime && (
-              <button
-                className="btn-primary"
-                onClick={handlePay}
-                disabled={loading}
-                style={{ padding: '8px 20px', fontSize: 13 }}
-              >
-                {loading ? 'Загрузка…' : isActive ? 'Продлить' : 'Оплатить'}
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                <button
+                  className="btn-primary"
+                  onClick={handlePay}
+                  disabled={loading}
+                  style={{ padding: '8px 20px', fontSize: 13 }}
+                >
+                  {loading ? 'Переход к ЮKassa…' : isActive ? 'Продлить в ЮKassa' : 'Оплатить в ЮKassa'}
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'right', maxWidth: 220, lineHeight: 1.4 }}>
+                  Карта, СБП и другие способы — через платёжный сервис{' '}
+                  <a
+                    href="https://yookassa.ru/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--text-secondary)', fontWeight: 600 }}
+                  >
+                    ЮKassa
+                  </a>
+                </span>
+              </div>
             )}
           </div>
         </div>

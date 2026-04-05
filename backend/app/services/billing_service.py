@@ -1,6 +1,7 @@
+import logging
 import os
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ from app.models.subscription import Subscription
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 
+logger = logging.getLogger(__name__)
+
 TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "5"))
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
 REMINDER_DAYS = [3, 1]
@@ -23,6 +26,20 @@ YOOKASSA_SECRET_KEY = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
 YOOKASSA_RETURN_URL = (os.getenv("YOOKASSA_RETURN_URL") or "").strip()
 YOOKASSA_WEBHOOK_SECRET = (os.getenv("YOOKASSA_WEBHOOK_SECRET") or "").strip()
 ADMIN_SECRET = (os.getenv("ADMIN_SECRET") or "").strip()
+
+
+class YooKassaRequestError(Exception):
+    """Ошибка при обращении к API ЮKassa (сеть или ответ 4xx/5xx)."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def yookassa_money_string(amount: Decimal) -> str:
+    """Строка суммы для поля amount.value (два знака после запятой), см. документацию ЮKassa."""
+    quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return format(quantized, "f")
 
 
 def utc_now() -> datetime:
@@ -163,20 +180,26 @@ def create_checkout(db: Session, user: User, amount: Decimal, return_url: str | 
         return {"payment_id": payment_id, "confirmation_url": (return_url or "/dashboard")}
 
     payload = {
-        "amount": {"value": str(amount), "currency": "RUB"},
+        "amount": {"value": yookassa_money_string(amount), "currency": "RUB"},
         "capture": True,
         "confirmation": {"type": "redirect", "return_url": return_url or YOOKASSA_RETURN_URL},
-        "description": "WB Finance Pro monthly subscription",
+        "description": "Подписка WB Finance Pro",
         "metadata": {"user_id": str(user.id)},
     }
-    response = requests.post(
-        "https://api.yookassa.ru/v3/payments",
-        auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
-        headers={"Idempotence-Key": idem},
-        json=payload,
-        timeout=20,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+            headers={"Idempotence-Key": idem},
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("ЮKassa create payment failed: %s", exc)
+        raise YooKassaRequestError(
+            "Не удалось создать платёж в ЮKassa. Проверьте ключи магазина и попробуйте снова."
+        ) from exc
     data = response.json()
     pay = Payment(
         user_id=str(user.id),
@@ -193,6 +216,63 @@ def create_checkout(db: Session, user: User, amount: Decimal, return_url: str | 
     db.commit()
     confirmation = ((data.get("confirmation") or {}).get("confirmation_url")) or (return_url or "/dashboard")
     return {"payment_id": str(data.get("id")), "confirmation_url": str(confirmation)}
+
+
+def sync_latest_yookassa_payment(db: Session, user: User) -> dict[str, Any]:
+    """
+    После return_url: опрос GET /v3/payments/{id} (как в инструкции ЮKassa), чтобы
+    активировать подписку без ожидания вебхука (вебхук остаётся основным для продакшена).
+    """
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        return {"activated": False, "payment_status": None, "detail": "yookassa_not_configured"}
+
+    pay = (
+        db.query(Payment)
+        .filter(Payment.user_id == str(user.id))
+        .filter(Payment.provider == "yookassa")
+        .filter(Payment.status.in_(["pending", "waiting_for_capture"]))
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+    if pay is None:
+        return {"activated": False, "payment_status": None, "detail": "no_pending_payment"}
+
+    pid = str(pay.provider_payment_id)
+    if pid.startswith("mock-"):
+        return {"activated": False, "payment_status": pay.status, "detail": "mock_payment"}
+
+    try:
+        response = requests.get(
+            f"https://api.yookassa.ru/v3/payments/{pid}",
+            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("ЮKassa get payment failed: %s", exc)
+        raise YooKassaRequestError(
+            "Не удалось получить статус платежа в ЮKassa. Попробуйте обновить страницу."
+        ) from exc
+
+    data = response.json()
+    st = str(data.get("status") or "")
+    paid = bool(data.get("paid"))
+
+    if st == "succeeded" and paid:
+        activate_subscription_from_payment(db, str(user.id), pid, data)
+        return {"activated": True, "payment_status": st, "detail": None}
+
+    if st == "canceled":
+        pay.status = "failed"
+        pay.raw_payload = data
+        db.commit()
+        return {"activated": False, "payment_status": st, "detail": "canceled"}
+
+    pay.raw_payload = data
+    if st:
+        pay.status = st
+    db.commit()
+    return {"activated": False, "payment_status": st or pay.status, "detail": "still_pending"}
 
 
 def activate_subscription_from_payment(db: Session, user_id: str, provider_payment_id: str, payload: dict[str, Any]) -> None:

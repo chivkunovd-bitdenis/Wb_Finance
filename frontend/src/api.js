@@ -335,6 +335,17 @@ export async function createCheckout(amount, returnUrl) {
   return res.json();
 }
 
+/** После return_url с ЮKassa: опрос статуса платежа на сервере и активация подписки. */
+export async function syncYookassaReturn() {
+  const res = await apiFetch(`${API_BASE}/billing/yookassa/sync-return`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function getBillingReminders() {
   const res = await apiFetch(`${API_BASE}/billing/reminders`, { headers: headers() });
   if (res.status === 401) throw new Error('unauthorized');

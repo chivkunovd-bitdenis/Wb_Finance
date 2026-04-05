@@ -8,14 +8,22 @@ from app.db import get_db
 from app.dependencies import get_current_user
 from app.models.reminder_log import ReminderLog
 from app.models.user import User
-from app.schemas.billing import BillingStatusResponse, CheckoutRequest, CheckoutResponse, WebhookResponse
+from app.schemas.billing import (
+    BillingStatusResponse,
+    CheckoutRequest,
+    CheckoutResponse,
+    WebhookResponse,
+    YookassaSyncReturnResponse,
+)
 from app.models.promo_code import PromoCode
 from app.services.billing_service import (
     ADMIN_SECRET,
+    YooKassaRequestError,
     create_checkout,
     get_billing_status,
     grant_lifetime,
     process_yookassa_webhook,
+    sync_latest_yookassa_payment,
 )
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -35,8 +43,24 @@ def checkout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    result = create_checkout(db, current_user, Decimal(str(body.amount)), body.return_url)
+    try:
+        result = create_checkout(db, current_user, Decimal(str(body.amount)), body.return_url)
+    except YooKassaRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
     return CheckoutResponse(**result)
+
+
+@router.post("/yookassa/sync-return", response_model=YookassaSyncReturnResponse)
+def yookassa_sync_return(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Синхронизировать последний ожидающий платёж с API ЮKassa (после redirect)."""
+    try:
+        result = sync_latest_yookassa_payment(db, current_user)
+    except YooKassaRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
+    return YookassaSyncReturnResponse(**result)
 
 
 @router.post("/webhook/yookassa", response_model=WebhookResponse, include_in_schema=False)

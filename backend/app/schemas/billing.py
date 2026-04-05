@@ -22,3 +22,11 @@ class CheckoutResponse(BaseModel):
 
 class WebhookResponse(BaseModel):
     ok: bool = True
+
+
+class YookassaSyncReturnResponse(BaseModel):
+    """Результат опроса ЮKassa после возврата пользователя на return_url."""
+
+    activated: bool
+    payment_status: str | None = None
+    detail: str | None = None

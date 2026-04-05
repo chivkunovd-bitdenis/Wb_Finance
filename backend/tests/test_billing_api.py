@@ -6,6 +6,7 @@ from app.db import get_db
 from app.dependencies import get_current_user
 from app.main import app
 from app.models.user import User
+from app.services.billing_service import YooKassaRequestError
 
 
 def _mock_get_db():
@@ -59,6 +60,33 @@ def test_billing_checkout_ok():
             r = client.post("/billing/checkout", json={"amount": 1990})
         assert r.status_code == 200
         assert r.json()["payment_id"] == "p-1"
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_billing_yookassa_sync_return_ok():
+    app.dependency_overrides[get_db] = _mock_get_db
+    app.dependency_overrides[get_current_user] = _mock_user
+    with patch("app.routers.billing.sync_latest_yookassa_payment") as mock_sync:
+        mock_sync.return_value = {"activated": True, "payment_status": "succeeded", "detail": None}
+        with TestClient(app) as client:
+            r = client.post("/billing/yookassa/sync-return")
+        assert r.status_code == 200
+        assert r.json()["activated"] is True
+        assert r.json()["payment_status"] == "succeeded"
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_billing_checkout_yookassa_upstream_error():
+    app.dependency_overrides[get_db] = _mock_get_db
+    app.dependency_overrides[get_current_user] = _mock_user
+    with patch("app.routers.billing.create_checkout") as mock_checkout:
+        mock_checkout.side_effect = YooKassaRequestError("ЮKassa недоступна")
+        with TestClient(app) as client:
+            r = client.post("/billing/checkout", json={"amount": 100})
+        assert r.status_code == 502
+        assert r.json()["detail"] == "ЮKassa недоступна"
     app.dependency_overrides.pop(get_db, None)
     app.dependency_overrides.pop(get_current_user, None)
 
