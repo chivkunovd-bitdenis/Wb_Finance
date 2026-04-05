@@ -58,7 +58,7 @@ def test_recalculate_sku_daily_ignores_nm_id_zero_rows(mock_session_local):
     )
 
     db = MagicMock()
-    db.get.return_value = SimpleNamespace(id=user_id)
+    db.get.return_value = SimpleNamespace(id=user_id, tax_rate=0.06)
 
     def _query_side_effect(model):
         q = MagicMock()
@@ -111,7 +111,7 @@ def test_recalculate_pnl_includes_nm_id_zero_rows_in_storage_and_margin(mock_ses
     )
 
     db = MagicMock()
-    db.get.return_value = SimpleNamespace(id=user_id)
+    db.get.return_value = SimpleNamespace(id=user_id, tax_rate=0.06)
 
     def _query_side_effect(model):
         q = MagicMock()
@@ -211,7 +211,7 @@ def test_recalculate_pnl_subtracts_operational_expenses(mock_session_local):
     op_exp_row = SimpleNamespace(date=date(2025, 3, 20), amount=25.5)
 
     db = MagicMock()
-    db.get.return_value = SimpleNamespace(id=user_id)
+    db.get.return_value = SimpleNamespace(id=user_id, tax_rate=0.06)
 
     def _query_side_effect(model):
         q = MagicMock()
@@ -262,7 +262,7 @@ def test_recalculate_pnl_only_operational_expenses_creates_pnl_daily(mock_sessio
     op_exp_row = SimpleNamespace(date=op_date, amount=op_amount)
 
     db = MagicMock()
-    db.get.return_value = SimpleNamespace(id=user_id)
+    db.get.return_value = SimpleNamespace(id=user_id, tax_rate=0.06)
 
     def _query_side_effect(model):
         q = MagicMock()

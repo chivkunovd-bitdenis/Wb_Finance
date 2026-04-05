@@ -28,6 +28,7 @@ function aggregateSku(rows) {
         penalties: 0,
         ads_spend: 0,
         cogs: 0,
+        tax: 0,
         margin: 0,
         order_sum: 0,
         details: [],
@@ -40,6 +41,7 @@ function aggregateSku(rows) {
     map[nm].penalties += Number(r.penalties) || 0;
     map[nm].ads_spend += Number(r.ads_spend) || 0;
     map[nm].cogs += Number(r.cogs) || 0;
+    map[nm].tax += Number(r.tax) || 0;
     map[nm].margin += Number(r.margin) || 0;
     map[nm].order_sum += Number(r.order_sum) || 0;
     map[nm].details.push({
@@ -50,6 +52,7 @@ function aggregateSku(rows) {
       penalties: Number(r.penalties) || 0,
       cogs: Number(r.cogs) || 0,
       ads_spend: Number(r.ads_spend) || 0,
+      tax: Number(r.tax) || 0,
       margin: Number(r.margin) || 0,
       order_sum: Number(r.order_sum) || 0,
     });
@@ -216,6 +219,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
             <th>Штрафы</th>
             <th>Себес</th>
             <th>% себеса</th>
+            <th>Налог</th>
             <th>Рекл</th>
             <th>% рекламы</th>
             <th>Маржа</th>
@@ -227,7 +231,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
         <tbody>
           {aggregated.length === 0 ? (
             <tr>
-              <td colSpan={17} style={{ textAlign: 'center', padding: 16 }}>
+              <td colSpan={18} style={{ textAlign: 'center', padding: 16 }}>
                 Нет данных
               </td>
             </tr>
@@ -257,6 +261,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
                   <td>{formatNum(i.penalties)}</td>
                   <td>{formatNum(i.cogs)}</td>
                   <td>{i.revenue > 0 ? ((i.cogs / i.revenue) * 100).toFixed(1) : 0}%</td>
+                  <td style={{ color: 'var(--text-secondary)' }}>{formatNum(i.tax)}</td>
                   <td>{formatNum(i.ads_spend)}</td>
                   <td>{i.revenue > 0 ? ((i.ads_spend / i.revenue) * 100).toFixed(0) : 0}%</td>
                   <td style={{ color: i.margin >= 0 ? 'var(--green)' : 'var(--red)' }}>{formatNum(i.margin)}</td>
@@ -295,6 +300,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
                         <td style={{ fontSize: 11 }}>{formatNum(dd.penalties)}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.cogs)}</td>
                         <td style={{ fontSize: 11 }}>{cogsPct.toFixed(1)}%</td>
+                        <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{formatNum(dd.tax)}</td>
                         <td style={{ fontSize: 11 }}>
                           {formatNum(dd.ads_spend)} ₽
                         </td>

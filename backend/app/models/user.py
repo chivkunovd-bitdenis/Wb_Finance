@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, String, DateTime, func
+from sqlalchemy import Boolean, Column, Numeric, String, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.base import Base, uuid_gen
@@ -13,3 +13,4 @@ class User(Base):
     wb_api_key = Column(String(512), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    tax_rate = Column(Numeric(5, 4), nullable=False, server_default="0.0600")

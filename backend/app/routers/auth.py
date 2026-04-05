@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.user import User
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse, UpdateWbApiKeyRequest
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse, UpdateWbApiKeyRequest, TaxSettingsResponse, TaxSettingsUpdate
 from app.core.security import hash_password, verify_password, create_access_token
 from app.dependencies import get_current_user
 from app.services.billing_service import redeem_promo_code, start_trial_if_needed
@@ -123,3 +123,29 @@ def update_wb_key(
         wb_api_key=current_user.wb_api_key,
         is_active=current_user.is_active,
     )
+
+
+@router.get("/settings", response_model=TaxSettingsResponse)
+def get_settings(current_user: User = Depends(get_current_user)):
+    """Вернуть пользовательские настройки (налоговая ставка)."""
+    rate = float(current_user.tax_rate) if current_user.tax_rate is not None else 0.06
+    return TaxSettingsResponse(tax_rate=rate)
+
+
+@router.put("/settings", response_model=TaxSettingsResponse)
+def update_settings(
+    body: TaxSettingsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Обновить налоговую ставку пользователя. Ставка — доля от выручки (0.06 = 6%)."""
+    if body.tax_rate < 0 or body.tax_rate > 1:
+        from fastapi import HTTPException, status as http_status
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="tax_rate должна быть в диапазоне 0–1 (0.06 = 6%)",
+        )
+    current_user.tax_rate = body.tax_rate
+    db.commit()
+    db.refresh(current_user)
+    return TaxSettingsResponse(tax_rate=float(current_user.tax_rate))

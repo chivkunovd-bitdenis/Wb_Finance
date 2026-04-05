@@ -30,3 +30,11 @@ class UserResponse(BaseModel):
 
 class UpdateWbApiKeyRequest(BaseModel):
     wb_api_key: str
+
+
+class TaxSettingsResponse(BaseModel):
+    tax_rate: float
+
+
+class TaxSettingsUpdate(BaseModel):
+    tax_rate: float

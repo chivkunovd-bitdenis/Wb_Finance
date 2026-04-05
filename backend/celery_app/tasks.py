@@ -902,6 +902,8 @@ def recalculate_pnl(user_id: str, date_from: str, date_to: str) -> dict:
 
         window_dates = sorted(dates_set)
 
+        user_tax_rate = float(user.tax_rate) if user.tax_rate is not None else TAX_RATE
+
         pnl_rows = []
         for d in window_dates:
             rev = 0.0
@@ -940,7 +942,7 @@ def recalculate_pnl(user_id: str, date_from: str, date_to: str) -> dict:
                 ads_spend += float(r.spend or 0)
 
             comm = rev - ppvz
-            tax = rev * TAX_RATE if rev > 0 else 0
+            tax = rev * user_tax_rate if rev > 0 else 0
             margin = rev - comm - logistics - penalties - storage - ads_spend - cogs - tax - op_expenses
             pnl_rows.append((d, rev, comm, logistics, penalties, storage, ads_spend, cogs, tax, op_expenses, margin))
 
@@ -991,6 +993,7 @@ def recalculate_sku_daily(user_id: str, date_from: str, date_to: str) -> dict:
         end = date.fromisoformat(date_to)
 
         cost_map = {a.nm_id: (a.cost_price or 0) for a in db.query(Article).filter(Article.user_id == user_id).all()}
+        user_tax_rate = float(user.tax_rate) if user.tax_rate is not None else TAX_RATE
 
         # (date, nm_id) -> поля витрины
         sku: dict[tuple[date, int], dict] = {}
@@ -1062,7 +1065,7 @@ def recalculate_sku_daily(user_id: str, date_from: str, date_to: str) -> dict:
         )
         for (d, nm), row in sku.items():
             rev = row["revenue"]
-            tax = rev * TAX_RATE if rev > 0 else 0
+            tax = rev * user_tax_rate if rev > 0 else 0
             margin = rev - row["commission"] - row["logistics"] - row["penalties"] - row["storage"] - row["ads_spend"] - row["cogs"] - tax
             db.add(SkuDaily(
                 user_id=user_id,

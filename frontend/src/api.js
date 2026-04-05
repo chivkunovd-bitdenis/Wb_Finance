@@ -352,3 +352,21 @@ export async function updateWbApiKey(wbApiKey) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function getTaxRate() {
+  const res = await apiFetch(`${API_BASE}/auth/settings`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function saveTaxRate(taxRate) {
+  const res = await apiFetch(`${API_BASE}/auth/settings`, {
+    method: 'PUT',
+    headers: headers(),
+    body: JSON.stringify({ tax_rate: taxRate }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

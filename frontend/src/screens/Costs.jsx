@@ -2,7 +2,105 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 
-export default function Costs({ range, refreshTrigger, cache, updateCache, onRefresh }) {
+function TaxRateBlock({ onTaxRateChange }) {
+  const [taxPct, setTaxPct] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    api
+      .getTaxRate()
+      .then((d) => {
+        const pct = Math.round(Number(d.tax_rate) * 10000) / 100;
+        setTaxPct(String(pct));
+      })
+      .catch(() => setLoadError('Не удалось загрузить ставку'));
+  }, []);
+
+  const handleSave = async () => {
+    const val = parseFloat(String(taxPct).replace(',', '.'));
+    if (Number.isNaN(val) || val < 0 || val > 100) {
+      alert('Введите корректное значение от 0 до 100');
+      return;
+    }
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.saveTaxRate(val / 100);
+      setSaved(true);
+      if (typeof onTaxRateChange === 'function') onTaxRateChange(val / 100);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      alert('Ошибка сохранения: ' + (e.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '12px 16px',
+        background: 'var(--bg-secondary)',
+        border: '0.5px solid var(--border-light)',
+        borderRadius: 'var(--radius-md)',
+        marginBottom: 16,
+      }}
+    >
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+        Налоговая ставка
+      </span>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.01"
+          value={taxPct}
+          onChange={(e) => { setTaxPct(e.target.value); setSaved(false); }}
+          style={{
+            background: 'var(--bg-primary)',
+            border: '0.5px solid var(--border-light)',
+            borderRadius: 'var(--radius-md)',
+            padding: '6px 28px 6px 10px',
+            fontSize: 13,
+            color: 'var(--text-primary)',
+            width: 80,
+            outline: 'none',
+            textAlign: 'right',
+          }}
+          placeholder="6"
+        />
+        <span
+          style={{
+            position: 'absolute',
+            right: 8,
+            fontSize: 13,
+            color: 'var(--text-tertiary)',
+            pointerEvents: 'none',
+          }}
+        >
+          %
+        </span>
+      </div>
+      <button className="btn-primary" onClick={handleSave} disabled={saving} style={{ minWidth: 90 }}>
+        {saving ? '...' : saved ? '✓ Сохранено' : 'Сохранить'}
+      </button>
+      {loadError && (
+        <span style={{ fontSize: 12, color: 'var(--red)' }}>{loadError}</span>
+      )}
+      <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 4 }}>
+        % от суммы продаж. После изменения нажмите «Обновить WB» для пересчёта.
+      </span>
+    </div>
+  );
+}
+
+export default function Costs({ range, refreshTrigger, cache, updateCache, onRefresh, onTaxRateChange }) {
   const [articles, setArticles] = useState(() => (cache?.articles && Array.isArray(cache.articles) ? cache.articles : []));
   const [costs, setCosts] = useState(() => {
     const list = cache?.articles && Array.isArray(cache.articles) ? cache.articles : [];
@@ -161,6 +259,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
 
   return (
     <div className="seb-card">
+      <TaxRateBlock onTaxRateChange={onTaxRateChange} />
       <div className="seb-toolbar">
         <h3>Себестоимость</h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

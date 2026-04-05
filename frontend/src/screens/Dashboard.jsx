@@ -119,11 +119,12 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
         acc.storage += Number(r.storage) || 0;
         acc.ads += Number(r.ads_spend) || 0;
         acc.cogs += Number(r.cogs) || 0;
+        acc.tax += Number(r.tax) || 0;
         acc.operation_expenses += Number(r.operation_expenses) || 0;
         acc.margin += Number(r.margin) || 0;
         return acc;
       },
-      { revenue: 0, commission: 0, logistics: 0, penalties: 0, storage: 0, ads: 0, cogs: 0, operation_expenses: 0, margin: 0 },
+      { revenue: 0, commission: 0, logistics: 0, penalties: 0, storage: 0, ads: 0, cogs: 0, tax: 0, operation_expenses: 0, margin: 0 },
     );
   }, [filtered]);
 
@@ -221,6 +222,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                 <th>% лог</th>
                 <th>Штрафы</th>
                 <th>Себес</th>
+                <th>Налог</th>
                 <th>Реклама</th>
                 <th>% рекл</th>
                 <th>Хран</th>
@@ -234,7 +236,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={17} style={{ textAlign: 'center', padding: 16 }}>
+                  <td colSpan={18} style={{ textAlign: 'center', padding: 16 }}>
                     Нет данных
                   </td>
                 </tr>
@@ -249,6 +251,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   const storage = Number(r.storage) || 0;
                   const opExp = Number(r.operation_expenses) || 0;
                   const cogs = Number(r.cogs) || 0;
+                  const tax = Number(r.tax) || 0;
                   const margin = Number(r.margin) || 0;
 
                   const neg = margin < 0;
@@ -270,6 +273,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                       <td>{revenue > 0 ? logPct.toFixed(1) : '0'}%</td>
                       <td>{formatNum(penalties)}</td>
                       <td>{formatNum(cogs)}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{formatNum(tax)}</td>
                       <td>{formatNum(ads)}</td>
                       <td>{revenue > 0 ? reklPct.toFixed(1) : '0'}%</td>
                       <td>{formatNum(storage)}</td>
@@ -298,6 +302,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   <td>{totals.revenue > 0 ? ((totals.logistics / totals.revenue) * 100).toFixed(1) : '0'}%</td>
                   <td>{formatNum(totals.penalties)}</td>
                   <td>{formatNum(totals.cogs)}</td>
+                  <td style={{ color: 'var(--text-secondary)' }}>{formatNum(totals.tax)}</td>
                   <td>{formatNum(totals.ads)}</td>
                   <td>{totals.revenue > 0 ? ((totals.ads / totals.revenue) * 100).toFixed(1) : '0'}%</td>
                   <td>{formatNum(totals.storage)}</td>
