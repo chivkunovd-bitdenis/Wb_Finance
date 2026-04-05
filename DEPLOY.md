@@ -142,9 +142,9 @@ docker compose ps
 
 ## Шаг 7. Миграции базы данных
 
-Контейнер **`api`** при каждом запуске сначала выполняет **`alembic upgrade head`**, затем стартует uvicorn (см. `command` в `docker-compose.yml`). Отдельный шаг после первого `docker compose up` обычно не нужен.
+Контейнер **`api`** запускается через **`docker_entrypoint_api.py`**: при необходимости выполняется **`alembic upgrade head`**, затем uvicorn (если версия в БД уже равна единственному head — шаг Alembic пропускается). См. `command` в `docker-compose.yml`.
 
-Если контейнер `api` не запущен или нужно прогнать миграции вручную:
+Миграции вручную:
 
 ```bash
 docker compose exec api alembic upgrade head
@@ -154,7 +154,15 @@ docker compose exec api alembic upgrade head
 
 Это почти всегда значит: в **`alembic_version` несколько строк**, а ревизии лежат на **одной цепочке** (например, уже записали и родителя `f1e2d3c4b5a6`, и потомка `c3d4e5f6a7b8`). Тогда и `upgrade head`, и `upgrade heads` падают.
 
-**1.** Убедитесь, что на сервере актуальный `docker-compose.yml` с **`alembic upgrade head`** (не `heads`): `git pull`.
+**1.** `git pull` и **`docker compose build api --no-cache`** (нужен скрипт `docker_entrypoint_api.py` в образе). В `docker-compose.yml` у `api` команда должна быть **`python /app/docker_entrypoint_api.py`** — при уже совпадающей версии БД и head миграции upgrade пропускается (обход ошибки overlaps).
+
+**1a.** Проверьте файл миграции налога (частая ошибка — неверный родитель → **два head** в дереве Alembic):
+
+```bash
+grep -E '^(revision|down_revision)' backend/alembic/versions/c3d4e5f6a7b8*.py
+```
+
+Должно быть `down_revision = ... f1e2d3c4b5a6` (или эквивалент). Если указан `b7c8d9e0f1a2` или иной не‑`f1e2…` — выполните `git pull` с актуального репозитория или исправьте вручную.
 
 **2.** Посмотреть версии и колонку `tax_rate` (миграция `c3d4e5f6a7b8` добавляет её в `users`):
 

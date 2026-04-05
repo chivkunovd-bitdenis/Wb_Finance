@@ -1,7 +1,7 @@
 """add tax_rate to users
 
 Revision ID: c3d4e5f6a7b8
-Revises: b7c8d9e0f1a2
+Revises: f1e2d3c4b5a6
 Create Date: 2026-04-05
 
 """
