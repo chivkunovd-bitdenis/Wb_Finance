@@ -142,13 +142,25 @@ docker compose ps
 
 ## Шаг 7. Миграции базы данных
 
-Контейнер **`api`** при каждом запуске сначала выполняет **`alembic upgrade heads`**, затем стартует uvicorn (см. `command` в `docker-compose.yml`). Отдельный шаг после первого `docker compose up` обычно не нужен.
+Контейнер **`api`** при каждом запуске сначала выполняет **`alembic upgrade head`**, затем стартует uvicorn (см. `command` в `docker-compose.yml`). Отдельный шаг после первого `docker compose up` обычно не нужен.
 
 Если контейнер `api` не запущен или нужно прогнать миграции вручную:
 
 ```bash
-docker compose exec api alembic upgrade heads
+docker compose exec api alembic upgrade head
 ```
+
+### Ошибка: `overlaps with other requested revisions`
+
+Часто из‑за **нескольких строк** в таблице `alembic_version` (в БД остались «два head»). Проверка:
+
+```bash
+docker compose exec postgres psql -U wb_finance -d wb_finance -c "SELECT * FROM alembic_version;"
+```
+
+Должна быть **одна** строка с **текущей** ревизией. Если две ревизии на **одной** линии истории (одна — предок другой), оставьте только **потомка** (более новую), либо только предка и снова выполните `alembic upgrade head` (осторожно: схема БД должна соответствовать выбранной ревизии). При сомнениях сделайте бэкап тома Postgres перед правкой.
+
+После правки: `docker compose up -d api`.
 
 ---
 

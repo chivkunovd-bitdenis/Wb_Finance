@@ -53,9 +53,10 @@ services:
       - ./backend/celery_app:/app/celery_app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
-    # Миграции до uvicorn: иначе on_event(alembic) может зависнуть/ронять процесс → Caddy 502.
+    # Миграции до uvicorn. Используем `head` (единств.), не `heads`: иначе при merge-истории
+    # возможна ошибка «overlaps with other requested revisions» и рестарт контейнера.
     command: >
-      sh -c "alembic upgrade heads && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   celery_worker:
     restart: unless-stopped
