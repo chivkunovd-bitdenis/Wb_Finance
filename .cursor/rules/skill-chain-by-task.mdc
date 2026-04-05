@@ -1,0 +1,25 @@
+---
+description: Задаёт детерминированные цепочки skills по типу задачи.
+alwaysApply: true
+---
+
+В начале работы:
+1. Определи тип задачи по формулировке (или комбинируй, если запрос содержит несколько типов).
+2. Выбери chain skills в заданном порядке.
+
+Тип -> цепочка skills:
+- `project-bootstrap` -> `project-bootstrap`
+- `new-feature` -> `new-feature` -> `write-tests` -> `self-review`
+- `bugfix` -> `bugfix` -> `write-tests` -> `self-review`
+- `refactor-safe` -> `refactor-safe` -> `self-review`
+- `design-new-screen` -> `design-new-screen` -> `design-system-apply` -> `responsive-pass` -> `self-review`
+- `design-system-apply` -> `responsive-pass` -> `self-review`
+- `responsive-pass` -> `self-review`
+- `release-prep` -> `self-review`
+
+Если в задаче требуется UI + backend:
+- сначала UI цепочку (design-* / responsive-pass),
+- затем `new-feature` или `bugfix` (в зависимости от причины),
+- затем `write-tests` (если есть новые/обновлённые бизнес-кейсы),
+- затем `self-review`.
+

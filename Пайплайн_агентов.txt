@@ -1,0 +1,184 @@
+Пайплайн агентов
+=================
+
+Цель
+-----
+Определять тип задачи, запускать нужную цепочку sub-agent'ов в правильном порядке и прогонять соответствующие skills (чеклисты/ограничения), чтобы разработка была качественной и устойчивой к регрессиям.
+
+Общая механика
+---------------
+1) `orchestrator` определяет тип задачи.
+2) `orchestrator` вызывает sub-agent'ы в детерминированном порядке.
+3) На каждом этапе sub-agent исполняет процесс из соответствующих skills (skills = чеклисты/правила).
+4) В конце `verifier` подтверждает готовность проверками.
+
+Глобальная верификация (`verifier`)
+----------------------------------
+Всегда (если доступны):
+- `ruff check .`
+- `mypy .`
+- `pytest`
+
+UI verification (только если затронут фронтенд):
+- если среди затронутых путей есть `frontend/` (или ключевые frontend-файлы/директории), в `frontend/` запустить:
+  - `npm run lint`
+  - `npm run build`
+- если зависимостей нет — выполнить `npm install` (или `npm ci`, если подходит под проект)
+
+Ветка: project-bootstrap (без кода)
+-----------------------------------
+Тип задачи: `project-bootstrap`
+Sub-agent chain:
+- `orchestrator`
+- `solution-architect`
+- `analyst`
+- `planner`
+- `verifier`
+Skills chain:
+- `project-bootstrap`
+Примечание:
+- в процессе `project-bootstrap` действует запрет на код до принятия плана.
+
+Ветка: new-feature (backend фича)
+--------------------------------
+Тип задачи: `new-feature`
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `planner`
+- `builder`
+- `test-engineer`
+- `reviewer`
+- `verifier`
+Skills chain:
+- `new-feature`
+- `write-tests`
+- `self-review`
+Если merge/release:
+- перед `verifier` добавить `release-guard` и skill `release-prep`.
+
+Ветка: bugfix (backend регрессия)
+----------------------------------
+Тип задачи: `bugfix`
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `planner`
+- `builder`
+- `test-engineer`
+- `reviewer`
+- `verifier`
+Skills chain:
+- `bugfix`
+- `write-tests`
+- `self-review`
+Если merge/release:
+- перед `verifier` добавить `release-guard` и skill `release-prep`.
+
+Ветка: refactor-safe (без изменения поведения)
+---------------------------------------------
+Тип задачи: `refactor-safe`
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `refactorer`
+- `reviewer`
+- `verifier`
+Skills chain:
+- `refactor-safe`
+- `self-review`
+
+Ветка: design-new-screen (UX/UI проектирование, КОД НЕ ПИШЕМ)
+-------------------------------------------------------------
+Тип задачи: `design-new-screen`
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `planner`
+- `reviewer`
+- `verifier`
+Skills chain:
+- `design-new-screen`
+Примечание:
+- реализация UI-кода не выполняется; результат = спецификация (states, блоки, actions, визуальная концепция).
+
+Ветка: design-system-apply + responsive-pass (реализация UI)
+-----------------------------------------------------------
+Тип задачи: реализация UI по дизайну
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `planner`
+- `frontend-ui-engineer`
+- `reviewer`
+- `verifier`
+Skills chain:
+- `design-system-apply`
+- `responsive-pass`
+- `self-review`
+
+Ветка: release-prep (подготовка к merge/release)
+-------------------------------------------------
+Тип задачи: `release-prep`
+Sub-agent chain:
+- `orchestrator`
+- `reviewer`
+- `release-guard`
+- `verifier`
+Skills chain:
+- `release-prep`
+- `self-review`
+
+Композит: "новая фича требует новый экран/вкладку"
+---------------------------------------------------
+Правило выбора:
+- UI-часть почти всегда требует design-* и frontend-ui-engineer на реализации.
+- Backend-часть добавляется ТОЛЬКО если реально меняются endpoint/service/data.
+
+1) UI-ветка (обязательная)
+Sub-agent chain:
+- `orchestrator`
+- `analyst`
+- `planner`
+- `frontend-ui-engineer`
+- `reviewer`
+Skills chain:
+- `design-new-screen`
+- `design-system-apply`
+- `responsive-pass`
+- `self-review`
+
+2) Backend-ветка (только если нужно)
+Если это backend-изменения уровня `new-feature`:
+Sub-agent chain:
+- `builder` -> `test-engineer` -> `reviewer` -> `verifier`
+Skills chain:
+- `new-feature` -> `write-tests` -> `self-review`
+
+Если это backend-изменения уровня `bugfix`:
+Sub-agent chain:
+- `builder` -> `test-engineer` -> `reviewer` -> `verifier`
+Skills chain:
+- `bugfix` -> `write-tests` -> `self-review`
+
+3) Если merge/release:
+- добавить `release-guard` и skill `release-prep` перед финальной верификацией.
+
+Набор skills по процессу (используется по веткам)
+---------------------------------------------------
+- `project-bootstrap`
+- `new-feature` / `bugfix`
+- `refactor-safe`
+- `design-new-screen` / `design-system-apply` / `responsive-pass`
+- `write-tests`
+- `self-review`
+- `release-prep`
+
+Конечный формат вывода (требование к автономности)
+------------------------------------------------
+На финальном шаге `verifier` должен явно перечислить:
+- что изменено
+- что подтверждено командами/проверками
+- что не подтверждено и почему
+- какие риски остаются
+
