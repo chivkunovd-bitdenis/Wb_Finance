@@ -18,7 +18,8 @@ backend/.env
 
 # Node / frontend build artifacts
 **/node_modules/
-frontend/dist/
+# dist коммитим — на сервере нет Node, Caddy отдаёт статику из frontend/dist
+# frontend/dist/
 frontend/test-results/
 npm-debug.log*
 yarn-debug.log*

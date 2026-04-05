@@ -5,6 +5,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     wb_api_key: str | None = None
+    promo_code: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -25,3 +26,7 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UpdateWbApiKeyRequest(BaseModel):
+    wb_api_key: str

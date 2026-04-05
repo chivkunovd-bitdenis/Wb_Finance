@@ -1,15 +1,17 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.user import User
 from app.core.security import decode_access_token
+from app.services.billing_service import require_access, start_trial_if_needed
 
 security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
@@ -40,4 +42,23 @@ def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Аккаунт деактивирован",
         )
+    # Для существующих аккаунтов (созданных до billing) запускаем trial лениво,
+    # когда у пользователя уже есть WB API key.
+    sub = start_trial_if_needed(db, user)
+    if sub in db.new or db.is_modified(sub):
+        db.commit()
+    path = request.url.path or ""
+    allow_without_access = (
+        path.startswith("/auth")
+        or path.startswith("/billing")
+        or path.startswith("/health")
+    )
+    if not allow_without_access:
+        try:
+            require_access(db, user)
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=str(exc),
+            ) from exc
     return user

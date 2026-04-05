@@ -9,7 +9,7 @@ from alembic import context
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.base import Base
-from app.models import User, Article, RawSale, RawAd, PnlDaily, FunnelDaily
+import app.models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

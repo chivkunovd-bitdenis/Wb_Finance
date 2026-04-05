@@ -18,6 +18,7 @@ class PnlDaily(Base):
     ads_spend = Column(Numeric(14, 2), nullable=True)
     cogs = Column(Numeric(14, 2), nullable=True)
     tax = Column(Numeric(14, 2), nullable=True)
+    operation_expenses = Column(Numeric(14, 2), nullable=True)
     margin = Column(Numeric(14, 2), nullable=True)
 
     __table_args__ = (UniqueConstraint("user_id", "date", name="uq_pnl_daily_user_date"),)

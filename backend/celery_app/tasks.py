@@ -11,6 +11,7 @@ from celery_app.celery import celery_app
 from sqlalchemy import delete, func
 
 from app.db import SessionLocal
+from app.core.feature_flags import is_daily_brief_enabled
 from app.models.user import User
 from app.models.article import Article
 from app.models.raw_sales import RawSale
@@ -1119,6 +1120,9 @@ def generate_daily_brief(user_id: str, date_for_str: str | None = None) -> dict:
     """
     from datetime import datetime, timezone
 
+    if not is_daily_brief_enabled():
+        return {"ok": True, "message": "disabled"}
+
     db = SessionLocal()
     try:
         d_for = (
@@ -1205,6 +1209,8 @@ def generate_all_daily_briefs() -> dict:
     - Если нужен ретрай (например, данные ещё не синкнулись) — используй POST /generate
       из фронта после того как данные появятся.
     """
+    if not is_daily_brief_enabled():
+        return {"ok": True, "message": "disabled", "users_queued": 0}
     db = SessionLocal()
     try:
         users = db.query(User).filter(User.is_active.is_(True)).all()
