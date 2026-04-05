@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -25,6 +26,8 @@ from app.services.billing_service import (
     process_yookassa_webhook,
     sync_latest_yookassa_payment,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -70,10 +73,23 @@ async def yookassa_webhook(
     x_webhook_secret: str | None = Header(default=None),
 ):
     payload = await request.json()
+    obj = payload.get("object") if isinstance(payload, dict) else None
+    event = str(payload.get("event") or "") if isinstance(payload, dict) else ""
+    payment_id = str((obj or {}).get("id") or "") if isinstance(obj, dict) else ""
+    md = obj.get("metadata") if isinstance(obj, dict) else None
+    has_user = bool(isinstance(md, dict) and md.get("user_id"))
+    logger.info(
+        "yookassa webhook: event=%s payment_id=%s has_metadata_user=%s",
+        event or "(empty)",
+        payment_id or "(none)",
+        has_user,
+    )
     try:
         process_yookassa_webhook(db, payload, x_webhook_secret)
     except ValueError as exc:
+        logger.warning("yookassa webhook rejected: %s", exc)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    logger.info("yookassa webhook: processed ok event=%s payment_id=%s", event or "(empty)", payment_id or "(none)")
     return WebhookResponse(ok=True)
 
 
