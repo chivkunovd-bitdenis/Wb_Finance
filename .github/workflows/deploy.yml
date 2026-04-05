@@ -20,13 +20,25 @@ jobs:
           script: |
             set -e
 
-            # Убедиться что папка существует и это git-репозиторий
-            if [ ! -d "/root/wb-finance/.git" ]; then
-              echo "ERROR: /root/wb-finance is not a git repo. Run first-time setup first."
-              exit 1
+            DEPLOY_DIR="/root/wb-finance"
+            REPO_URL="https://github.com/chivkunovd-bitdenis/Wb_Finance.git"
+
+            # Если папка не git-репо — клонируем заново, сохранив .env
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              echo "Not a git repo — cloning fresh..."
+              if [ -f "$DEPLOY_DIR/backend/.env" ]; then
+                cp "$DEPLOY_DIR/backend/.env" /tmp/wb_finance_env_backup
+                echo ".env backed up"
+              fi
+              rm -rf "$DEPLOY_DIR"
+              git clone "$REPO_URL" "$DEPLOY_DIR"
+              if [ -f /tmp/wb_finance_env_backup ]; then
+                cp /tmp/wb_finance_env_backup "$DEPLOY_DIR/backend/.env"
+                echo ".env restored"
+              fi
             fi
 
-            cd /root/wb-finance
+            cd "$DEPLOY_DIR"
 
             # Подтянуть последний код
             git pull origin main
