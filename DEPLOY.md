@@ -150,17 +150,41 @@ docker compose ps
 docker compose exec api alembic upgrade head
 ```
 
-### Ошибка: `overlaps with other requested revisions`
+### Ошибка: `overlaps with other requested revisions` (в т.ч. `c3d4e5f6a7b8` и `f1e2d3c4b5a6`)
 
-Часто из‑за **нескольких строк** в таблице `alembic_version` (в БД остались «два head»). Проверка:
+Это почти всегда значит: в **`alembic_version` несколько строк**, а ревизии лежат на **одной цепочке** (например, уже записали и родителя `f1e2d3c4b5a6`, и потомка `c3d4e5f6a7b8`). Тогда и `upgrade head`, и `upgrade heads` падают.
+
+**1.** Убедитесь, что на сервере актуальный `docker-compose.yml` с **`alembic upgrade head`** (не `heads`): `git pull`.
+
+**2.** Посмотреть версии и колонку `tax_rate` (миграция `c3d4e5f6a7b8` добавляет её в `users`):
 
 ```bash
 docker compose exec postgres psql -U wb_finance -d wb_finance -c "SELECT * FROM alembic_version;"
+docker compose exec postgres psql -U wb_finance -d wb_finance -c "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='tax_rate';"
 ```
 
-Должна быть **одна** строка с **текущей** ревизией. Если две ревизии на **одной** линии истории (одна — предок другой), оставьте только **потомка** (более новую), либо только предка и снова выполните `alembic upgrade head` (осторожно: схема БД должна соответствовать выбранной ревизии). При сомнениях сделайте бэкап тома Postgres перед правкой.
+**3.** Привести таблицу к **одной** строке (перед правкой — бэкап БД, если есть ценные данные):
 
-После правки: `docker compose up -d api`.
+- Если колонка **`tax_rate` уже есть** — схема соответствует ревизии **`c3d4e5f6a7b8`**. Тогда:
+
+```bash
+docker compose exec postgres psql -U wb_finance -d wb_finance -c "DELETE FROM alembic_version; INSERT INTO alembic_version (version_num) VALUES ('c3d4e5f6a7b8');"
+```
+
+- Если **`tax_rate` нет** — оставьте в `alembic_version` только **`f1e2d3c4b5a6`** (удалите лишние строки), затем поднимите API — выполнится миграция на `c3d4e5f6a7b8`:
+
+```bash
+docker compose exec postgres psql -U wb_finance -d wb_finance -c "DELETE FROM alembic_version; INSERT INTO alembic_version (version_num) VALUES ('f1e2d3c4b5a6');"
+```
+
+**4.** Перезапуск:
+
+```bash
+docker compose up -d api
+docker compose logs api --tail 30
+```
+
+Ожидается одна строка Alembic без `FAILED`, затем `Application startup complete` / Uvicorn.
 
 ---
 
