@@ -41,12 +41,17 @@ _QUEUE_UNAVAILABLE = (
 )
 
 
-def _apply_async_or_503(signature, *, context: str):
-    """Постановка Celery-задачи; при недоступном брокере — 503 с понятным текстом."""
+def _chord_or_503(header: list, body, *, context: str):
+    """
+    Постановка chord(header)(body) в очередь.
+
+    В Celery 5 вызов chord(header)(body) уже выполняет apply_async и возвращает
+    AsyncResult; повторный .apply_async() не нужен и даёт AttributeError.
+    """
     try:
-        return signature.apply_async()
+        return chord(header)(body)
     except Exception as exc:
-        logger.exception("Celery apply_async failed (%s): %s", context, exc)
+        logger.exception("Celery chord failed (%s): %s", context, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_QUEUE_UNAVAILABLE,
@@ -165,13 +170,12 @@ def trigger_sync_period(
     """
     _require_wb_key(current_user)
     user_id = str(current_user.id)
-    async_result = _apply_async_or_503(
-        chord(
-            [
-                sync_sales.s(user_id, body.date_from, body.date_to),
-                sync_ads.s(user_id, body.date_from, body.date_to),
-            ]
-        )(after_period_sync_enqueue_funnel.s(user_id, body.date_from, body.date_to)),
+    async_result = _chord_or_503(
+        [
+            sync_sales.s(user_id, body.date_from, body.date_to),
+            sync_ads.s(user_id, body.date_from, body.date_to),
+        ],
+        after_period_sync_enqueue_funnel.s(user_id, body.date_from, body.date_to),
         context="sync_period",
     )
     return SyncTaskResponse(
@@ -262,10 +266,9 @@ def trigger_initial_sync(
 
     user_id = str(current_user.id)
     # chord: нельзя.delay(sync_funnel) сразу — воронке нужны articles из sales/ads
-    async_result = _apply_async_or_503(
-        chord([sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)])(
-            after_initial_sync_enqueue_funnel.s(user_id)
-        ),
+    async_result = _chord_or_503(
+        [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
+        after_initial_sync_enqueue_funnel.s(user_id),
         context="sync_initial",
     )
 
@@ -298,10 +301,9 @@ def trigger_recent_sync(
     dt = date_to.isoformat()
 
     user_id = str(current_user.id)
-    async_result = _apply_async_or_503(
-        chord([sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)])(
-            after_period_sync_enqueue_funnel.s(user_id, df, dt)
-        ),
+    async_result = _chord_or_503(
+        [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
+        after_period_sync_enqueue_funnel.s(user_id, df, dt),
         context="sync_recent",
     )
 

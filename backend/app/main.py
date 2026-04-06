@@ -1,3 +1,5 @@
+import app.env_bootstrap  # noqa: F401 — .env до импорта роутеров/сервисов
+
 import os
 
 from fastapi import FastAPI

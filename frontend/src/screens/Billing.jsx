@@ -84,7 +84,17 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
     try {
       const returnUrl = `${window.location.origin}/billing?payment=return`;
       const data = await api.createCheckout(PLAN_PRICE, returnUrl);
-      window.location.href = data.confirmation_url;
+      const url = String(data.confirmation_url || '').trim();
+      // Mock API без ключей ЮKassa раньше отдавал тот же return_url → ложный «возврат» и сброс UI.
+      if (!url || url === returnUrl) {
+        setMsg(
+          'Переход к оплате невозможен: на сервере не заданы YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY в backend/.env '
+          + 'или платёж вернулся без ссылки на ЮKassa. Проверьте настройки магазина.',
+        );
+        setMsgType('error');
+        return;
+      }
+      window.location.assign(url);
     } catch (e) {
       setMsg(e?.message || 'Не удалось создать оплату');
       setMsgType('error');
@@ -205,6 +215,7 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
             {!isLifetime && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                 <button
+                  type="button"
                   className="btn-primary"
                   onClick={handlePay}
                   disabled={loading}

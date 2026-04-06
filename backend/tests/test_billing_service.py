@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,8 @@ from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 from app.services.billing_service import (
     collect_due_reminders,
+    create_checkout,
+    get_billing_status,
     process_yookassa_webhook,
     require_access,
     sync_latest_yookassa_payment,
@@ -22,6 +25,23 @@ def test_yookassa_money_string_two_fractional_digits() -> None:
     assert yookassa_money_string(Decimal("99.999")) == "100.00"
 
 
+def test_create_checkout_without_yookassa_keys_empty_confirmation_url() -> None:
+    """Без ключей ЮKassa — mock-платёж, без return_url в ответе (иначе фронт «крутится» на месте)."""
+    sub = MagicMock()
+    sub.id = "sub-mock"
+    db = MagicMock()
+    user = User(id="u1", email="a@b.c", password_hash="x", wb_api_key="k", is_active=True)
+    with (
+        patch("app.services.billing_service.get_or_create_subscription", return_value=sub),
+        patch.dict(os.environ, {"YOOKASSA_SHOP_ID": "", "YOOKASSA_SECRET_KEY": ""}),
+    ):
+        out = create_checkout(db, user, Decimal("1490"), "https://app.example/billing?payment=return")
+    assert out["confirmation_url"] == ""
+    assert out["payment_id"].startswith("mock-")
+    db.add.assert_called_once()
+    db.commit.assert_called()
+
+
 def test_sync_latest_yookassa_payment_no_pending() -> None:
     db = MagicMock()
     end = MagicMock()
@@ -31,9 +51,7 @@ def test_sync_latest_yookassa_payment_no_pending() -> None:
     chain.order_by.return_value = end
     db.query.return_value = chain
     user = User(id="u1", email="a@b.c", password_hash="x", wb_api_key=None, is_active=True)
-    with patch("app.services.billing_service.YOOKASSA_SHOP_ID", "shop"), patch(
-        "app.services.billing_service.YOOKASSA_SECRET_KEY", "sec"
-    ):
+    with patch.dict(os.environ, {"YOOKASSA_SHOP_ID": "shop", "YOOKASSA_SECRET_KEY": "sec"}):
         out = sync_latest_yookassa_payment(db, user)
     assert out["activated"] is False
     assert out["detail"] == "no_pending_payment"
@@ -53,9 +71,9 @@ def test_sync_latest_yookassa_payment_activates_on_succeeded() -> None:
     db.query.return_value = chain
     user = User(id="u1", email="a@b.c", password_hash="x", wb_api_key=None, is_active=True)
 
-    with patch("app.services.billing_service.YOOKASSA_SHOP_ID", "shop"), patch(
-        "app.services.billing_service.YOOKASSA_SECRET_KEY", "sec"
-    ), patch("app.services.billing_service.requests.get") as mock_get:
+    with patch.dict(os.environ, {"YOOKASSA_SHOP_ID": "shop", "YOOKASSA_SECRET_KEY": "sec"}), patch(
+        "app.services.billing_service.requests.get"
+    ) as mock_get:
         mock_get.return_value.raise_for_status = MagicMock()
         mock_get.return_value.json.return_value = {
             "id": "ym-pay-1",
@@ -136,3 +154,22 @@ def test_process_yookassa_webhook_duplicate_is_ignored():
         process_yookassa_webhook(db, payload, None)
         process_yookassa_webhook(db, payload, None)
         mock_activate.assert_called_once()
+
+
+def test_get_billing_status_days_left_ceil_for_active_period() -> None:
+    """
+    Регрессия: сразу после оплаты может показывать 29 вместо 30, потому что timedelta.days
+    округляет вниз. Должны показывать потолок по суткам.
+    """
+    db = MagicMock()
+    user = User(id="u1", email="u1@example.com", password_hash="h", wb_api_key="k", is_active=True)
+    now = datetime(2026, 4, 6, 12, 0, tzinfo=UTC)
+    sub = Subscription(user_id="u1", status="active", current_period_end=now + timedelta(days=30) - timedelta(seconds=1))
+    with (
+        patch("app.services.billing_service._is_lifetime", return_value=False),
+        patch("app.services.billing_service.get_or_create_subscription", return_value=sub),
+        patch("app.services.billing_service.utc_now", return_value=now),
+    ):
+        out = get_billing_status(db, user)
+    assert out["subscription_status"] == "active"
+    assert out["days_left"] == 30

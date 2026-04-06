@@ -180,9 +180,8 @@ def test_sync_period_enqueues_chord_sales_ads_then_funnel(
     mock_after_period,
     client_sync: TestClient,
 ):
-    mock_tail = MagicMock()
-    mock_tail.apply_async.return_value = MagicMock(id="task-period-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_tail)
+    mock_async_result = MagicMock(id="task-period-chord")
+    mock_chord.return_value = MagicMock(return_value=mock_async_result)
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -273,9 +272,8 @@ def test_sync_initial_uses_last_30_days(
 
     mock_date.side_effect = _date_ctor
 
-    mock_tail = MagicMock()
-    mock_tail.apply_async.return_value = MagicMock(id="task-initial-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_tail)
+    mock_async_result = MagicMock(id="task-initial-chord")
+    mock_chord.return_value = MagicMock(return_value=mock_async_result)
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -331,9 +329,8 @@ def test_sync_recent_updates_last_7_days(
 
     mock_date.side_effect = _date_ctor
 
-    mock_tail = MagicMock()
-    mock_tail.apply_async.return_value = MagicMock(id="task-recent-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_tail)
+    mock_async_result = MagicMock(id="task-recent-chord")
+    mock_chord.return_value = MagicMock(return_value=mock_async_result)
 
     token = _get_token(client_sync)
     r = client_sync.post(

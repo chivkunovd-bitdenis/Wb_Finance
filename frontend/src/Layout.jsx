@@ -341,6 +341,10 @@ export default function Layout() {
     return 'Дашборд';
   }, [location.pathname]);
 
+  /** Ошибка первичной синхронизации не должна блокировать «Подписку» и оплату. */
+  const isBillingPath = (location.pathname || '').startsWith('/billing');
+  const blockContentForSyncError = Boolean(initialError) && !isBillingPath;
+
   useEffect(() => {
     loadBillingStatus();
   }, [loadBillingStatus]);
@@ -398,16 +402,39 @@ export default function Layout() {
                 Мы загружаем последние 30 дней. Это может занять несколько минут, в зависимости от объёма данных.
               </p>
             </div>
-          ) : initialError ? (
+          ) : blockContentForSyncError ? (
             <div style={{ padding: 16, border: '1px solid rgba(0,0,0,0.12)', borderRadius: 12, maxWidth: 720, margin: '0 auto' }}>
               <div style={{ fontWeight: 700, marginBottom: 6 }}>Синхронизация не стартовала или зависла</div>
               <div>{initialError}</div>
               <div style={{ marginTop: 10, color: 'var(--text-tertiary)', fontSize: 12 }}>
                 Быстрый чек: открой <code>{`${window.location.origin}/docs`}</code> и попробуй <code>POST /sync/initial</code>.
               </div>
+              <div style={{ marginTop: 12, fontSize: 13 }}>
+                Раздел <strong>Подписка</strong> в боковом меню открывается даже при этой ошибке — можно оплатить доступ.
+              </div>
             </div>
           ) : (
             <>
+              {initialError && isBillingPath && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: 16,
+                    padding: '12px 14px',
+                    borderRadius: 8,
+                    background: 'var(--red-light)',
+                    color: 'var(--red)',
+                    border: '0.5px solid #fca5a5',
+                    fontSize: 13,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <strong>Загрузка данных WB:</strong> {initialError}
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
+                    Оплата и раздел «Подписка» ниже работают. Дашборд станет доступен после успешной синхронизации.
+                  </div>
+                </div>
+              )}
               {recentSyncing && (
                 <div
                   style={{

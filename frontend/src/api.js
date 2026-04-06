@@ -27,7 +27,21 @@ function getToken() {
 /** Человекочитаемый текст из тела ошибки FastAPI (`detail` или validation). */
 export function parseApiErrorText(bodyText, status) {
   const raw = (bodyText || '').trim();
-  if (!raw) return status ? `Ошибка сервера (${status})` : 'Ошибка сервера';
+  if (!raw) {
+    if (status === 502) {
+      return (
+        '502 Bad Gateway: прокси не получил ответ от API. Проверьте, что контейнер api запущен '
+        + '(docker compose ps) и перезапустите: docker compose up -d api'
+      );
+    }
+    if (status === 503) {
+      return (
+        'Сервис временно недоступен (503). Часто это Redis/Celery — проверьте docker compose ps '
+        + '(redis, celery_worker) и логи api.'
+      );
+    }
+    return status ? `Ошибка сервера (${status})` : 'Ошибка сервера';
+  }
   try {
     const j = JSON.parse(raw);
     if (typeof j.detail === 'string') return j.detail;
@@ -251,7 +265,10 @@ export async function triggerRecentSync() {
     headers: headers(),
   });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
   return res.json();
 }
 
@@ -331,7 +348,10 @@ export async function createCheckout(amount, returnUrl) {
     body: JSON.stringify({ amount, return_url: returnUrl || null }),
   });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
   return res.json();
 }
 

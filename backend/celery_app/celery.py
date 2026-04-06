@@ -1,3 +1,5 @@
+import app.env_bootstrap  # noqa: F401 — .env до чтения os.getenv ниже
+
 import os
 
 from celery import Celery

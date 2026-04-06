@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from math import ceil
 from typing import Any
 from uuid import uuid4
 
@@ -21,10 +22,22 @@ logger = logging.getLogger(__name__)
 TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "5"))
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
 REMINDER_DAYS = [3, 1]
-YOOKASSA_SHOP_ID = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
-YOOKASSA_SECRET_KEY = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
-YOOKASSA_RETURN_URL = (os.getenv("YOOKASSA_RETURN_URL") or "").strip()
-YOOKASSA_WEBHOOK_SECRET = (os.getenv("YOOKASSA_WEBHOOK_SECRET") or "").strip()
+def _yookassa_shop_id() -> str:
+    return (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+
+
+def _yookassa_secret_key() -> str:
+    return (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+
+
+def _yookassa_return_url() -> str:
+    return (os.getenv("YOOKASSA_RETURN_URL") or "").strip()
+
+
+def _yookassa_webhook_secret() -> str:
+    return (os.getenv("YOOKASSA_WEBHOOK_SECRET") or "").strip()
+
+
 ADMIN_SECRET = (os.getenv("ADMIN_SECRET") or "").strip()
 
 
@@ -132,7 +145,10 @@ def get_billing_status(db: Session, user: User) -> dict[str, Any]:
     active = valid_until is not None and valid_until > now and sub.status in {"trial", "active"}
     days_left = 0
     if valid_until:
-        days_left = max(0, (valid_until - now).days)
+        # Показываем "дней осталось" как потолок по суткам, чтобы сразу после оплаты
+        # (когда прошло, например, несколько минут) пользователь видел 30, а не 29.
+        seconds_left = (valid_until - now).total_seconds()
+        days_left = max(0, int(ceil(seconds_left / 86_400)))
     return {
         "subscription_status": sub.status,
         "trial_ends_at": sub.trial_ends_at.isoformat() if sub.trial_ends_at else None,
@@ -162,7 +178,7 @@ def require_access(db: Session, user: User) -> None:
 def create_checkout(db: Session, user: User, amount: Decimal, return_url: str | None = None) -> dict[str, str]:
     sub = get_or_create_subscription(db, str(user.id))
     idem = str(uuid4())
-    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    if not _yookassa_shop_id() or not _yookassa_secret_key():
         payment_id = f"mock-{uuid4()}"
         pay = Payment(
             user_id=str(user.id),
@@ -177,29 +193,47 @@ def create_checkout(db: Session, user: User, amount: Decimal, return_url: str | 
         )
         db.add(pay)
         db.commit()
-        return {"payment_id": payment_id, "confirmation_url": (return_url or "/dashboard")}
+        # Не подставлять return_url: фронт редиректит на ЮKassa; тот же URL вызывает
+        # /billing?payment=return и выглядит как «сброс страницы» без оплаты.
+        logger.warning("create_checkout: ЮKassa не настроена — mock-платёж %s, confirmation_url пустой", payment_id)
+        return {"payment_id": payment_id, "confirmation_url": ""}
 
     payload = {
         "amount": {"value": yookassa_money_string(amount), "currency": "RUB"},
         "capture": True,
-        "confirmation": {"type": "redirect", "return_url": return_url or YOOKASSA_RETURN_URL},
+        "confirmation": {"type": "redirect", "return_url": return_url or _yookassa_return_url()},
         "description": "Подписка WB Finance Pro",
         "metadata": {"user_id": str(user.id)},
     }
     try:
         response = requests.post(
             "https://api.yookassa.ru/v3/payments",
-            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+            auth=(_yookassa_shop_id(), _yookassa_secret_key()),
             headers={"Idempotence-Key": idem},
             json=payload,
             timeout=20,
         )
         response.raise_for_status()
     except requests.RequestException as exc:
-        logger.warning("ЮKassa create payment failed: %s", exc)
-        raise YooKassaRequestError(
-            "Не удалось создать платёж в ЮKassa. Проверьте ключи магазина и попробуйте снова."
-        ) from exc
+        detail = "Не удалось создать платёж в ЮKassa. Проверьте ключи магазина и попробуйте снова."
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            logger.warning(
+                "ЮKassa POST /v3/payments HTTP %s: %s",
+                resp.status_code,
+                (resp.text or "")[:800],
+            )
+            try:
+                err_json = resp.json()
+                if isinstance(err_json, dict):
+                    desc = err_json.get("description")
+                    if isinstance(desc, str) and desc.strip():
+                        detail = f"ЮKassa: {desc.strip()}"
+            except ValueError:
+                pass
+        else:
+            logger.warning("ЮKassa create payment failed (no response): %s", exc)
+        raise YooKassaRequestError(detail) from exc
     data = response.json()
     pay = Payment(
         user_id=str(user.id),
@@ -223,7 +257,7 @@ def sync_latest_yookassa_payment(db: Session, user: User) -> dict[str, Any]:
     После return_url: опрос GET /v3/payments/{id} (как в инструкции ЮKassa), чтобы
     активировать подписку без ожидания вебхука (вебхук остаётся основным для продакшена).
     """
-    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    if not _yookassa_shop_id() or not _yookassa_secret_key():
         return {"activated": False, "payment_status": None, "detail": "yookassa_not_configured"}
 
     pay = (
@@ -244,7 +278,7 @@ def sync_latest_yookassa_payment(db: Session, user: User) -> dict[str, Any]:
     try:
         response = requests.get(
             f"https://api.yookassa.ru/v3/payments/{pid}",
-            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+            auth=(_yookassa_shop_id(), _yookassa_secret_key()),
             timeout=20,
         )
         response.raise_for_status()
@@ -294,7 +328,8 @@ def activate_subscription_from_payment(db: Session, user_id: str, provider_payme
 
 
 def process_yookassa_webhook(db: Session, payload: dict[str, Any], signature: str | None) -> None:
-    if YOOKASSA_WEBHOOK_SECRET and signature != YOOKASSA_WEBHOOK_SECRET:
+    wh_secret = _yookassa_webhook_secret()
+    if wh_secret and signature != wh_secret:
         raise ValueError("Invalid webhook signature")
     event = str(payload.get("event") or "")
     obj = payload.get("object") or {}
