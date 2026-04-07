@@ -38,6 +38,30 @@ def _yookassa_webhook_secret() -> str:
     return (os.getenv("YOOKASSA_WEBHOOK_SECRET") or "").strip()
 
 
+def _yookassa_require_receipt() -> bool:
+    return (os.getenv("YOOKASSA_REQUIRE_RECEIPT") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _yookassa_vat_code() -> int:
+    raw = (os.getenv("YOOKASSA_VAT_CODE") or "").strip()
+    if not raw:
+        return 1  # no VAT
+    try:
+        return int(raw)
+    except ValueError:
+        return 1
+
+
+def _yookassa_tax_system_code() -> int | None:
+    raw = (os.getenv("YOOKASSA_TAX_SYSTEM_CODE") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 ADMIN_SECRET = (os.getenv("ADMIN_SECRET") or "").strip()
 
 
@@ -198,13 +222,29 @@ def create_checkout(db: Session, user: User, amount: Decimal, return_url: str | 
         logger.warning("create_checkout: ЮKassa не настроена — mock-платёж %s, confirmation_url пустой", payment_id)
         return {"payment_id": payment_id, "confirmation_url": ""}
 
-    payload = {
+    payload: dict[str, Any] = {
         "amount": {"value": yookassa_money_string(amount), "currency": "RUB"},
         "capture": True,
         "confirmation": {"type": "redirect", "return_url": return_url or _yookassa_return_url()},
         "description": "Подписка WB Finance Pro",
         "metadata": {"user_id": str(user.id)},
     }
+    if _yookassa_require_receipt():
+        receipt: dict[str, Any] = {
+            "customer": {"email": str(user.email)},
+            "items": [
+                {
+                    "description": "Подписка WB Finance Pro",
+                    "quantity": "1.00",
+                    "amount": {"value": yookassa_money_string(amount), "currency": "RUB"},
+                    "vat_code": _yookassa_vat_code(),
+                }
+            ],
+        }
+        tsc = _yookassa_tax_system_code()
+        if tsc is not None:
+            receipt["tax_system_code"] = tsc
+        payload["receipt"] = receipt
     try:
         response = requests.post(
             "https://api.yookassa.ru/v3/payments",

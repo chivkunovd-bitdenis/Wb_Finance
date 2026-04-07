@@ -42,6 +42,36 @@ def test_create_checkout_without_yookassa_keys_empty_confirmation_url() -> None:
     db.commit.assert_called()
 
 
+def test_create_checkout_includes_receipt_when_required() -> None:
+    db = MagicMock()
+    sub = MagicMock()
+    sub.id = "sub-mock"
+    user = User(id="u1", email="u1@example.com", password_hash="x", wb_api_key="k", is_active=True)
+
+    with (
+        patch("app.services.billing_service.get_or_create_subscription", return_value=sub),
+        patch.dict(
+            os.environ,
+            {
+                "YOOKASSA_SHOP_ID": "shop",
+                "YOOKASSA_SECRET_KEY": "sec",
+                "YOOKASSA_REQUIRE_RECEIPT": "true",
+                "YOOKASSA_VAT_CODE": "1",
+            },
+        ),
+        patch("app.services.billing_service.requests.post") as mock_post,
+    ):
+        mock_post.return_value.raise_for_status = MagicMock()
+        mock_post.return_value.json.return_value = {"id": "p1", "status": "pending", "confirmation": {"confirmation_url": "u"}}
+        _ = create_checkout(db, user, Decimal("1490"), "https://app.example/billing?payment=return")
+
+    (_, kwargs) = mock_post.call_args
+    sent = kwargs["json"]
+    assert "receipt" in sent
+    assert sent["receipt"]["customer"]["email"] == "u1@example.com"
+    assert sent["receipt"]["items"][0]["vat_code"] == 1
+
+
 def test_sync_latest_yookassa_payment_no_pending() -> None:
     db = MagicMock()
     end = MagicMock()
