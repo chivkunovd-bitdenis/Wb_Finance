@@ -17,7 +17,7 @@ function pct1(value) {
   return (value * 100).toFixed(1) + '%';
 }
 
-export default function Funnel({ range, refreshTrigger, cache, updateCache }) {
+export default function Funnel({ range, refreshTrigger, cache, updateCache, dashboardState }) {
   const { dateFrom, dateTo } = range || {};
 
   const [rows, setRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
@@ -73,7 +73,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache }) {
       .finally(() => setLoadingSku(false));
   }, [dateFrom, dateTo, refreshTrigger, updateCache]);
 
-  const showFullLoader = (loading && rows.length === 0) || (loadingSku && skuRows.length === 0);
+  const showFullLoader = loading || loadingSku;
 
   const nmIdToSubject = useMemo(() => {
     const map = {};
@@ -220,10 +220,40 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache }) {
   };
 
   if (showFullLoader) {
+    const fb = dashboardState?.funnel_ytd_backfill;
+    const progressText = fb
+      ? [
+          fb.status ? `Статус: ${fb.status}` : null,
+          fb.through_date ? `до ${new Date(fb.through_date + 'T12:00:00').toLocaleDateString('ru')}` : null,
+          fb.last_completed_date ? `сейчас: ${new Date(fb.last_completed_date + 'T12:00:00').toLocaleDateString('ru')}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
     return (
       <div className="loader-center">
         <div className="loader-spinner" />
-        <p>Загрузка данных...</p>
+        <p style={{ fontWeight: 700 }}>Загружаем воронку…</p>
+        <p style={{ color: 'var(--text-tertiary)', fontSize: 12, marginTop: 0 }}>
+          Данные догружаются в фоне и могут появляться не сразу.
+        </p>
+        {progressText ? (
+          <p style={{ color: 'var(--text-tertiary)', fontSize: 12, marginTop: 6 }}>{progressText}</p>
+        ) : null}
+        {fb?.status === 'error' && fb?.error_message ? (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 10,
+              border: '1px solid var(--red)',
+              borderRadius: 10,
+              color: 'var(--red)',
+              maxWidth: 720,
+            }}
+          >
+            Догрузка воронки остановилась: {fb.error_message}
+          </div>
+        ) : null}
       </div>
     );
   }

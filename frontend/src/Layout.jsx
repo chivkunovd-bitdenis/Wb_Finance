@@ -551,7 +551,7 @@ export default function Layout() {
                 />
                 <Route
                   path="/funnel"
-                  element={<Funnel range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />}
+                  element={<Funnel range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} dashboardState={dashboardState} />}
                 />
                 <Route
                   path="/costs"

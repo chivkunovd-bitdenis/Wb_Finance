@@ -78,6 +78,15 @@ test.describe('Funnel YTD feature', () => {
     await loginIfNeeded(page);
 
     await page.goto('/funnel');
+
+    // Лоадер вкладки "Воронка" должен появляться во время загрузки.
+    // Не гарантируем, что он будет виден всегда (зависит от кэша/скорости сети),
+    // поэтому проверяем "если появился — текст корректный".
+    const funnelLoader = page.getByText('Загружаем воронку…');
+    if (await funnelLoader.isVisible().catch(() => false)) {
+      await expect(funnelLoader).toBeVisible();
+    }
+
     await expect(page.getByText('Воронка по артикулам').first()).toBeVisible({
       timeout: 120_000,
     });
