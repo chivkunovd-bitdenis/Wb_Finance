@@ -194,7 +194,7 @@ def trigger_funnel_backfill_ytd(
     Использует POST /analytics/v3/sales-funnel/products по одному дню (агрегаты), чанки nmIds.
     """
     _require_wb_key(current_user)
-    y = date.today().year
+    y = 2026
     row = (
         db.query(FunnelBackfillState)
         .filter(

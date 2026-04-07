@@ -11,6 +11,7 @@
 """
 import os
 from datetime import date
+from datetime import timedelta
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -135,6 +136,43 @@ def test_dashboard_state_structure_and_has_data_true(authenticated_client):
     assert data["has_2025"] is True
     assert data["has_2026"] is False
     assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
+
+
+def test_dashboard_state_autostarts_funnel_backfill_when_yesterday_missing(authenticated_client):
+    """
+    Регрессия: при входе в приложение, если за вчера нет строк funnel_daily,
+    /dashboard/state должен автостартовать backfill (weekly→daily), не блокируя пользователя.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # Есть продажи в диапазоне backfill, но за вчера funnel_daily отсутствует.
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=yesterday,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_funnel_ytd_step.delay") as mock_delay:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_delay.assert_called_once()
+        args, _kwargs = mock_delay.call_args
+        assert args[0] == user_id
+        assert args[1] == 2026
 
 
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):

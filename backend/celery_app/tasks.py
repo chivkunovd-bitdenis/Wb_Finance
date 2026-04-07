@@ -9,6 +9,7 @@ from typing import cast
 import requests
 from celery_app.celery import celery_app
 from sqlalchemy import delete, func
+from sqlalchemy.dialects.postgresql import insert
 
 from app.db import SessionLocal
 from app.core.feature_flags import is_daily_brief_enabled
@@ -41,6 +42,92 @@ FUNNEL_YTD_429_RETRY_BASE_SEC = 90
 FUNNEL_YTD_429_RETRY_MAX_SEC = 1800
 FUNNEL_YTD_429_RETRY_LIMIT = 12
 FUNNEL_YTD_HTTP_RETRY_CODES = {429, 500, 502, 503, 504}
+
+FUNNEL_BACKFILL_START_DATE = date(2026, 1, 1)
+
+
+def _funnel_nm_ids(db, *, user_id: str, date_from: date, date_to: date) -> list[int]:
+    """
+    Список nm_id для запросов funnel.
+
+    Основной источник: articles.
+    Fallback: raw_sales/raw_ads — если articles ещё пустой, но данные уже есть.
+    """
+    nm_ids = sorted(
+        {
+            int(a.nm_id)
+            for a in db.query(Article).filter(Article.user_id == user_id).all()
+            if a.nm_id is not None and int(a.nm_id) > 0
+        }
+    )
+    if nm_ids:
+        return nm_ids
+
+    sales_nm = {
+        int(x[0])
+        for x in db.query(RawSale.nm_id)
+        .filter(
+            RawSale.user_id == user_id,
+            RawSale.date >= date_from,
+            RawSale.date <= date_to,
+        )
+        .distinct()
+        .all()
+        if x and x[0] is not None and int(x[0]) > 0
+    }
+    ads_nm = {
+        int(x[0])
+        for x in db.query(RawAd.nm_id)
+        .filter(
+            RawAd.user_id == user_id,
+            RawAd.date >= date_from,
+            RawAd.date <= date_to,
+            RawAd.nm_id.isnot(None),
+        )
+        .distinct()
+        .all()
+        if x and x[0] is not None and int(x[0]) > 0
+    }
+    return sorted(sales_nm | ads_nm)
+
+
+def _funnel_insert_only(db, rows: list[dict], *, user_id: str) -> int:
+    """
+    Записать funnel rows в funnel_daily, не перетирая существующие данные.
+
+    Идемпотентность и защита от гонок обеспечиваются unique constraint + ON CONFLICT DO NOTHING.
+    """
+    if not rows:
+        return 0
+    values: list[dict] = []
+    for r in rows:
+        try:
+            d = date.fromisoformat(str(r["date"])[:10])
+            nm_id = int(r["nm_id"])
+        except Exception:
+            continue
+        values.append(
+            {
+                "user_id": user_id,
+                "date": d,
+                "nm_id": nm_id,
+                "vendor_code": r.get("vendor_code"),
+                "open_count": r.get("open_count", 0),
+                "cart_count": r.get("cart_count", 0),
+                "order_count": r.get("order_count", 0),
+                "order_sum": r.get("order_sum"),
+                "buyout_percent": r.get("buyout_percent"),
+                "cr_to_cart": r.get("cr_to_cart"),
+                "cr_to_order": r.get("cr_to_order"),
+            }
+        )
+    if not values:
+        return 0
+    stmt = insert(FunnelDaily).values(values)
+    stmt = stmt.on_conflict_do_nothing(index_elements=["user_id", "date", "nm_id"])
+    res = db.execute(stmt)
+    # rowcount is driver-dependent; fall back to len(values) if None.
+    return int(res.rowcount) if getattr(res, "rowcount", None) is not None else len(values)
 
 
 def _retry429_count(raw: str | None) -> int:
@@ -382,20 +469,15 @@ def sync_funnel(
         else:
             start_s, end_s = _default_funnel_dates()
 
-        nm_ids = [a.nm_id for a in db.query(Article).filter(Article.user_id == user_id).all()]
+        start_d = date.fromisoformat(start_s)
+        end_d = date.fromisoformat(end_s)
+        nm_ids = _funnel_nm_ids(db, user_id=user_id, date_from=start_d, date_to=end_d)
         if not nm_ids:
             return {"ok": True, "count": 0}
 
         rows = fetch_funnel(start_s, end_s, nm_ids, user.wb_api_key.strip())
         if not rows:
-            db.execute(
-                delete(FunnelDaily).where(
-                    FunnelDaily.user_id == user_id,
-                    FunnelDaily.date >= date.fromisoformat(start_s),
-                    FunnelDaily.date <= date.fromisoformat(end_s),
-                )
-            )
-            db.commit()
+            # Важно: пустой ответ WB не должен стирать уже накопленную витрину.
             return {"ok": True, "count": 0}
 
         # Если Wildberries вернул subject_name в ответе funnel — сохраним его в articles.
@@ -414,28 +496,7 @@ def sync_funnel(
                 if nm_i not in subject_by_nm:
                     subject_by_nm[nm_i] = subject
 
-        db.execute(
-            delete(FunnelDaily).where(
-                FunnelDaily.user_id == user_id,
-                FunnelDaily.date >= date.fromisoformat(start_s),
-                FunnelDaily.date <= date.fromisoformat(end_s),
-            )
-        )
-        for r in rows:
-            fd = FunnelDaily(
-                user_id=user_id,
-                date=date.fromisoformat(r["date"]),
-                nm_id=int(r["nm_id"]),
-                vendor_code=r.get("vendor_code"),
-                open_count=r.get("open_count", 0),
-                cart_count=r.get("cart_count", 0),
-                order_count=r.get("order_count", 0),
-                order_sum=r.get("order_sum"),
-                buyout_percent=r.get("buyout_percent"),
-                cr_to_cart=r.get("cr_to_cart"),
-                cr_to_order=r.get("cr_to_order"),
-            )
-            db.add(fd)
+        inserted = _funnel_insert_only(db, rows, user_id=user_id)
 
         if subject_by_nm:
             for nm, subject in subject_by_nm.items():
@@ -449,7 +510,7 @@ def sync_funnel(
                 if art and not art.subject_name:
                     art.subject_name = subject
         db.commit()
-        return {"ok": True, "count": len(rows)}
+        return {"ok": True, "count": inserted}
     except Exception as e:
         db.rollback()
         return {"ok": False, "error": str(e)}
@@ -465,7 +526,8 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
     За один запуск обрабатывает не более FUNNEL_YTD_DAYS_PER_RUN дней, затем ставит себя снова в очередь.
     """
     db = SessionLocal()
-    y = year if year is not None else date.today().year
+    # Фича: ретроспективно идём строго до 2026-01-01.
+    y = 2026 if year is None else int(year)
     try:
         user = db.get(User, user_id)
         if not user:
@@ -474,8 +536,8 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
             return {"ok": False, "error": "no_wb_api_key"}
 
         key = user.wb_api_key.strip()
-        year_start = date(y, 1, 1)
-        year_end_cap = date(y, 12, 31)
+        year_start = FUNNEL_BACKFILL_START_DATE
+        year_end_cap = date(2026, 12, 31)
         yesterday = date.today() - timedelta(days=1)
         through = yesterday if yesterday <= year_end_cap else year_end_cap
         if through < year_start:
@@ -499,42 +561,7 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
             db.commit()
             db.refresh(state)
 
-        nm_ids = sorted(
-            {
-                int(a.nm_id)
-                for a in db.query(Article).filter(Article.user_id == user_id).all()
-                if a.nm_id is not None and int(a.nm_id) > 0
-            }
-        )
-        # Fallback для старых аккаунтов: articles может быть пустой, но продажи/реклама уже есть.
-        # Тогда берём nm_id напрямую из raw-таблиц за YTD, чтобы не блокировать догрузку воронки.
-        if not nm_ids:
-            sales_nm = {
-                int(x[0])
-                for x in db.query(RawSale.nm_id)
-                .filter(
-                    RawSale.user_id == user_id,
-                    RawSale.date >= year_start,
-                    RawSale.date <= through,
-                )
-                .distinct()
-                .all()
-                if x and x[0] is not None and int(x[0]) > 0
-            }
-            ads_nm = {
-                int(x[0])
-                for x in db.query(RawAd.nm_id)
-                .filter(
-                    RawAd.user_id == user_id,
-                    RawAd.date >= year_start,
-                    RawAd.date <= through,
-                    RawAd.nm_id.isnot(None),
-                )
-                .distinct()
-                .all()
-                if x and x[0] is not None and int(x[0]) > 0
-            }
-            nm_ids = sorted(sales_nm | ads_nm)
+        nm_ids = _funnel_nm_ids(db, user_id=user_id, date_from=year_start, date_to=through)
 
         # Раньше при пустых articles задача «прокручивала» даты и ставила complete без строк в funnel_daily.
         if (
@@ -583,6 +610,29 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
         db.add(state)
         db.commit()
 
+        # 1) Weekly fill: если за вчера нет данных funnel_daily — дергаем history-метод за 7 дней
+        # и дополняем витрину без перетирания.
+        has_yesterday = (
+            db.query(FunnelDaily.id)
+            .filter(FunnelDaily.user_id == user_id, FunnelDaily.date == through)
+            .first()
+            is not None
+        )
+        if not has_yesterday:
+            week_start = through - timedelta(days=6)
+            if week_start < year_start:
+                week_start = year_start
+            week_rows = fetch_funnel(
+                week_start.isoformat(),
+                through.isoformat(),
+                nm_ids,
+                key,
+            )
+            # Даже если WB вернул пусто — ничего не стираем; просто продолжаем daily-backfill.
+            _funnel_insert_only(db, week_rows, user_id=user_id)
+            # Вставки funnel — это вход в sku_daily: пересчёт запустим после обработки батча дней ниже.
+            db.commit()
+
         cursor = through if state.last_completed_date is None else (state.last_completed_date - timedelta(days=1))
         if cursor < year_start:
             state.status = "complete"
@@ -626,32 +676,17 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
                 if i + FUNNEL_CHUNK_SIZE < len(nm_ids):
                     time.sleep(FUNNEL_SLEEP_SEC)
 
-            db.execute(
-                delete(FunnelDaily).where(
-                    FunnelDaily.user_id == user_id,
-                    FunnelDaily.date == day,
-                )
-            )
             subject_by_nm: dict[int, str] = {}
             for r in merged:
-                fd = FunnelDaily(
-                    user_id=user_id,
-                    date=day,
-                    nm_id=int(r["nm_id"]),
-                    vendor_code=r.get("vendor_code"),
-                    open_count=r.get("open_count", 0),
-                    cart_count=r.get("cart_count", 0),
-                    order_count=r.get("order_count", 0),
-                    order_sum=r.get("order_sum"),
-                    buyout_percent=r.get("buyout_percent"),
-                    cr_to_cart=r.get("cr_to_cart"),
-                    cr_to_order=r.get("cr_to_order"),
-                )
-                db.add(fd)
                 subj = r.get("subject_name")
-                nm_i = int(r["nm_id"])
+                try:
+                    nm_i = int(r["nm_id"])
+                except Exception:
+                    continue
                 if subj and nm_i not in subject_by_nm:
                     subject_by_nm[nm_i] = subj
+
+            _funnel_insert_only(db, merged, user_id=user_id)
 
             for nm, subj in subject_by_nm.items():
                 art = (

@@ -21,6 +21,8 @@ from app.models.finance_backfill_state import FinanceBackfillState
 from app.models.raw_sales import RawSale
 from app.models.sku_daily import SkuDaily
 from app.models.operational_expense import OperationalExpense
+import logging
+
 from celery_app.tasks import sync_funnel_ytd_step, sync_finance_backfill_step
 from app.schemas.dashboard import (
     PnlDayResponse,
@@ -35,6 +37,9 @@ from app.schemas.dashboard import (
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+logger = logging.getLogger(__name__)
+
+FUNNEL_BACKFILL_START_DATE = date_type(2026, 1, 1)
 
 
 def _repair_hollow_funnel_ytd(
@@ -65,32 +70,14 @@ def _repair_hollow_funnel_ytd(
         or row.last_completed_date < through
     ):
         return
-    # Детектор "ложного complete":
-    # 1) есть продажи в старшем диапазоне (до последних 7 дней),
-    # 2) а воронка есть только за последние дни/вообще пуста.
-    early_window_end = year_start + timedelta(days=6)
-    if through < early_window_end:
-        return
-    has_old_sales = (
-        db.query(RawSale)
-        .filter(
-            RawSale.user_id == user_id,
-            RawSale.date >= year_start,
-            RawSale.date <= early_window_end,
-        )
+    # Если задача помечена complete, но за вчера нет ни одной строки funnel_daily — это "ложный complete".
+    has_yesterday = (
+        db.query(FunnelDaily.id)
+        .filter(FunnelDaily.user_id == user_id, FunnelDaily.date == through)
         .first()
         is not None
     )
-    if not has_old_sales:
-        return
-    min_funnel_date = (
-        db.query(FunnelDaily.date)
-        .filter(FunnelDaily.user_id == user_id)
-        .order_by(FunnelDaily.date.asc())
-        .first()
-    )
-    first_funnel = min_funnel_date[0] if min_funnel_date else None
-    if first_funnel is not None and first_funnel <= early_window_end:
+    if has_yesterday:
         return
     row.status = "idle"
     row.last_completed_date = None
@@ -108,38 +95,36 @@ def _maybe_start_funnel_ytd_backfill(
 ) -> None:
     """
     Автостарт YTD-догрузки прямо из /dashboard/state:
-    - если есть продажи старше последней недели,
-    - а старой воронки нет,
+    - если нет данных за вчера в funnel_daily,
     - и задача сейчас не running/complete,
-    ставим sync_funnel_ytd_step в очередь.
+    ставим sync_funnel_ytd_step в очередь (таска сама сделает weekly→daily до 2026-01-01).
     """
     if through < year_start:
         return
     if not user.wb_api_key or not user.wb_api_key.strip():
         return
-    early_window_end = year_start + timedelta(days=6)
-    if through < early_window_end:
-        return
-    has_old_sales = (
+
+    # Не стартуем "с нуля": если в базе ещё нет продаж, то backfill воронки бессмысленен.
+    has_any_sales = (
         db.query(RawSale)
         .filter(
             RawSale.user_id == user.id,
             RawSale.date >= year_start,
-            RawSale.date <= early_window_end,
+            RawSale.date <= through,
         )
         .first()
         is not None
     )
-    if not has_old_sales:
+    if not has_any_sales:
         return
-    min_funnel_date = (
-        db.query(FunnelDaily.date)
-        .filter(FunnelDaily.user_id == user.id)
-        .order_by(FunnelDaily.date.asc())
+
+    has_yesterday = (
+        db.query(FunnelDaily.id)
+        .filter(FunnelDaily.user_id == user.id, FunnelDaily.date == through)
         .first()
+        is not None
     )
-    first_funnel = min_funnel_date[0] if min_funnel_date else None
-    if first_funnel is not None and first_funnel <= early_window_end:
+    if has_yesterday:
         return
 
     row = (
@@ -162,10 +147,16 @@ def _maybe_start_funnel_ytd_backfill(
             error_message="__autostart_scheduled__",
         )
     else:
-        row.error_message = "__autostart_scheduled__"
+        # Не перетираем реальную ошибку маркером автозапуска.
+        if row.error_message in {None, "__autostart_scheduled__", "__retry_scheduled__"}:
+            row.error_message = "__autostart_scheduled__"
     db.add(row)
     db.commit()
-    sync_funnel_ytd_step.delay(str(user.id), calendar_year)
+    try:
+        sync_funnel_ytd_step.delay(str(user.id), calendar_year)
+    except Exception as exc:
+        # Очередь может быть недоступна (redis/celery_worker). Не валим /dashboard/state.
+        logger.exception("Celery delay failed (sync_funnel_ytd_step): %s", exc)
 
 
 def _maybe_start_finance_backfill(
@@ -280,10 +271,10 @@ def get_dashboard_state(
         is not None
     )
 
-    y = date_type.today().year
-    y_start = date_type(y, 1, 1)
+    y = 2026
+    y_start = FUNNEL_BACKFILL_START_DATE
     yesterday = date_type.today() - timedelta(days=1)
-    through_cap = yesterday if yesterday <= date_type(y, 12, 31) else date_type(y, 12, 31)
+    through_cap = yesterday if yesterday <= date_type(2026, 12, 31) else date_type(2026, 12, 31)
     through_iso = through_cap.isoformat() if through_cap >= y_start else None
 
     _repair_hollow_funnel_ytd(db, str(current_user.id), y, y_start, through_cap)
