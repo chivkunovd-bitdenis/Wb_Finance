@@ -7,13 +7,20 @@ import DailyBriefBlock from '../components/DailyBriefBlock';
 
 function buildDateRange(fromIso, toIso) {
   if (!fromIso || !toIso) return [];
+  const toLocalIsoDate = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
   const start = new Date(fromIso + 'T00:00:00');
   const end = new Date(toIso + 'T00:00:00');
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return [];
   const dates = [];
   const cur = new Date(start);
   while (cur <= end) {
-    dates.push(cur.toISOString().slice(0, 10));
+    // Важно: не используем toISOString(), иначе сдвигаемся в UTC и теряем день (например, 07.04 → 06.04).
+    dates.push(toLocalIsoDate(cur));
     cur.setDate(cur.getDate() + 1);
   }
   return dates;
