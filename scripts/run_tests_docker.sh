@@ -10,5 +10,9 @@ echo "[tests] Starting postgres/redis..."
 docker compose up -d postgres redis
 
 echo "[tests] Running pytest in api container..."
-docker compose run --rm api python -m pytest -q
+# Важно: монтируем актуальные тесты с хоста → /app/tests,
+# иначе docker compose run может запускать тесты из образа (старые) и количество будет отличаться.
+docker compose run --rm \
+  -v "$(pwd)/backend/tests:/app/tests" \
+  api python -m pytest -q
 

@@ -124,7 +124,35 @@ def _funnel_insert_only(db, rows: list[dict], *, user_id: str) -> int:
     if not values:
         return 0
     stmt = insert(FunnelDaily).values(values)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["user_id", "date", "nm_id"])
+    # Важно: DO NOTHING не "лечит" витрину. Если один раз записались нули из-за гонки/частичного ответа,
+    # последующие запуски не смогут исправить данные.
+    #
+    # Поэтому используем upsert, который:
+    # - обновляет метрики, но не затирает большие значения меньшими/нулями (GREATEST)
+    # - не перетирает vendor_code, если он уже заполнен
+    excluded = stmt.excluded  # type: ignore[attr-defined]
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "date", "nm_id"],
+        set_={
+            # vendor_code: если в БД уже есть непустой — сохраняем, иначе берём новый
+            "vendor_code": func.coalesce(
+                func.nullif(func.btrim(FunnelDaily.vendor_code), ""),
+                excluded.vendor_code,
+            ),
+            # counts/sums: не даём "откатиться" назад к 0
+            "open_count": func.greatest(FunnelDaily.open_count, excluded.open_count),
+            "cart_count": func.greatest(FunnelDaily.cart_count, excluded.cart_count),
+            "order_count": func.greatest(FunnelDaily.order_count, excluded.order_count),
+            "order_sum": func.greatest(
+                func.coalesce(FunnelDaily.order_sum, 0),
+                func.coalesce(excluded.order_sum, 0),
+            ),
+            # проценты: если новое None — оставляем старое, иначе берём новое
+            "buyout_percent": func.coalesce(excluded.buyout_percent, FunnelDaily.buyout_percent),
+            "cr_to_cart": func.coalesce(excluded.cr_to_cart, FunnelDaily.cr_to_cart),
+            "cr_to_order": func.coalesce(excluded.cr_to_order, FunnelDaily.cr_to_order),
+        },
+    )
     res = db.execute(stmt)
     # rowcount is driver-dependent; fall back to len(values) if None.
     return int(res.rowcount) if getattr(res, "rowcount", None) is not None else len(values)

@@ -37,6 +37,24 @@ def _celery_test_mode():
     celery_app.conf.result_backend = "cache+memory://"
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """
+    Реальные тесты WB помечены marker'ом wb_real:
+    - требуют ключ WB_API_KEY
+    - зависят от внешней сети и "живых" данных
+
+    Политика: если WB_API_KEY задан — запускаем wb_real тесты автоматически.
+    Если WB_API_KEY не задан — пропускаем wb_real (иначе их невозможно выполнить).
+    """
+    has_key = bool((os.getenv("WB_API_KEY") or "").strip())
+    if has_key:
+        return
+    reason = "wb_real пропущены (нужно задать WB_API_KEY)"
+    for item in items:
+        if item.get_closest_marker("wb_real"):
+            item.add_marker(pytest.mark.skip(reason=reason))
+
+
 @pytest.fixture
 def client():
     """Клиент для запросов к API без реальной БД."""
