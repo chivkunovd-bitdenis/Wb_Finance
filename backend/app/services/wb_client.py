@@ -265,6 +265,13 @@ def fetch_funnel(
         }
         resp = requests.post(FUNNEL_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code != 200:
+            # Важно: не маскируем transient ошибки WB (429/5xx), иначе sync_funnel "успешно" завершится
+            # с частичными данными, а витрина sku_daily получит order_count=0.
+            if resp.status_code in {429, 500, 502, 503, 504}:
+                raise requests.HTTPError(
+                    f"{resp.status_code} {resp.reason} for {FUNNEL_URL}",
+                    response=resp,
+                )
             continue
         data = resp.json()
         items = data if isinstance(data, list) else (data.get("data") or data.get("cards") or [])

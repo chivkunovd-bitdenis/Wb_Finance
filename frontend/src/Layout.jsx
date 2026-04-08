@@ -58,6 +58,10 @@ export default function Layout() {
 
   const range = useMemo(() => ({ dateFrom, dateTo }), [dateFrom, dateTo]);
   const funnelYtdStatus = dashboardState?.funnel_ytd_backfill?.status || 'idle';
+  const financeBackfill2026 = dashboardState?.finance_backfill || null;
+  const financeBackfill2025 = dashboardState?.finance_backfill_2025 || null;
+  const financeStatus2026 = financeBackfill2026?.status || 'idle';
+  const financeStatus2025 = financeBackfill2025?.status || 'idle';
   const loadBillingStatus = useCallback(async () => {
     try {
       const data = await api.getBillingStatus();
@@ -301,6 +305,8 @@ export default function Layout() {
     if (initialLoading) return;
     if (!dashboardState?.has_data) return;
     if (dashboardState.has_2025) return;
+    // 2025 стартуем только после завершения догрузки 2026 (иначе это "съест" лимиты и будет выглядеть как регрессия).
+    if (financeStatus2026 !== 'complete') return;
     if (backfill2025TriggeredOnce) return;
     setBackfill2025TriggeredOnce(true);
     setBackfill2025Syncing(true);
@@ -310,7 +316,7 @@ export default function Layout() {
         console.warn('Ошибка догрузки архива 2025', e);
         setBackfill2025Syncing(false);
       });
-  }, [initialLoading, dashboardState?.has_data, dashboardState?.has_2025, backfill2025TriggeredOnce]);
+  }, [initialLoading, dashboardState?.has_data, dashboardState?.has_2025, backfill2025TriggeredOnce, financeStatus2026]);
 
   // Пока идёт догрузка 2025 — опрашиваем state; когда has_2025 станет true, гасим плашку
   useEffect(() => {
@@ -467,11 +473,33 @@ export default function Layout() {
                     width: 'fit-content',
                   }}
                 >
-                  🔄 Загрузка данных 2026 и воронки…
+                  🔄 Запускаем догрузку финансов за 2026 год (продажи+реклама → P&L)…
                   <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
                 </div>
               )}
-              {backfill2025Syncing && (
+              {(financeStatus2026 === 'running' || financeStatus2026 === 'idle') && financeBackfill2026?.through_date && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: '#cce5ff',
+                    color: '#004085',
+                    padding: '10px 15px',
+                    borderRadius: 8,
+                    border: '1px solid #b8daff',
+                    width: 'fit-content',
+                  }}
+                >
+                  🔄 Догружаем финансы за {financeBackfill2026.year} год (продажи+реклама → P&L) до{' '}
+                  {new Date(financeBackfill2026.through_date + 'T12:00:00').toLocaleDateString('ru')}
+                  {financeBackfill2026.last_completed_date
+                    ? ` (сейчас: ${new Date(financeBackfill2026.last_completed_date + 'T12:00:00').toLocaleDateString('ru')})`
+                    : ''}
+                  <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
+                </div>
+              )}
+              {(financeStatus2025 === 'running' || backfill2025Syncing) && financeBackfill2025?.through_date && (
                 <div
                   style={{
                     display: 'flex',
@@ -485,7 +513,11 @@ export default function Layout() {
                     width: 'fit-content',
                   }}
                 >
-                  🔄 Фоновая загрузка 2025…
+                  🔄 Догружаем архивные финансы за {financeBackfill2025.year} год (продажи+реклама → P&L) до{' '}
+                  {new Date(financeBackfill2025.through_date + 'T12:00:00').toLocaleDateString('ru')}
+                  {financeBackfill2025.last_completed_date
+                    ? ` (сейчас: ${new Date(financeBackfill2025.last_completed_date + 'T12:00:00').toLocaleDateString('ru')})`
+                    : ''}
                   <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
                 </div>
               )}

@@ -478,6 +478,7 @@ def sync_funnel(
     user_id: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    retry_raw: str | None = None,
 ) -> dict:
     """
     Синхронизация воронки продаж с WB за период.
@@ -503,7 +504,33 @@ def sync_funnel(
         if not nm_ids:
             return {"ok": True, "count": 0}
 
-        rows = fetch_funnel(start_s, end_s, nm_ids, user.wb_api_key.strip())
+        try:
+            rows = fetch_funnel(start_s, end_s, nm_ids, user.wb_api_key.strip())
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                prev_code, prev_n = _retry_http_parse(retry_raw)
+                retry_n = (prev_n + 1) if prev_code == code else 1
+                if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
+                    delay = _retry_http_delay_sec(int(code), retry_n)
+                    sync_funnel.apply_async(
+                        kwargs={
+                            "user_id": user_id,
+                            "date_from": start_s,
+                            "date_to": end_s,
+                            "retry_raw": _retry_http_marker(int(code), retry_n),
+                        },
+                        countdown=delay,
+                    )
+                    return {
+                        "ok": False,
+                        "error": "wb_retry_scheduled",
+                        "http_code": int(code),
+                        "retry": retry_n,
+                        "delay_sec": delay,
+                    }
+                return {"ok": False, "error": "wb_retry_limit", "http_code": int(code)}
+            raise
         if not rows:
             # Важно: пустой ответ WB не должен стирать уже накопленную витрину.
             return {"ok": True, "count": 0}

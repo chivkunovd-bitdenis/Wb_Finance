@@ -47,8 +47,11 @@ STATE_KEYS = {
     "has_2026",
     "has_funnel",
     "funnel_ytd_backfill",
+    "finance_backfill",
+    "finance_backfill_2025",
 }
 FUNNEL_YTD_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
+FINANCE_BACKFILL_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
 PNL_DAY_KEYS = {
     "date", "revenue", "commission", "logistics", "penalties", "storage",
     "ads_spend", "cogs", "tax", "operation_expenses", "margin",
@@ -103,6 +106,8 @@ def test_dashboard_state_structure_and_has_data_false(authenticated_client):
     assert data["has_2026"] is False
     assert data["has_funnel"] is False
     assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
+    assert set(data["finance_backfill"].keys()) == FINANCE_BACKFILL_KEYS
+    assert set(data["finance_backfill_2025"].keys()) == FINANCE_BACKFILL_KEYS
 
 
 def test_dashboard_state_structure_and_has_data_true(authenticated_client):
@@ -136,6 +141,8 @@ def test_dashboard_state_structure_and_has_data_true(authenticated_client):
     assert data["has_2025"] is True
     assert data["has_2026"] is False
     assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
+    assert set(data["finance_backfill"].keys()) == FINANCE_BACKFILL_KEYS
+    assert set(data["finance_backfill_2025"].keys()) == FINANCE_BACKFILL_KEYS
 
 
 def test_dashboard_state_autostarts_funnel_backfill_when_yesterday_missing(authenticated_client):

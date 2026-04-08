@@ -305,6 +305,31 @@ def get_dashboard_state(
         "error_message": fb_err,
     }
 
+    def _finance_state_for(year: int) -> dict:
+        y_start = date_type(year, 1, 1)
+        y_end = date_type(year, 12, 31)
+        y_through = yesterday if yesterday <= y_end else y_end
+        through_i = y_through.isoformat() if y_through >= y_start else None
+
+        row = (
+            db.query(FinanceBackfillState)
+            .filter(
+                FinanceBackfillState.user_id == current_user.id,
+                FinanceBackfillState.calendar_year == year,
+            )
+            .first()
+        )
+        err = None
+        if row and row.error_message and row.error_message not in {"__retry_scheduled__", "__autostart_scheduled__"}:
+            err = row.error_message[:500]
+        return {
+            "year": year,
+            "status": row.status if row else "idle",
+            "last_completed_date": row.last_completed_date.isoformat() if row and row.last_completed_date else None,
+            "through_date": through_i,
+            "error_message": err,
+        }
+
     return {
         "has_data": has_data,
         "min_date": min_date.isoformat() if min_date else None,
@@ -313,6 +338,9 @@ def get_dashboard_state(
         "has_2026": has_2026,
         "has_funnel": has_funnel,
         "funnel_ytd_backfill": funnel_ytd_backfill,
+        # Для UI loader'ов: показывать прогресс ретроспективной догрузки финансов.
+        "finance_backfill": _finance_state_for(2026),
+        "finance_backfill_2025": _finance_state_for(2025),
     }
 
 
