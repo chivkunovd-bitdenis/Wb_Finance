@@ -12,6 +12,7 @@
 import os
 from datetime import date
 from datetime import timedelta
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -25,6 +26,7 @@ from app.models.raw_sales import RawSale
 from app.models.pnl_daily import PnlDaily
 from app.models.sku_daily import SkuDaily
 from app.models.funnel_daily import FunnelDaily
+from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.operational_expense import OperationalExpense
 from app.core.security import create_access_token
 from celery_app.tasks import sync_sales, recalculate_pnl
@@ -181,6 +183,51 @@ def test_dashboard_state_autostarts_funnel_backfill_when_yesterday_missing(authe
         assert args[0] == user_id
         assert args[1] == 2026
 
+
+def test_dashboard_state_resets_stuck_running_funnel_backfill_and_autostarts(authenticated_client):
+    """
+    Регрессия: если funnel_backfill_state застрял в status=running (например, воркер умер),
+    баннер может висеть сутками и задача не будет перезапущена.
+
+    /dashboard/state должен сбросить running→idle при старом updated_at и автостартовать задачу.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # Есть продажи в диапазоне backfill, но за вчера funnel_daily отсутствует.
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=yesterday,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+
+    stuck = FunnelBackfillState(
+        user_id=user_id,
+        calendar_year=2026,
+        status="running",
+        last_completed_date=date(2026, 1, 24),
+        error_message=None,
+        updated_at=datetime.now(timezone.utc) - timedelta(hours=12),
+    )
+    session.add(stuck)
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_funnel_ytd_step.delay") as mock_delay:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_delay.assert_called_once()
 
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):
     """Данные из pnl_daily возвращаются через GET /dashboard/pnl без искажений."""

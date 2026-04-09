@@ -4,6 +4,7 @@ REST API для фронта: дашборд (P&L по дням), артикул
 """
 from datetime import date as date_type
 from datetime import timedelta
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 
@@ -40,6 +41,44 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 logger = logging.getLogger(__name__)
 
 FUNNEL_BACKFILL_START_DATE = date_type(2026, 1, 1)
+
+
+def _repair_stuck_funnel_ytd_running(
+    db: Session,
+    user_id: str,
+    calendar_year: int,
+    *,
+    max_age: timedelta = timedelta(minutes=30),
+) -> None:
+    """
+    Сброс "залипшего" running: если задача помечена running, но давно не обновлялась (updated_at),
+    то, скорее всего, воркер умер/задача потерялась. Без этого баннер может висеть сутками.
+    """
+    row = (
+        db.query(FunnelBackfillState)
+        .filter(
+            FunnelBackfillState.user_id == user_id,
+            FunnelBackfillState.calendar_year == calendar_year,
+        )
+        .first()
+    )
+    if not row or row.status != "running":
+        return
+    # updated_at заполняется в БД; если оно слишком старое — считаем running "битым".
+    updated = row.updated_at
+    if updated is None:
+        return
+    now = datetime.now(timezone.utc)
+    if updated.tzinfo is None:
+        # Safety net: на всякий случай считаем naive как UTC.
+        updated = updated.replace(tzinfo=timezone.utc)
+    if now - updated <= max_age:
+        return
+    row.status = "idle"
+    # Сбрасываем маркеры, чтобы /dashboard/state мог заново автостартовать задачу.
+    row.error_message = None
+    db.add(row)
+    db.commit()
 
 
 def _repair_hollow_funnel_ytd(
@@ -277,6 +316,7 @@ def get_dashboard_state(
     through_cap = yesterday if yesterday <= date_type(2026, 12, 31) else date_type(2026, 12, 31)
     through_iso = through_cap.isoformat() if through_cap >= y_start else None
 
+    _repair_stuck_funnel_ytd_running(db, str(current_user.id), y)
     _repair_hollow_funnel_ytd(db, str(current_user.id), y, y_start, through_cap)
     _maybe_start_funnel_ytd_backfill(db, current_user, y, y_start, through_cap)
     _maybe_start_finance_backfill(db, current_user, y, y_start, through_cap)
