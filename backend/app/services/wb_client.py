@@ -1,8 +1,13 @@
 """
 Клиент к API Wildberries. Логика как в GAS (Code.js): те же URL, пагинация rrid.
 """
+import logging
+import random
 import time
+
 import requests
+
+logger = logging.getLogger(__name__)
 
 SALES_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 
@@ -140,6 +145,23 @@ FUNNEL_URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales
 FUNNEL_PRODUCTS_URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products"
 FUNNEL_CHUNK_SIZE = 20
 FUNNEL_SLEEP_SEC = 25
+# Сколько раз подряд повторять один и тот же чанк при 429/5xx прежде чем пробросить ошибку наверх (Celery сделает отложенный retry).
+FUNNEL_CHUNK_MAX_ATTEMPTS = 12
+FUNNEL_RETRYABLE_HTTP = frozenset({429, 500, 502, 503, 504})
+
+
+def _funnel_chunk_backoff_sec(attempt: int, http_code: int) -> float:
+    """Экспоненциальная пауза между попытками одного чанка (как в celery funnel YTD)."""
+    base = 45 if http_code >= 500 else 90
+    core = min(1800, base * (2 ** max(0, attempt - 1)))
+    return float(core + random.randint(0, 30))
+
+
+def _funnel_wb_msg(log_context: str | None, body: str) -> str:
+    """Единый префикс для grep: `funnel_wb` + опционально user_id=… из Celery."""
+    if log_context:
+        return f"funnel_wb {log_context} {body}"
+    return f"funnel_wb {body}"
 
 
 def _int_nm(nm_raw: object) -> int | None:
@@ -237,15 +259,146 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
     return out
 
 
+def fetch_funnel_products_for_day_with_retry(
+    day: str,
+    nm_ids: list[int],
+    wb_api_key: str,
+    *,
+    max_attempts: int = FUNNEL_CHUNK_MAX_ATTEMPTS,
+    log_context: str | None = None,
+) -> list[dict]:
+    """
+    Один POST /sales-funnel/products за день на набор nm_id.
+    Повторяет запрос только при 429/5xx; при исчерпании попыток — HTTPError наверх.
+    Успех дня по чанкам в Celery: все вызовы этой функции для чанков должны завершиться без исключения.
+    """
+    tries = 0
+    last_exc: requests.HTTPError | None = None
+    while tries < max_attempts:
+        tries += 1
+        try:
+            out = fetch_funnel_products_for_day(day, nm_ids, wb_api_key)
+            logger.info(
+                _funnel_wb_msg(
+                    log_context,
+                    "api=products day=%s nm_in_chunk=%s http=200 rows=%s tries=%s",
+                ),
+                day,
+                len(nm_ids),
+                len(out),
+                tries,
+            )
+            return out
+        except requests.HTTPError as exc:
+            last_exc = exc
+            code = exc.response.status_code if exc.response is not None else None
+            if code not in FUNNEL_RETRYABLE_HTTP:
+                logger.error(
+                    _funnel_wb_msg(
+                        log_context,
+                        "api=products day=%s nm_in_chunk=%s fatal_http=%s tries=%s err=%s",
+                    ),
+                    day,
+                    len(nm_ids),
+                    code,
+                    tries,
+                    str(exc)[:400],
+                )
+                raise
+            if tries >= max_attempts:
+                break
+            delay = _funnel_chunk_backoff_sec(tries, int(code or 429))
+            logger.warning(
+                _funnel_wb_msg(
+                    log_context,
+                    "api=products day=%s nm_in_chunk=%s http=%s tries=%s/%s sleep_sec=%.1f err=%s",
+                ),
+                day,
+                len(nm_ids),
+                code,
+                tries,
+                max_attempts,
+                delay,
+                str(exc)[:400],
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    logger.error(
+        _funnel_wb_msg(
+            log_context,
+            "api=products day=%s nm_in_chunk=%s exhausted_tries=%s last_err=%s",
+        ),
+        day,
+        len(nm_ids),
+        max_attempts,
+        str(last_exc)[:400],
+    )
+    raise last_exc
+
+
+def _parse_funnel_history_response(data: object, _date_from: str, _date_to: str) -> list[dict]:
+    """Разбор тела ответа history-API в плоские строки по дням (как в fetch_funnel)."""
+    all_rows: list[dict] = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("data") or data.get("cards") or []
+    else:
+        items = []
+
+    for item in items:
+        nm_raw = item.get("nmId") or (item.get("product") or {}).get("nmId")
+        nm_parsed = _int_nm(nm_raw)
+        if nm_parsed is None:
+            continue
+        subject_name = (
+            item.get("subjectName")
+            or item.get("subject_name")
+            or (item.get("product") or {}).get("subjectName")
+            or (item.get("product") or {}).get("subject_name")
+            or (item.get("product") or {}).get("subject")
+            or item.get("subject")
+        )
+        vendor_code = (
+            item.get("vendorCode")
+            or (item.get("product") or {}).get("vendorCode")
+            or ""
+        )
+        vendor_code = str(vendor_code)[:255] if vendor_code else None
+        history = item.get("history") or []
+        for h in history:
+            d = _parse_date(h.get("date") or h.get("dt"))
+            if not d:
+                continue
+            all_rows.append({
+                "date": d,
+                "nm_id": nm_parsed,
+                "vendor_code": vendor_code,
+                "open_count": int(h.get("openCount") or 0),
+                "cart_count": int(h.get("cartCount") or 0),
+                "order_count": int(h.get("orderCount") or 0),
+                "order_sum": float(h.get("orderSum") or 0),
+                "buyout_percent": float(h.get("buyoutPercent") or 0),
+                "cr_to_cart": float(h.get("addToCartConversion") or h.get("cr1") or 0),
+                "cr_to_order": float(h.get("cartToOrderConversion") or h.get("cr2") or 0),
+                "subject_name": str(subject_name)[:500] if subject_name else None,
+            })
+    return all_rows
+
+
 def fetch_funnel(
     date_from: str,
     date_to: str,
     nm_ids: list[int],
     wb_api_key: str,
+    *,
+    log_context: str | None = None,
 ) -> list[dict]:
     """
     Загрузить воронку продаж по артикулам за период.
     nm_ids запрашиваются чанками по 20, между запросами пауза 25 сек (как в GAS).
+    Каждый чанк: только HTTP 200 считается успехом; при 429/5xx повторяем тот же чанк,
+    не переходим к следующему. Прочие коды — сразу ошибка (не глотаем «тихим» continue).
     Возвращает список словарей: date, nm_id, vendor_code, open_count, cart_count,
     order_count, order_sum, buyout_percent, cr_to_cart, cr_to_order.
     """
@@ -254,8 +407,11 @@ def fetch_funnel(
         "Content-Type": "application/json",
     }
     all_rows: list[dict] = []
+    n_chunks = max(1, (len(nm_ids) + FUNNEL_CHUNK_SIZE - 1) // FUNNEL_CHUNK_SIZE)
+    chunk_no = 0
 
     for i in range(0, len(nm_ids), FUNNEL_CHUNK_SIZE):
+        chunk_no += 1
         chunk = nm_ids[i : i + FUNNEL_CHUNK_SIZE]
         payload = {
             "selectedPeriod": {"start": date_from, "end": date_to},
@@ -263,56 +419,92 @@ def fetch_funnel(
             "skipDeletedNm": True,
             "aggregationLevel": "day",
         }
-        resp = requests.post(FUNNEL_URL, json=payload, headers=headers, timeout=60)
-        if resp.status_code != 200:
-            # Важно: не маскируем transient ошибки WB (429/5xx), иначе sync_funnel "успешно" завершится
-            # с частичными данными, а витрина sku_daily получит order_count=0.
-            if resp.status_code in {429, 500, 502, 503, 504}:
-                raise requests.HTTPError(
-                    f"{resp.status_code} {resp.reason} for {FUNNEL_URL}",
-                    response=resp,
+        tries = 0
+        while True:
+            tries += 1
+            resp = requests.post(FUNNEL_URL, json=payload, headers=headers, timeout=60)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except Exception as exc:
+                    logger.exception(
+                        _funnel_wb_msg(
+                            log_context,
+                            "api=history period=%s..%s chunk=%s/%s invalid_json tries=%s",
+                        ),
+                        date_from,
+                        date_to,
+                        chunk_no,
+                        n_chunks,
+                        tries,
+                    )
+                    raise requests.HTTPError(
+                        f"Invalid JSON for {FUNNEL_URL}: {exc}",
+                        response=resp,
+                    ) from exc
+                parsed = _parse_funnel_history_response(data, date_from, date_to)
+                all_rows.extend(parsed)
+                logger.info(
+                    _funnel_wb_msg(
+                        log_context,
+                        "api=history period=%s..%s chunk=%s/%s nm_in_chunk=%s http=200 "
+                        "parsed_rows=%s tries=%s",
+                    ),
+                    date_from,
+                    date_to,
+                    chunk_no,
+                    n_chunks,
+                    len(chunk),
+                    len(parsed),
+                    tries,
                 )
-            continue
-        data = resp.json()
-        items = data if isinstance(data, list) else (data.get("data") or data.get("cards") or [])
-
-        for item in items:
-            nm_raw = item.get("nmId") or (item.get("product") or {}).get("nmId")
-            nm_parsed = _int_nm(nm_raw)
-            if nm_parsed is None:
-                continue
-            subject_name = (
-                item.get("subjectName")
-                or item.get("subject_name")
-                or (item.get("product") or {}).get("subjectName")
-                or (item.get("product") or {}).get("subject_name")
-                or (item.get("product") or {}).get("subject")
-                or item.get("subject")
+                break
+            if resp.status_code not in FUNNEL_RETRYABLE_HTTP:
+                logger.error(
+                    _funnel_wb_msg(
+                        log_context,
+                        "api=history period=%s..%s chunk=%s/%s fatal_http=%s tries=%s",
+                    ),
+                    date_from,
+                    date_to,
+                    chunk_no,
+                    n_chunks,
+                    resp.status_code,
+                    tries,
+                )
+                resp.raise_for_status()
+            if tries >= FUNNEL_CHUNK_MAX_ATTEMPTS:
+                logger.error(
+                    _funnel_wb_msg(
+                        log_context,
+                        "api=history period=%s..%s chunk=%s/%s exhausted_http=%s tries=%s",
+                    ),
+                    date_from,
+                    date_to,
+                    chunk_no,
+                    n_chunks,
+                    resp.status_code,
+                    tries,
+                )
+                resp.raise_for_status()
+            delay = _funnel_chunk_backoff_sec(tries, int(resp.status_code))
+            logger.warning(
+                _funnel_wb_msg(
+                    log_context,
+                    "api=history period=%s..%s chunk=%s/%s nm_in_chunk=%s http=%s tries=%s/%s "
+                    "sleep_sec=%.1f",
+                ),
+                date_from,
+                date_to,
+                chunk_no,
+                n_chunks,
+                len(chunk),
+                resp.status_code,
+                tries,
+                FUNNEL_CHUNK_MAX_ATTEMPTS,
+                delay,
             )
-            vendor_code = (
-                item.get("vendorCode")
-                or (item.get("product") or {}).get("vendorCode")
-                or ""
-            )
-            vendor_code = str(vendor_code)[:255] if vendor_code else None
-            history = item.get("history") or []
-            for h in history:
-                d = _parse_date(h.get("date") or h.get("dt"))
-                if not d:
-                    continue
-                all_rows.append({
-                    "date": d,
-                    "nm_id": nm_parsed,
-                    "vendor_code": vendor_code,
-                    "open_count": int(h.get("openCount") or 0),
-                    "cart_count": int(h.get("cartCount") or 0),
-                    "order_count": int(h.get("orderCount") or 0),
-                    "order_sum": float(h.get("orderSum") or 0),
-                    "buyout_percent": float(h.get("buyoutPercent") or 0),
-                    "cr_to_cart": float(h.get("addToCartConversion") or h.get("cr1") or 0),
-                    "cr_to_order": float(h.get("cartToOrderConversion") or h.get("cr2") or 0),
-                    "subject_name": str(subject_name)[:500] if subject_name else None,
-                })
+            time.sleep(delay)
 
         if i + FUNNEL_CHUNK_SIZE < len(nm_ids):
             time.sleep(FUNNEL_SLEEP_SEC)

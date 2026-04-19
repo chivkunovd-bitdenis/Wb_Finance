@@ -55,7 +55,7 @@ def test_sync_funnel_empty_wb_response_does_not_delete(_mock_session_local, _moc
 
 
 @pytest.mark.parametrize("yesterday_has_funnel", [True, False])
-@patch("celery_app.tasks.fetch_funnel_products_for_day", return_value=[])
+@patch("celery_app.tasks.fetch_funnel_products_for_day_with_retry", return_value=[])
 @patch("celery_app.tasks.fetch_funnel", return_value=[])
 @patch("celery_app.tasks.recalculate_sku_daily")
 @patch("celery_app.tasks.sync_funnel_ytd_step.apply_async")

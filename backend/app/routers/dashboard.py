@@ -143,20 +143,7 @@ def _maybe_start_funnel_ytd_backfill(
     if not user.wb_api_key or not user.wb_api_key.strip():
         return
 
-    # Не стартуем "с нуля": если в базе ещё нет продаж, то backfill воронки бессмысленен.
-    has_any_sales = (
-        db.query(RawSale)
-        .filter(
-            RawSale.user_id == user.id,
-            RawSale.date >= year_start,
-            RawSale.date <= through,
-        )
-        .first()
-        is not None
-    )
-    if not has_any_sales:
-        return
-
+    # Запускаем, если за вчера нет данных funnel_daily (как было раньше).
     has_yesterday = (
         db.query(FunnelDaily.id)
         .filter(FunnelDaily.user_id == user.id, FunnelDaily.date == through)

@@ -1,6 +1,7 @@
 """
 Celery-задачи: синк с WB и пересчёт P&L.
 """
+import logging
 import random
 import time
 from datetime import date, timedelta
@@ -28,12 +29,14 @@ from app.services.wb_client import (
     FUNNEL_SLEEP_SEC,
     fetch_ads,
     fetch_funnel,
-    fetch_funnel_products_for_day,
+    fetch_funnel_products_for_day_with_retry,
     fetch_sales,
 )
 from app.services.billing_service import collect_due_reminders
 from app.services.daily_brief_service import generate_brief_text
 from app.models.daily_brief import DailyBrief
+
+logger = logging.getLogger(__name__)
 
 TAX_RATE = 0.06
 FUNNEL_YTD_DAYS_PER_RUN = 2
@@ -504,8 +507,23 @@ def sync_funnel(
         if not nm_ids:
             return {"ok": True, "count": 0}
 
+        n_chunks = max(1, (len(nm_ids) + FUNNEL_CHUNK_SIZE - 1) // FUNNEL_CHUNK_SIZE)
+        logger.info(
+            "funnel_sync op=sync_funnel user_id=%s period=%s..%s nm_ids=%s chunks=%s",
+            user_id,
+            start_s,
+            end_s,
+            len(nm_ids),
+            n_chunks,
+        )
         try:
-            rows = fetch_funnel(start_s, end_s, nm_ids, user.wb_api_key.strip())
+            rows = fetch_funnel(
+                start_s,
+                end_s,
+                nm_ids,
+                user.wb_api_key.strip(),
+                log_context=f"user_id={user_id} op=sync_funnel",
+            )
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else None
             if code in FUNNEL_YTD_HTTP_RETRY_CODES:
@@ -552,6 +570,14 @@ def sync_funnel(
                     subject_by_nm[nm_i] = subject
 
         inserted = _funnel_insert_only(db, rows, user_id=user_id)
+        logger.info(
+            "funnel_sync op=sync_funnel user_id=%s period=%s..%s result=ok rows=%s inserted=%s",
+            user_id,
+            start_s,
+            end_s,
+            len(rows),
+            inserted,
+        )
 
         if subject_by_nm:
             for nm, subject in subject_by_nm.items():
@@ -568,6 +594,15 @@ def sync_funnel(
         return {"ok": True, "count": inserted}
     except Exception as e:
         db.rollback()
+        p0 = locals().get("start_s") or date_from or "?"
+        p1 = locals().get("end_s") or date_to or "?"
+        logger.exception(
+            "funnel_sync op=sync_funnel user_id=%s period=%s..%s result=error err=%s",
+            user_id,
+            p0,
+            p1,
+            type(e).__name__,
+        )
         return {"ok": False, "error": str(e)}
     finally:
         db.close()
@@ -677,14 +712,30 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
             week_start = through - timedelta(days=6)
             if week_start < year_start:
                 week_start = year_start
+            ws, we = week_start.isoformat(), through.isoformat()
+            logger.info(
+                "funnel_sync op=sync_funnel_ytd_step phase=weekly_history user_id=%s week=%s..%s nm_ids=%s",
+                user_id,
+                ws,
+                we,
+                len(nm_ids),
+            )
             week_rows = fetch_funnel(
-                week_start.isoformat(),
-                through.isoformat(),
+                ws,
+                we,
                 nm_ids,
                 key,
+                log_context=f"user_id={user_id} op=ytd_weekly",
             )
             # Даже если WB вернул пусто — ничего не стираем; просто продолжаем daily-backfill.
             _funnel_insert_only(db, week_rows, user_id=user_id)
+            logger.info(
+                "funnel_sync op=sync_funnel_ytd_step phase=weekly_history user_id=%s week=%s..%s rows=%s",
+                user_id,
+                ws,
+                we,
+                len(week_rows),
+            )
             # Вставки funnel — это вход в sku_daily: пересчёт запустим после обработки батча дней ниже.
             db.commit()
 
@@ -710,24 +761,35 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
 
         for day in days_batch:
             day_s = day.isoformat()
+            n_chunks = max(1, (len(nm_ids) + FUNNEL_CHUNK_SIZE - 1) // FUNNEL_CHUNK_SIZE)
+            logger.info(
+                "funnel_sync op=sync_funnel_ytd_step phase=daily_products user_id=%s day=%s chunks_total=%s",
+                user_id,
+                day_s,
+                n_chunks,
+            )
 
             merged: list[dict] = []
             for i in range(0, len(nm_ids), FUNNEL_CHUNK_SIZE):
                 chunk = nm_ids[i : i + FUNNEL_CHUNK_SIZE]
-                # Короткий локальный retry для transient 429 на уровне чанка.
-                attempts = 0
-                while True:
-                    try:
-                        rows = fetch_funnel_products_for_day(day_s, chunk, key)
-                        break
-                    except requests.HTTPError as exc:
-                        code = exc.response.status_code if exc.response is not None else None
-                        if code == 429 and attempts < 2:
-                            attempts += 1
-                            time.sleep(3 * attempts + random.random() * 2)
-                            continue
-                        raise
+                chunk_n = i // FUNNEL_CHUNK_SIZE + 1
+                rows = fetch_funnel_products_for_day_with_retry(
+                    day_s,
+                    chunk,
+                    key,
+                    log_context=f"user_id={user_id} op=ytd_daily",
+                )
                 merged.extend(rows)
+                logger.info(
+                    "funnel_sync op=sync_funnel_ytd_step phase=daily_products user_id=%s day=%s "
+                    "chunk=%s/%s nm_in_chunk=%s rows=%s",
+                    user_id,
+                    day_s,
+                    chunk_n,
+                    n_chunks,
+                    len(chunk),
+                    len(rows),
+                )
                 if i + FUNNEL_CHUNK_SIZE < len(nm_ids):
                     time.sleep(FUNNEL_SLEEP_SEC)
 
@@ -752,11 +814,16 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
                 if art and not art.subject_name:
                     art.subject_name = subj
 
+            # День успешно обработан: все чанки получили 200. Даже если заказы нулевые — это валидно.
             state.last_completed_date = day
-            # День успешно обработан — сбрасываем служебные маркеры ретраев.
             state.error_message = None
             db.add(state)
             db.commit()
+            logger.info(
+                "funnel_sync op=sync_funnel_ytd_step phase=daily_products user_id=%s day=%s closed=1",
+                user_id,
+                day_s,
+            )
 
         batch_first = days_batch[0].isoformat()
         batch_last = days_batch[-1].isoformat()

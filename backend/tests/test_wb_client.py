@@ -2,9 +2,18 @@
 Тесты для app/services/wb_client.py с подменой HTTP-запросов (mock).
 Реальные запросы в WB не уходят.
 """
+import requests
+import pytest
+from requests import Response
 from unittest.mock import patch, MagicMock
 
-from app.services.wb_client import fetch_sales, fetch_ads, fetch_funnel, fetch_funnel_products_for_day
+from app.services.wb_client import (
+    fetch_sales,
+    fetch_ads,
+    fetch_funnel,
+    fetch_funnel_products_for_day,
+    fetch_funnel_products_for_day_with_retry,
+)
 
 
 @patch("app.services.wb_client.requests.get")
@@ -163,3 +172,54 @@ def test_fetch_funnel_empty_history(mock_post):
     mock_post.return_value.json.return_value = []
     result = fetch_funnel("2025-03-01", "2025-03-07", [123], "fake-token")
     assert result == []
+
+
+@patch("app.services.wb_client.time.sleep", return_value=None)
+@patch("app.services.wb_client.requests.post")
+def test_fetch_funnel_retries_same_chunk_on_429(mock_post, _mock_sleep):
+    ok_item = {
+        "nmId": 1,
+        "history": [
+            {
+                "date": "2025-03-01",
+                "openCount": 1,
+                "cartCount": 1,
+                "orderCount": 1,
+                "orderSum": 10,
+                "buyoutPercent": 0,
+                "addToCartConversion": 0.1,
+                "cartToOrderConversion": 0.1,
+            }
+        ],
+    }
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = [ok_item]
+    err = MagicMock(status_code=429, reason="Too Many", text="limit")
+    mock_post.side_effect = [err, ok]
+    result = fetch_funnel("2025-03-01", "2025-03-01", [1], "fake-token")
+    assert len(result) == 1
+    assert mock_post.call_count == 2
+
+
+@patch("app.services.wb_client.requests.post")
+def test_fetch_funnel_non_retry_http_raises(mock_post):
+    r401 = Response()
+    r401.status_code = 401
+    r401.url = "https://example/funnel"
+    mock_post.return_value = r401
+    with pytest.raises(requests.HTTPError):
+        fetch_funnel("2025-03-01", "2025-03-01", [1], "fake-token")
+
+
+@patch("app.services.wb_client.time.sleep", return_value=None)
+@patch("app.services.wb_client.fetch_funnel_products_for_day")
+def test_fetch_funnel_products_for_day_with_retry_on_429(mock_fetch_day, _mock_sleep):
+    r429 = Response()
+    r429.status_code = 429
+    mock_fetch_day.side_effect = [
+        requests.HTTPError(response=r429),
+        [],
+    ]
+    out = fetch_funnel_products_for_day_with_retry("2025-03-01", [1], "fake-token", max_attempts=5)
+    assert out == []
+    assert mock_fetch_day.call_count == 2

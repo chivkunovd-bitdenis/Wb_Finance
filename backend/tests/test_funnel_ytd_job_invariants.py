@@ -123,7 +123,7 @@ def test_state_autostart_executes_funnel_ytd_and_fills_yesterday(authenticated_c
         patch("celery_app.tasks.FUNNEL_YTD_DAYS_PER_RUN", 1),
         patch("celery_app.tasks.SessionLocal", return_value=session),
         patch("celery_app.tasks.fetch_funnel", return_value=[]),  # weekly history can be empty
-        patch("celery_app.tasks.fetch_funnel_products_for_day", return_value=[wb_row]),
+        patch("celery_app.tasks.fetch_funnel_products_for_day_with_retry", return_value=[wb_row]),
         patch("celery_app.tasks.time.sleep", return_value=None),
         patch.object(sync_funnel_ytd_step, "apply_async", return_value=None),
         patch.object(recalculate_sku_daily, "delay", side_effect=lambda *a, **k: recalculate_sku_daily(*a, **k)),
@@ -152,7 +152,8 @@ def test_state_autostart_executes_funnel_ytd_and_fills_yesterday(authenticated_c
 def test_funnel_ytd_job_walks_days_and_does_not_leave_zeros_when_input_nonzero(authenticated_client_with_session):
     """
     Сценарий "Jabba прошлась по дням": sync_funnel_ytd_step обрабатывает батч дней
-    и для дней, где WB-ответ содержит order_count>0, в funnel_daily не остаётся нулей.
+    и для дней, где WB-ответ содержит order_sum>0, в funnel_daily не остаётся нулей
+    и прогресс (last_completed_date) двигается.
     """
     _client, session, user_id, _token = authenticated_client_with_session
 
@@ -172,7 +173,7 @@ def test_funnel_ytd_job_walks_days_and_does_not_leave_zeros_when_input_nonzero(a
         d3: 1,  # non-zero -> must stay non-zero
     }
 
-    def _fetch_products(day_s: str, _chunk: list[int], _key: str):
+    def _fetch_products(day_s: str, _chunk: list[int], _key: str, **_kwargs: object):
         day = real_date.fromisoformat(day_s)
         oc = int(input_by_day.get(day, 0))
         return [
@@ -195,7 +196,7 @@ def test_funnel_ytd_job_walks_days_and_does_not_leave_zeros_when_input_nonzero(a
         patch("celery_app.tasks.FUNNEL_YTD_DAYS_PER_RUN", 3),
         patch("celery_app.tasks.SessionLocal", return_value=session),
         patch("celery_app.tasks.fetch_funnel", return_value=[]),
-        patch("celery_app.tasks.fetch_funnel_products_for_day", side_effect=_fetch_products),
+        patch("celery_app.tasks.fetch_funnel_products_for_day_with_retry", side_effect=_fetch_products),
         patch("celery_app.tasks.time.sleep", return_value=None),
         patch.object(sync_funnel_ytd_step, "apply_async", return_value=None),
         patch.object(recalculate_sku_daily, "delay", side_effect=lambda *a, **k: recalculate_sku_daily(*a, **k)),
