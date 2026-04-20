@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api';
 
@@ -33,6 +33,8 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [wbApiKey, setWbApiKey] = useState('');
+  const [wbApiKeyLoaded, setWbApiKeyLoaded] = useState(false);
+  const [showWbKey, setShowWbKey] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('error');
 
@@ -45,6 +47,32 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const isLifetime = status === 'lifetime';
   const isActive = status === 'active';
   const showTrialForm = !isLifetime && status === 'inactive' && !trialEndsAt && !periodEndsAt;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await api.getMe();
+        if (cancelled) return;
+        const current = String(me?.wb_api_key || '').trim();
+        setWbApiKey(current);
+        setWbApiKeyLoaded(true);
+      } catch {
+        if (!cancelled) setWbApiKeyLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const maskedWbKey = useMemo(() => {
+    const s = String(wbApiKey || '').trim();
+    if (!s) return 'не задан';
+    if (showWbKey) return s;
+    if (s.length <= 8) return '••••••••';
+    return `${s.slice(0, 4)}••••••••${s.slice(-4)}`;
+  }, [wbApiKey, showWbKey]);
 
   useEffect(() => {
     if (searchParams.get('payment') !== 'return') return;
@@ -108,9 +136,20 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
     setMsg('');
     try {
       await api.updateWbApiKey(wbApiKey);
-      setMsg('WB API ключ сохранён. Демо-период активирован.');
+      setMsg('WB API ключ сохранён. Запускаем первичную синхронизацию…');
       setMsgType('success');
       await onRefreshStatus?.();
+      try {
+        await api.triggerInitialSync();
+        setMsg('WB API ключ сохранён. Первичная синхронизация запущена (как при входе).');
+        setMsgType('success');
+      } catch (e2) {
+        setMsg(
+          'WB API ключ сохранён, но синхронизация не стартовала: '
+          + (e2?.message || 'проверь очередь задач (redis/celery_worker)'),
+        );
+        setMsgType('error');
+      }
     } catch (e) {
       setMsg(e?.message || 'Не удалось сохранить WB API ключ');
       setMsgType('error');
@@ -289,6 +328,57 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
           </div>
         </div>
       )}
+
+      {/* ── WB API key (editable row inside subscription section) ── */}
+      <div className="table-card" style={{ padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>WB API ключ</div>
+            <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 600, letterSpacing: '0.01em' }}>
+              {wbApiKeyLoaded ? maskedWbKey : '…'}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, minWidth: 280, justifyContent: 'flex-end' }}>
+            <input
+              style={{
+                flex: 1,
+                background: 'var(--bg-secondary)',
+                border: '0.5px solid var(--border-mid)',
+                borderRadius: 8,
+                padding: '8px 12px',
+                fontSize: 13,
+                color: 'var(--text-primary)',
+                outline: 'none',
+                fontFamily: 'inherit',
+                maxWidth: 520,
+              }}
+              value={wbApiKey}
+              onChange={(e) => setWbApiKey(e.target.value)}
+              placeholder="Вставьте новый WB API ключ"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setShowWbKey((v) => !v)}
+              disabled={!wbApiKeyLoaded || !String(wbApiKey || '').trim()}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {showWbKey ? 'Скрыть' : 'Показать'}
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={handleSaveWbKey}
+              disabled={loading || !String(wbApiKey || '').trim()}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {loading ? 'Сохраняем…' : 'Сохранить'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* ── Message ── */}
       {msg && (

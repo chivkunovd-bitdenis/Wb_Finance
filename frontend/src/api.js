@@ -101,6 +101,16 @@ export async function register(email, password, wb_api_key, promo_code) {
   return data;
 }
 
+export async function getMe() {
+  const res = await apiFetch(`${API_BASE}/auth/me`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function getPnl(dateFrom, dateTo) {
   const p = new URLSearchParams();
   if (dateFrom) p.set('date_from', dateFrom);
@@ -380,7 +390,10 @@ export async function updateWbApiKey(wbApiKey) {
     body: JSON.stringify({ wb_api_key: wbApiKey }),
   });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
   return res.json();
 }
 
