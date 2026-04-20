@@ -16,6 +16,7 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if not credentials:
+        request.state.auth_error = "missing_bearer"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Требуется авторизация",
@@ -24,20 +25,24 @@ def get_current_user(
     token = credentials.credentials
     payload = decode_access_token(token)
     if not payload or "sub" not in payload:
+        request.state.auth_error = "invalid_or_expired_token"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный или истёкший токен",
             headers={"WWW-Authenticate": "Bearer"},
         )
     user_id = payload["sub"]
+    request.state.user_id = str(user_id)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
+        request.state.auth_error = "user_not_found"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Пользователь не найден",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_active:
+        request.state.auth_error = "user_inactive"
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Аккаунт деактивирован",
@@ -57,6 +62,7 @@ def get_current_user(
         try:
             require_access(db, user)
         except PermissionError as exc:
+            request.state.auth_error = "billing_access_denied"
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=str(exc),

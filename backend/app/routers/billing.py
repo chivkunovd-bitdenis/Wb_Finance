@@ -130,12 +130,13 @@ def admin_grant_lifetime(
     """Выдать пожизненный доступ пользователю по email. Защищено ADMIN_SECRET."""
     if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    user = db.query(User).filter(User.email == body.email).first()
+    email = str(body.email).lower().strip()
+    user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
     grant_lifetime(db, str(user.id))
     db.commit()
-    return {"ok": True, "email": body.email, "status": "lifetime"}
+    return {"ok": True, "email": email, "status": "lifetime"}
 
 
 @router.get("/admin/promo-codes", include_in_schema=False)

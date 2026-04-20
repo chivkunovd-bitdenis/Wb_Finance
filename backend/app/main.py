@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth, sync, dashboard, billing
 from app.routers import daily_brief
+from app.middleware.request_logging import RequestLoggingMiddleware
 
 app = FastAPI(title="WB Finance API", version="0.1.0")
+app.add_middleware(RequestLoggingMiddleware)
 
 _default_origins = [
     "http://localhost:5173",
