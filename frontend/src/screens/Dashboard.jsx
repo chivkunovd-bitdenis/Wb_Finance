@@ -493,9 +493,29 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                     ];
 
                     for (const def of rowDefs) {
+                      const isFirst = def.kind === 'plan';
+                      const isLast = def.kind === 'forecast_pct_of_plan';
+                      const blockBg = 'rgba(124, 111, 247, 0.06)'; // brand-ish, subtle
+                      const blockBorder = 'rgba(124, 111, 247, 0.22)';
                       out.push(
-                        <tr key={`${section.month}-${def.kind}`} style={{ background: 'var(--bg-secondary)' }}>
-                          <td className="left" style={{ fontWeight: 600 }}>{def.label}</td>
+                        <tr
+                          key={`${section.month}-${def.kind}`}
+                          style={{
+                            background: blockBg,
+                            boxShadow: isFirst ? `inset 0 2px 0 0 ${blockBorder}` : undefined,
+                            borderBottom: isLast ? `2px solid ${blockBorder}` : undefined,
+                          }}
+                        >
+                          <td
+                            className="left"
+                            style={{
+                              fontWeight: 800,
+                              color: 'var(--text-primary)',
+                              borderLeft: `3px solid ${blockBorder}`,
+                            }}
+                          >
+                            {def.label}
+                          </td>
                           {cols.map((c) => {
                             const m = byKey.get(c.key);
                             const isPercent = Boolean(m?.is_percent);
@@ -540,7 +560,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
                             if (def.kind === 'pct_of_plan' || def.kind === 'forecast_pct_of_plan') {
                               if (v == null) return <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>—</td>;
-                              return <td key={c.key}>{`${Math.round(Number(v) * 100)}%`}</td>;
+                              return <td key={c.key} style={{ fontWeight: 700 }}>{`${Math.round(Number(v) * 100)}%`}</td>;
                             }
 
                             return <td key={c.key}>{formatCellValue(c.key, v)}</td>;
