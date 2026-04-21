@@ -493,6 +493,7 @@ def fetch_funnel(
     wb_api_key: str,
     *,
     log_context: str | None = None,
+    sleep_on_retry: bool = True,
 ) -> list[dict]:
     """
     Загрузить воронку продаж по артикулам за период.
@@ -615,6 +616,27 @@ def fetch_funnel(
                     n_chunks,
                     resp.status_code,
                     tries,
+                )
+                resp.raise_for_status()
+
+            # Non-blocking режим для фоновых задач (Celery):
+            # не делаем time.sleep внутри воркера на 429/5xx, чтобы не блокировать пул.
+            # Вместо этого даём вызывающему коду (celery task) поставить retry через countdown.
+            if not sleep_on_retry:
+                _log_wb_http_error(
+                    resp=resp,
+                    op="funnel_history",
+                    url=FUNNEL_URL,
+                    log_context=log_context,
+                    extra={
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "chunk": f"{chunk_no}/{n_chunks}",
+                        "nm_in_chunk": len(chunk),
+                        "tries": f"{tries}/{FUNNEL_CHUNK_MAX_ATTEMPTS}",
+                        "non_blocking_retry": True,
+                    },
+                    level=logging.WARNING,
                 )
                 resp.raise_for_status()
             delay = _funnel_chunk_backoff_sec(tries, int(resp.status_code))

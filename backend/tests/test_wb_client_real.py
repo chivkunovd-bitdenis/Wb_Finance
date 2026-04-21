@@ -20,6 +20,14 @@ from dotenv import load_dotenv
 
 from app.services.wb_client import fetch_sales, fetch_ads, fetch_funnel
 
+# Реальные запросы к WB нельзя запускать "случайно" (локально/в CI):
+# они зависят от внешней сети, лимитов и могут быть долгими/нестабильными.
+# Поэтому включаем их только явным флагом.
+pytestmark = pytest.mark.skipif(
+    (os.getenv("RUN_REAL_WB_TESTS") or "").strip() not in {"1", "true", "TRUE", "yes", "YES"},
+    reason="Real WB API tests are disabled by default. Set RUN_REAL_WB_TESTS=1 to enable.",
+)
+
 # Подгрузить backend/.env (при запуске из backend/ или из Docker /app)
 # override=True — чтобы значения из файла перезаписали пустые переменные из env_file
 _env_path = Path(__file__).resolve().parent.parent / ".env"

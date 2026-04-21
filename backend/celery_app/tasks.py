@@ -549,6 +549,7 @@ def sync_funnel(
                 nm_ids,
                 user.wb_api_key.strip(),
                 log_context=f"user_id={user_id} op=sync_funnel",
+                sleep_on_retry=False,
             )
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else None
@@ -752,6 +753,7 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
                 nm_ids,
                 key,
                 log_context=f"user_id={user_id} op=ytd_weekly",
+                sleep_on_retry=False,
             )
             # Даже если WB вернул пусто — ничего не стираем; просто продолжаем daily-backfill.
             _funnel_insert_only(db, week_rows, user_id=user_id)

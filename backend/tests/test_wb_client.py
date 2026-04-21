@@ -201,6 +201,30 @@ def test_fetch_funnel_retries_same_chunk_on_429(mock_post, _mock_sleep):
     assert mock_post.call_count == 2
 
 
+@patch("app.services.wb_client.time.sleep", return_value=None)
+@patch("app.services.wb_client.requests.post")
+def test_fetch_funnel_non_blocking_mode_raises_on_429(mock_post, mock_sleep):
+    """
+    Для Celery-воркера используем sleep_on_retry=False: на 429 не спим внутри fetch_funnel,
+    а даём вызывающему коду (task) поставить retry через countdown.
+    """
+    r429 = Response()
+    r429.status_code = 429
+    r429.url = "https://example/funnel"
+    r429._content = b"limit"  # type: ignore[attr-defined]
+    mock_post.return_value = r429
+    with pytest.raises(requests.HTTPError):
+        fetch_funnel(
+            "2025-03-01",
+            "2025-03-01",
+            [1],
+            "fake-token",
+            sleep_on_retry=False,
+        )
+    assert mock_post.call_count == 1
+    mock_sleep.assert_not_called()
+
+
 @patch("app.services.wb_client.requests.post")
 def test_fetch_funnel_non_retry_http_raises(mock_post):
     r401 = Response()
