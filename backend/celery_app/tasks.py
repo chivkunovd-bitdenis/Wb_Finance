@@ -296,7 +296,7 @@ def _ensure_articles_from_raw(db, user_id: str, start: date, end: date, subject_
 
 
 @celery_app.task(name="sync_sales")
-def sync_sales(user_id: str, date_from: str, date_to: str) -> dict:
+def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None = None) -> dict:
     """
     Синхронизация продаж с WB за период [date_from, date_to].
     date_from, date_to в формате YYYY-MM-DD.
@@ -309,7 +309,33 @@ def sync_sales(user_id: str, date_from: str, date_to: str) -> dict:
         if not user.wb_api_key or not user.wb_api_key.strip():
             return {"ok": False, "error": "no_wb_api_key"}
 
-        rows = fetch_sales(date_from, date_to, user.wb_api_key.strip())
+        try:
+            rows = fetch_sales(date_from, date_to, user.wb_api_key.strip())
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                prev_code, prev_n = _retry_http_parse(retry_raw)
+                retry_n = (prev_n + 1) if prev_code == code else 1
+                if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
+                    delay = _retry_http_delay_sec(int(code), retry_n)
+                    sync_sales.apply_async(
+                        kwargs={
+                            "user_id": user_id,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                            "retry_raw": _retry_http_marker(int(code), retry_n),
+                        },
+                        countdown=delay,
+                    )
+                    return {
+                        "ok": False,
+                        "error": "wb_retry_scheduled",
+                        "http_code": int(code),
+                        "retry": retry_n,
+                        "delay_sec": delay,
+                    }
+                return {"ok": False, "error": "wb_retry_limit", "http_code": int(code)}
+            raise
         if not rows:
             return {"ok": True, "count": 0}
 

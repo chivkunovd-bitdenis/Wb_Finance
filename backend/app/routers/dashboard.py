@@ -5,6 +5,7 @@ REST API для фронта: дашборд (P&L по дням), артикул
 from datetime import date as date_type
 from datetime import timedelta
 from datetime import datetime, timezone
+from calendar import monthrange
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 
@@ -22,6 +23,8 @@ from app.models.finance_backfill_state import FinanceBackfillState
 from app.models.raw_sales import RawSale
 from app.models.sku_daily import SkuDaily
 from app.models.operational_expense import OperationalExpense
+from app.models.monthly_plan import MonthlyPlan
+from app.models.base import uuid_gen
 import logging
 
 from celery_app.tasks import sync_funnel_ytd_step, sync_finance_backfill_step
@@ -34,6 +37,10 @@ from app.schemas.dashboard import (
     OperationalExpenseResponse,
     OperationalExpenseCreate,
     OperationalExpenseUpdate,
+    PlanFactMonthRequest,
+    PlanFactMonthResponse,
+    PlanFactMonthMetricsResponse,
+    PlanFactMetricRow,
 )
 
 
@@ -263,6 +270,114 @@ def _num(v):
     if v is None:
         return None
     return float(v)
+
+
+def _month_start(d: date_type) -> date_type:
+    return date_type(d.year, d.month, 1)
+
+
+def _month_end(d: date_type) -> date_type:
+    last_day = monthrange(d.year, d.month)[1]
+    return date_type(d.year, d.month, last_day)
+
+
+def _iter_months(date_from: date_type, date_to: date_type) -> list[date_type]:
+    """Return list of month starts between [date_from, date_to] inclusive."""
+    if date_from > date_to:
+        return []
+    cur = _month_start(date_from)
+    end = _month_start(date_to)
+    months: list[date_type] = []
+    while cur <= end:
+        months.append(cur)
+        # increment month
+        y = cur.year + (1 if cur.month == 12 else 0)
+        m = 1 if cur.month == 12 else (cur.month + 1)
+        cur = date_type(y, m, 1)
+    return months
+
+
+PLAN_FACT_METRICS: list[tuple[str, bool]] = [
+    ("revenue", False),
+    ("orders_sum", False),
+    ("commission", False),
+    ("commission_pct", True),
+    ("logistics", False),
+    ("logistics_pct", True),
+    ("penalties", False),
+    ("cogs", False),
+    ("tax", False),
+    ("ads_spend", False),
+    ("ads_pct", True),
+    ("storage", False),
+    ("storage_pct", True),
+    ("operation_expenses", False),
+    ("margin", False),
+    ("margin_pct", True),
+    ("roi", True),
+]
+
+
+def _calc_pct_of_plan(fact: float | None, plan: float | None) -> float | None:
+    if fact is None or plan is None:
+        return None
+    if plan == 0:
+        if fact == 0:
+            return None
+        return 100.0
+    return fact / plan
+
+
+def _forecast_total_for_month(
+    *,
+    month_start: date_type,
+    month_end: date_type,
+    fact_to_yesterday: float,
+    today: date_type,
+) -> float:
+    """
+    Forecast month total:
+      avg = current_fact / passed_days (excluding today)
+      forecast = current_fact + avg * remaining_days (including today)
+    If passed_days <= 0: return current_fact (no basis for extrapolation).
+    """
+    if today < month_start:
+        # Month in the future for current "today": no actuals.
+        return fact_to_yesterday
+    passed_end = min(today - timedelta(days=1), month_end)
+    passed_days = (passed_end - month_start).days + 1 if passed_end >= month_start else 0
+    remaining_start = max(today, month_start)
+    remaining_days = (month_end - remaining_start).days + 1 if remaining_start <= month_end else 0
+    if passed_days <= 0:
+        return fact_to_yesterday
+    avg = fact_to_yesterday / passed_days
+    return fact_to_yesterday + avg * remaining_days
+
+
+def _derive_numeric_plans_from_revenue(values: dict[str, float]) -> dict[str, float]:
+    """
+    For cost categories where plan is entered in percent columns:
+    - commission_pct -> commission
+    - logistics_pct -> logistics
+    - ads_pct -> ads_spend
+    - storage_pct -> storage
+    Uses revenue plan as base.
+    """
+    revenue_plan = values.get("revenue")
+    if revenue_plan is None:
+        return values
+    derived_map = {
+        "commission_pct": "commission",
+        "logistics_pct": "logistics",
+        "ads_pct": "ads_spend",
+        "storage_pct": "storage",
+    }
+    out = dict(values)
+    for pct_key, sum_key in derived_map.items():
+        if pct_key in values:
+            pct = values.get(pct_key) or 0.0
+            out[sum_key] = revenue_plan * pct / 100.0
+    return out
 
 
 @router.get("/state")
@@ -683,3 +798,264 @@ def update_operational_expense(
         amount=float(exp.amount),
         comment=exp.comment,
     )
+
+
+@router.post("/plan-fact/plans", response_model=PlanFactMonthResponse)
+def save_plan_fact_month(
+    body: PlanFactMonthRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Save (upsert) plan values for a month.
+    Month must be the first day of month (YYYY-MM-01).
+    """
+    month = _month_start(body.month)
+    values = _derive_numeric_plans_from_revenue({k: float(v) for k, v in (body.values or {}).items()})
+
+    # Upsert per metric_key.
+    existing = (
+        db.query(MonthlyPlan)
+        .filter(MonthlyPlan.user_id == current_user.id, MonthlyPlan.month == month)
+        .all()
+    )
+    by_key = {r.metric_key: r for r in existing}
+    for key, val in values.items():
+        row = by_key.get(key)
+        if row is None:
+            row = MonthlyPlan(id=uuid_gen(), user_id=str(current_user.id), month=month, metric_key=key, value=val)
+        else:
+            row.value = val
+        db.add(row)
+    db.commit()
+
+    saved = (
+        db.query(MonthlyPlan)
+        .filter(MonthlyPlan.user_id == current_user.id, MonthlyPlan.month == month)
+        .all()
+    )
+    return PlanFactMonthResponse(month=month, values={r.metric_key: float(r.value) for r in saved})
+
+
+@router.get("/plan-fact/months", response_model=list[PlanFactMonthMetricsResponse])
+def get_plan_fact_months(
+    date_from: str = Query(..., description="YYYY-MM-DD"),
+    date_to: str = Query(..., description="YYYY-MM-DD"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Return plan/fact/%/forecast metrics for each month intersecting the given range.
+    Facts/forecasts are ALWAYS computed for full month (independent of selected range).
+    """
+    df = date_type.fromisoformat(date_from)
+    dt = date_type.fromisoformat(date_to)
+    months = _iter_months(df, dt)
+    if not months:
+        return []
+
+    # Preload plans for all months.
+    plan_rows = (
+        db.query(MonthlyPlan)
+        .filter(MonthlyPlan.user_id == current_user.id, MonthlyPlan.month.in_(months))
+        .all()
+    )
+    plans_by_month: dict[date_type, dict[str, float]] = {}
+    for r in plan_rows:
+        plans_by_month.setdefault(r.month, {})[r.metric_key] = float(r.value)
+
+    today = date_type.today()
+    result: list[PlanFactMonthMetricsResponse] = []
+
+    for m_start in months:
+        m_end = _month_end(m_start)
+
+        # Numeric sums for full month.
+        sums = (
+            db.query(
+                func.coalesce(func.sum(PnlDaily.revenue), 0.0).label("revenue"),
+                func.coalesce(func.sum(PnlDaily.commission), 0.0).label("commission"),
+                func.coalesce(func.sum(PnlDaily.logistics), 0.0).label("logistics"),
+                func.coalesce(func.sum(PnlDaily.penalties), 0.0).label("penalties"),
+                func.coalesce(func.sum(PnlDaily.storage), 0.0).label("storage"),
+                func.coalesce(func.sum(PnlDaily.ads_spend), 0.0).label("ads_spend"),
+                func.coalesce(func.sum(PnlDaily.cogs), 0.0).label("cogs"),
+                func.coalesce(func.sum(PnlDaily.tax), 0.0).label("tax"),
+                func.coalesce(func.sum(PnlDaily.operation_expenses), 0.0).label("operation_expenses"),
+                func.coalesce(func.sum(PnlDaily.margin), 0.0).label("margin"),
+            )
+            .filter(PnlDaily.user_id == current_user.id, PnlDaily.date >= m_start, PnlDaily.date <= m_end)
+            .one()
+        )
+
+        # Orders sum (full month) from funnel_daily (sum across nm_id).
+        orders_sum = (
+            db.query(func.coalesce(func.sum(FunnelDaily.order_sum), 0.0))
+            .filter(FunnelDaily.user_id == current_user.id, FunnelDaily.date >= m_start, FunnelDaily.date <= m_end)
+            .scalar()
+            or 0.0
+        )
+
+        # Daily rows for percent averages + "current to yesterday" sums.
+        daily_rows = (
+            db.query(
+                PnlDaily.date,
+                PnlDaily.revenue,
+                PnlDaily.commission,
+                PnlDaily.logistics,
+                PnlDaily.storage,
+                PnlDaily.ads_spend,
+                PnlDaily.cogs,
+                PnlDaily.margin,
+            )
+            .filter(PnlDaily.user_id == current_user.id, PnlDaily.date >= m_start, PnlDaily.date <= m_end)
+            .order_by(PnlDaily.date.asc())
+            .all()
+        )
+
+        def _avg(nums: list[float]) -> float | None:
+            if not nums:
+                return None
+            return sum(nums) / len(nums)
+
+        com_pcts: list[float] = []
+        log_pcts: list[float] = []
+        ads_pcts: list[float] = []
+        stor_pcts: list[float] = []
+        margin_pcts: list[float] = []
+        roi_pcts: list[float] = []
+
+        fact_to_yesterday: dict[str, float] = {
+            "revenue": 0.0,
+            "orders_sum": 0.0,
+            "commission": 0.0,
+            "logistics": 0.0,
+            "penalties": 0.0,
+            "storage": 0.0,
+            "ads_spend": 0.0,
+            "cogs": 0.0,
+            "tax": 0.0,
+            "operation_expenses": 0.0,
+            "margin": 0.0,
+        }
+
+        # Preload orders per day for "to yesterday" (funnel_daily).
+        orders_per_day: dict[date_type, float] = dict(
+            db.query(FunnelDaily.date, func.coalesce(func.sum(FunnelDaily.order_sum), 0.0))
+            .filter(FunnelDaily.user_id == current_user.id, FunnelDaily.date >= m_start, FunnelDaily.date <= m_end)
+            .group_by(FunnelDaily.date)
+            .all()
+        )
+
+        for d, rev, comm, log, stor, ads, cogs, mar in daily_rows:
+            revenue = float(rev or 0.0)
+            commission = float(comm or 0.0)
+            logistics = float(log or 0.0)
+            storage = float(stor or 0.0)
+            ads_spend = float(ads or 0.0)
+            cogs_v = float(cogs or 0.0)
+            margin = float(mar or 0.0)
+
+            if revenue > 0:
+                com_pcts.append((commission / revenue) * 100.0)
+                log_pcts.append((logistics / revenue) * 100.0)
+                ads_pcts.append((ads_spend / revenue) * 100.0)
+                stor_pcts.append((storage / revenue) * 100.0)
+                margin_pcts.append((margin / revenue) * 100.0)
+            if cogs_v > 0:
+                roi_pcts.append((margin / cogs_v) * 100.0)
+
+            # to yesterday (exclude today)
+            if d < today:
+                fact_to_yesterday["revenue"] += revenue
+                fact_to_yesterday["commission"] += commission
+                fact_to_yesterday["logistics"] += logistics
+                fact_to_yesterday["storage"] += storage
+                fact_to_yesterday["ads_spend"] += ads_spend
+                fact_to_yesterday["cogs"] += cogs_v
+                fact_to_yesterday["margin"] += margin
+                fact_to_yesterday["orders_sum"] += float(orders_per_day.get(d, 0.0) or 0.0)
+
+        # For fields not present in daily_rows but required in forecast-to-yesterday:
+        # penalties/tax/operation_expenses are in PnlDaily but not selected above; fetch sums to yesterday in one query.
+        to_yesterday_end = min(today - timedelta(days=1), m_end)
+        if to_yesterday_end >= m_start:
+            extra = (
+                db.query(
+                    func.coalesce(func.sum(PnlDaily.penalties), 0.0),
+                    func.coalesce(func.sum(PnlDaily.tax), 0.0),
+                    func.coalesce(func.sum(PnlDaily.operation_expenses), 0.0),
+                )
+                .filter(PnlDaily.user_id == current_user.id, PnlDaily.date >= m_start, PnlDaily.date <= to_yesterday_end)
+                .one()
+            )
+            fact_to_yesterday["penalties"] = float(extra[0] or 0.0)
+            fact_to_yesterday["tax"] = float(extra[1] or 0.0)
+            fact_to_yesterday["operation_expenses"] = float(extra[2] or 0.0)
+
+        percent_facts: dict[str, float | None] = {
+            "commission_pct": _avg(com_pcts),
+            "logistics_pct": _avg(log_pcts),
+            "ads_pct": _avg(ads_pcts),
+            "storage_pct": _avg(stor_pcts),
+            "margin_pct": _avg(margin_pcts),
+            "roi": _avg(roi_pcts),
+        }
+
+        facts: dict[str, float | None] = {
+            "revenue": float(sums.revenue),
+            "orders_sum": float(orders_sum),
+            "commission": float(sums.commission),
+            "logistics": float(sums.logistics),
+            "penalties": float(sums.penalties),
+            "storage": float(sums.storage),
+            "ads_spend": float(sums.ads_spend),
+            "cogs": float(sums.cogs),
+            "tax": float(sums.tax),
+            "operation_expenses": float(sums.operation_expenses),
+            "margin": float(sums.margin),
+            **{k: (float(v) if v is not None else None) for k, v in percent_facts.items()},
+        }
+
+        plan_values = plans_by_month.get(m_start, {})
+
+        metric_rows: list[PlanFactMetricRow] = []
+        for key, is_percent in PLAN_FACT_METRICS:
+            plan = plan_values.get(key)
+            fact = facts.get(key)
+            if is_percent:
+                metric_rows.append(
+                    PlanFactMetricRow(
+                        metric_key=key,
+                        is_percent=True,
+                        plan=plan,
+                        fact=fact,
+                        pct_of_plan=None,
+                        forecast=None,
+                        forecast_pct_of_plan=None,
+                    )
+                )
+                continue
+
+            fact_num = float(fact or 0.0)
+            fc = _forecast_total_for_month(
+                month_start=m_start,
+                month_end=m_end,
+                fact_to_yesterday=float(fact_to_yesterday.get(key, fact_num) or 0.0),
+                today=today,
+            )
+            metric_rows.append(
+                PlanFactMetricRow(
+                    metric_key=key,
+                    is_percent=False,
+                    plan=plan,
+                    fact=fact_num,
+                    pct_of_plan=_calc_pct_of_plan(fact_num, plan),
+                    forecast=fc,
+                    forecast_pct_of_plan=_calc_pct_of_plan(fc, plan),
+                )
+            )
+
+        result.append(PlanFactMonthMetricsResponse(month=m_start, metrics=metric_rows))
+
+    return result

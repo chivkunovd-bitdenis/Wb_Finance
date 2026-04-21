@@ -159,6 +159,35 @@ export async function getFunnel(dateFrom, dateTo) {
   return res.json();
 }
 
+// ── Plan-Fact (monthly) ───────────────────────────────────────────────────────
+
+export async function getPlanFactMonths(dateFrom, dateTo) {
+  const p = new URLSearchParams();
+  p.set('date_from', dateFrom);
+  p.set('date_to', dateTo);
+  const res = await apiFetch(`${API_BASE}/dashboard/plan-fact/months?${p}`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function savePlanFactMonth(monthIso, values) {
+  const res = await apiFetch(`${API_BASE}/dashboard/plan-fact/plans`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ month: monthIso, values: values || {} }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function getSku(dateFrom, dateTo) {
   const p = new URLSearchParams();
   if (dateFrom) p.set('date_from', dateFrom);

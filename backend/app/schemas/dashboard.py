@@ -1,4 +1,8 @@
 """Схемы ответов API для дашборда: P&L по дням, артикулы, воронка, time-series по SKU."""
+from __future__ import annotations
+
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -83,3 +87,30 @@ class SkuDayResponse(BaseModel):
     cart_count: int | None
     order_count: int | None
     order_sum: float | None
+
+
+class PlanFactMonthRequest(BaseModel):
+    """Save plans for a given month (YYYY-MM-01)."""
+
+    month: date
+    values: dict[str, float]
+
+
+class PlanFactMonthResponse(BaseModel):
+    month: date
+    values: dict[str, float]
+
+
+class PlanFactMetricRow(BaseModel):
+    metric_key: str
+    is_percent: bool
+    plan: float | None
+    fact: float | None
+    pct_of_plan: float | None
+    forecast: float | None
+    forecast_pct_of_plan: float | None
+
+
+class PlanFactMonthMetricsResponse(BaseModel):
+    month: date
+    metrics: list[PlanFactMetricRow]

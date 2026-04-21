@@ -16,6 +16,7 @@ from app.models.reminder_log import ReminderLog
 from app.models.webhook_event import WebhookEvent
 from app.models.daily_brief import DailyBrief
 from app.models.promo_code import PromoCode
+from app.models.monthly_plan import MonthlyPlan
 
 __all__ = [
     "Base",
@@ -36,4 +37,5 @@ __all__ = [
     "WebhookEvent",
     "DailyBrief",
     "PromoCode",
+    "MonthlyPlan",
 ]

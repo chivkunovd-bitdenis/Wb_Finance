@@ -25,3 +25,27 @@ app.sellerfocus.pro {
         file_server
     }
 }
+
+localhost, 127.0.0.1 {
+    encode zstd gzip
+
+    # Local dev: issue a local certificate so https://localhost works.
+    tls internal
+
+    @api path /auth/* /sync/* /dashboard/* /billing/* /health /openapi.json /docs* /redoc*
+
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+    @index path / /index.html
+    header @index Cache-Control "no-cache, no-store, must-revalidate"
+
+    handle @api {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        root * /var/www/app
+        try_files {path} /index.html
+        file_server
+    }
+}

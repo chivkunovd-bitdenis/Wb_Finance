@@ -39,6 +39,12 @@ function formatNum(n) {
 
 export default function Dashboard({ range, refreshTrigger, cache, updateCache }) {
   const { dateFrom, dateTo } = range || {};
+  const [planFactEnabled, setPlanFactEnabled] = useState(false);
+  const [planFactEdit, setPlanFactEdit] = useState(false);
+  const [planFactMonths, setPlanFactMonths] = useState([]);
+  const [planFactLoading, setPlanFactLoading] = useState(false);
+  const [planFactError, setPlanFactError] = useState('');
+  const [planInputsByMonth, setPlanInputsByMonth] = useState({});
   const [funnelRows, setFunnelRows] = useState(() =>
     cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : [],
   );
@@ -72,6 +78,34 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       .catch((e) => setError(e.message || 'Ошибка загрузки'))
       .finally(() => setLoading(false));
   }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+
+  useEffect(() => {
+    if (!planFactEnabled) return;
+    if (!dateFrom || !dateTo) return;
+    setPlanFactLoading(true);
+    setPlanFactError('');
+    api
+      .getPlanFactMonths(dateFrom, dateTo)
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setPlanFactMonths(list);
+        // Initialize inputs from server plans (only for months we fetched).
+        const next = {};
+        for (const m of list) {
+          const monthIso = m?.month;
+          const metricRows = Array.isArray(m?.metrics) ? m.metrics : [];
+          const monthInputs = {};
+          for (const row of metricRows) {
+            if (!row || !row.metric_key) continue;
+            if (row.plan !== null && row.plan !== undefined) monthInputs[row.metric_key] = Number(row.plan);
+          }
+          next[monthIso] = monthInputs;
+        }
+        setPlanInputsByMonth(next);
+      })
+      .catch((e) => setPlanFactError(e.message || 'Ошибка загрузки планов'))
+      .finally(() => setPlanFactLoading(false));
+  }, [planFactEnabled, dateFrom, dateTo, refreshTrigger]);
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
@@ -115,6 +149,107 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   }, [pnl, dateFrom, dateTo]);
 
   const showFullLoader = (loading && filtered.length === 0) || (loadingFunnel && funnelRows.length === 0);
+
+  const planFactByMonth = useMemo(() => {
+    const map = new Map();
+    for (const m of planFactMonths || []) {
+      if (!m?.month) continue;
+      map.set(m.month, m);
+    }
+    return map;
+  }, [planFactMonths]);
+
+  const monthSections = useMemo(() => {
+    if (!planFactEnabled) return [{ month: null, rows: filtered }];
+    const groups = new Map();
+    for (const r of filtered || []) {
+      const month = (r?.date || '').slice(0, 7) ? `${(r?.date || '').slice(0, 7)}-01` : null;
+      if (!groups.has(month)) groups.set(month, []);
+      groups.get(month).push(r);
+    }
+    return Array.from(groups.entries())
+      .filter(([m]) => m)
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .map(([month, rows]) => ({ month, rows }));
+  }, [filtered, planFactEnabled]);
+
+  const cols = useMemo(() => ([
+    { label: 'Выручка', key: 'revenue', isPercent: false, editable: true },
+    { label: 'Заказы ₽', key: 'orders_sum', isPercent: false, editable: true },
+    { label: 'Ком', key: 'commission', isPercent: false, editable: false }, // derived from % комиссии
+    { label: '% ком', key: 'commission_pct', isPercent: true, editable: true },
+    { label: 'Лог', key: 'logistics', isPercent: false, editable: false }, // derived from % логистики
+    { label: '% лог', key: 'logistics_pct', isPercent: true, editable: true },
+    { label: 'Штрафы', key: 'penalties', isPercent: false, editable: true },
+    { label: 'Себес', key: 'cogs', isPercent: false, editable: true },
+    { label: 'Налог', key: 'tax', isPercent: false, editable: true },
+    { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
+    { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
+    { label: 'Хран', key: 'storage', isPercent: false, editable: false }, // derived from % хранения
+    { label: '% хран', key: 'storage_pct', isPercent: true, editable: true },
+    { label: 'Опер. расходы', key: 'operation_expenses', isPercent: false, editable: true },
+    { label: 'Маржа', key: 'margin', isPercent: false, editable: true },
+    { label: '% маржи', key: 'margin_pct', isPercent: true, editable: true },
+    { label: 'ROI', key: 'roi', isPercent: true, editable: true },
+  ]), []);
+
+  function monthTitle(monthIso) {
+    if (!monthIso) return '';
+    const d = new Date(`${monthIso}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return monthIso;
+    return d.toLocaleDateString('ru', { month: 'long', year: 'numeric' });
+  }
+
+  function formatCellValue(key, v) {
+    if (v == null) return '—';
+    const isPercent = cols.find((c) => c.key === key)?.isPercent;
+    if (isPercent) return `${Math.round(Number(v))}%`;
+    return formatNum(v);
+  }
+
+  function onPlanInputChange(monthIso, metricKey, nextRaw) {
+    setPlanInputsByMonth((prev) => {
+      const next = { ...(prev || {}) };
+      const m = { ...(next[monthIso] || {}) };
+      if (nextRaw === '' || nextRaw === null || nextRaw === undefined) {
+        delete m[metricKey];
+      } else {
+        m[metricKey] = nextRaw;
+      }
+      next[monthIso] = m;
+      return next;
+    });
+  }
+
+  async function savePlansForVisibleMonths() {
+    const months = monthSections.map((s) => s.month).filter(Boolean);
+    for (const monthIso of months) {
+      const values = planInputsByMonth?.[monthIso] || {};
+      // Convert to numbers; keep only finite
+      const payload = {};
+      for (const [k, v] of Object.entries(values)) {
+        const n = Number(v);
+        if (Number.isFinite(n)) payload[k] = n;
+      }
+      await api.savePlanFactMonth(monthIso, payload);
+    }
+    // Refresh from server to show derived sums and updated plans.
+    const refreshed = await api.getPlanFactMonths(dateFrom, dateTo);
+    const list = Array.isArray(refreshed) ? refreshed : [];
+    setPlanFactMonths(list);
+    const next = {};
+    for (const m of list) {
+      const monthIso = m?.month;
+      const metricRows = Array.isArray(m?.metrics) ? m.metrics : [];
+      const monthInputs = {};
+      for (const row of metricRows) {
+        if (!row || !row.metric_key) continue;
+        if (row.plan !== null && row.plan !== undefined) monthInputs[row.metric_key] = Number(row.plan);
+      }
+      next[monthIso] = monthInputs;
+    }
+    setPlanInputsByMonth(next);
+  }
 
   const totals = useMemo(() => {
     return (filtered || []).reduce(
@@ -214,7 +349,41 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       <div className="table-card">
         <div className="table-head-row">
           <h3>Детализация по дням</h3>
-          <span className="tag tag-gray">{daysCount} дней</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+              <input
+                type="checkbox"
+                checked={planFactEnabled}
+                onChange={(e) => {
+                  const checked = Boolean(e.target.checked);
+                  setPlanFactEnabled(checked);
+                  setPlanFactEdit(false);
+                }}
+              />
+              План-факт
+            </label>
+            {planFactEnabled && (
+              <button
+                className="btn btn-sm btn-outline-primary"
+                onClick={async () => {
+                  if (!planFactEdit) {
+                    setPlanFactEdit(true);
+                    return;
+                  }
+                  try {
+                    await savePlansForVisibleMonths();
+                    setPlanFactEdit(false);
+                  } catch (e) {
+                    alert(e?.message || 'Ошибка сохранения планов');
+                  }
+                }}
+                disabled={planFactLoading}
+              >
+                {planFactEdit ? 'Сохранить план' : 'Изменить план'}
+              </button>
+            )}
+            <span className="tag tag-gray">{daysCount} дней</span>
+          </div>
         </div>
         <div className="table-wrap">
           <table>
@@ -248,53 +417,140 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   </td>
                 </tr>
               ) : (
-                filtered.map((r) => {
-                  const revenue = Number(r.revenue) || 0;
-                  const orders = ordersByDate[r.date] || 0;
-                  const commission = Number(r.commission) || 0;
-                  const logistics = Number(r.logistics) || 0;
-                  const penalties = Number(r.penalties) || 0;
-                  const ads = Number(r.ads_spend) || 0;
-                  const storage = Number(r.storage) || 0;
-                  const opExp = Number(r.operation_expenses) || 0;
-                  const cogs = Number(r.cogs) || 0;
-                  const tax = Number(r.tax) || 0;
-                  const margin = Number(r.margin) || 0;
+                monthSections.flatMap((section) => {
+                  const rows = section.rows || [];
+                  const out = [];
+                  if (planFactEnabled && section.month) {
+                    out.push(
+                      <tr key={`sep-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
+                        <td className="left" colSpan={18} style={{ fontWeight: 700 }}>
+                          {monthTitle(section.month)}
+                        </td>
+                      </tr>
+                    );
+                  }
 
-                  const neg = margin < 0;
-                  const comPct = revenue > 0 ? ((commission / revenue) * 100) : 0;
-                  const logPct = revenue > 0 ? ((logistics / revenue) * 100) : 0;
-                  const reklPct = revenue > 0 ? ((ads / revenue) * 100) : 0;
-                  const storPct = revenue > 0 ? ((storage / revenue) * 100) : 0;
-                  const marginPct = revenue > 0 ? ((margin / revenue) * 100) : 0;
-                  const roi = cogs > 0 ? (margin / cogs) * 100 : 0;
+                  for (const r of rows) {
+                    const revenue = Number(r.revenue) || 0;
+                    const orders = ordersByDate[r.date] || 0;
+                    const commission = Number(r.commission) || 0;
+                    const logistics = Number(r.logistics) || 0;
+                    const penalties = Number(r.penalties) || 0;
+                    const ads = Number(r.ads_spend) || 0;
+                    const storage = Number(r.storage) || 0;
+                    const opExp = Number(r.operation_expenses) || 0;
+                    const cogs = Number(r.cogs) || 0;
+                    const tax = Number(r.tax) || 0;
+                    const margin = Number(r.margin) || 0;
 
-                  return (
-                    <tr key={r.date}>
-                      <td className="left">{formatDate(r.date)}</td>
-                      <td>{formatNum(r.revenue)}</td>
-                      <td>{formatNum(orders)}</td>
-                      <td>{formatNum(commission)}</td>
-                      <td>{revenue > 0 ? comPct.toFixed(1) : '0'}%</td>
-                      <td>{formatNum(logistics)}</td>
-                      <td>{revenue > 0 ? logPct.toFixed(1) : '0'}%</td>
-                      <td>{formatNum(penalties)}</td>
-                      <td>{formatNum(cogs)}</td>
-                      <td style={{ color: 'var(--text-secondary)' }}>{formatNum(tax)}</td>
-                      <td>{formatNum(ads)}</td>
-                      <td>{revenue > 0 ? reklPct.toFixed(1) : '0'}%</td>
-                      <td>{formatNum(storage)}</td>
-                      <td>{revenue > 0 ? storPct.toFixed(1) : '0'}%</td>
-                      <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(opExp)}</td>
-                      <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
-                        {formatNum(margin)}
-                      </td>
-                      <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
-                        {revenue > 0 ? marginPct.toFixed(1) : '0'}%
-                      </td>
-                      <td>{cogs > 0 ? `${Math.round(roi)}%` : '0%'}</td>
-                    </tr>
-                  );
+                    const neg = margin < 0;
+                    const comPct = revenue > 0 ? ((commission / revenue) * 100) : 0;
+                    const logPct = revenue > 0 ? ((logistics / revenue) * 100) : 0;
+                    const reklPct = revenue > 0 ? ((ads / revenue) * 100) : 0;
+                    const storPct = revenue > 0 ? ((storage / revenue) * 100) : 0;
+                    const marginPct = revenue > 0 ? ((margin / revenue) * 100) : 0;
+                    const roi = cogs > 0 ? (margin / cogs) * 100 : 0;
+
+                    out.push(
+                      <tr key={r.date}>
+                        <td className="left">{formatDate(r.date)}</td>
+                        <td>{formatNum(r.revenue)}</td>
+                        <td>{formatNum(orders)}</td>
+                        <td>{formatNum(commission)}</td>
+                        <td>{revenue > 0 ? comPct.toFixed(1) : '0'}%</td>
+                        <td>{formatNum(logistics)}</td>
+                        <td>{revenue > 0 ? logPct.toFixed(1) : '0'}%</td>
+                        <td>{formatNum(penalties)}</td>
+                        <td>{formatNum(cogs)}</td>
+                        <td style={{ color: 'var(--text-secondary)' }}>{formatNum(tax)}</td>
+                        <td>{formatNum(ads)}</td>
+                        <td>{revenue > 0 ? reklPct.toFixed(1) : '0'}%</td>
+                        <td>{formatNum(storage)}</td>
+                        <td>{revenue > 0 ? storPct.toFixed(1) : '0'}%</td>
+                        <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(opExp)}</td>
+                        <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
+                          {formatNum(margin)}
+                        </td>
+                        <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
+                          {revenue > 0 ? marginPct.toFixed(1) : '0'}%
+                        </td>
+                        <td>{cogs > 0 ? `${Math.round(roi)}%` : '0%'}</td>
+                      </tr>
+                    );
+                  }
+
+                  if (planFactEnabled && section.month) {
+                    const monthData = planFactByMonth.get(section.month);
+                    const metrics = Array.isArray(monthData?.metrics) ? monthData.metrics : [];
+                    const byKey = new Map(metrics.map((x) => [x.metric_key, x]));
+
+                    const rowDefs = [
+                      { label: 'План', kind: 'plan' },
+                      { label: 'Факт', kind: 'fact' },
+                      { label: '% выполнения', kind: 'pct_of_plan' },
+                      { label: 'Прогноз выполнения', kind: 'forecast' },
+                      { label: 'Прогноз выполнения плана', kind: 'forecast_pct_of_plan' },
+                    ];
+
+                    for (const def of rowDefs) {
+                      out.push(
+                        <tr key={`${section.month}-${def.kind}`} style={{ background: 'var(--bg-secondary)' }}>
+                          <td className="left" style={{ fontWeight: 600 }}>{def.label}</td>
+                          {cols.map((c) => {
+                            const m = byKey.get(c.key);
+                            const isPercent = Boolean(m?.is_percent);
+                            const v = m ? m[def.kind] : null;
+
+                            const hideForPercent =
+                              isPercent &&
+                              (def.kind === 'pct_of_plan' ||
+                                def.kind === 'forecast' ||
+                                def.kind === 'forecast_pct_of_plan');
+
+                            if (def.kind === 'plan' && planFactEdit) {
+                              const editable = Boolean(c.editable);
+                              const cur = planInputsByMonth?.[section.month]?.[c.key];
+                              return (
+                                <td key={c.key}>
+                                  <input
+                                    type="number"
+                                    inputMode="numeric"
+                                    value={cur ?? ''}
+                                    onChange={(e) => onPlanInputChange(section.month, c.key, e.target.value)}
+                                    disabled={!editable}
+                                    style={{
+                                      width: '100%',
+                                      padding: '6px 8px',
+                                      borderRadius: 8,
+                                      border: '1px solid rgba(0,0,0,0.12)',
+                                      background: editable ? 'white' : 'rgba(0,0,0,0.04)',
+                                    }}
+                                  />
+                                </td>
+                              );
+                            }
+
+                            if (hideForPercent) {
+                              return (
+                                <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>
+                                  —
+                                </td>
+                              );
+                            }
+
+                            if (def.kind === 'pct_of_plan' || def.kind === 'forecast_pct_of_plan') {
+                              if (v == null) return <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>—</td>;
+                              return <td key={c.key}>{`${Math.round(Number(v) * 100)}%`}</td>;
+                            }
+
+                            return <td key={c.key}>{formatCellValue(c.key, v)}</td>;
+                          })}
+                        </tr>
+                      );
+                    }
+                  }
+
+                  return out;
                 })
               )}
 
@@ -324,6 +580,12 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
               )}
             </tbody>
           </table>
+          {planFactEnabled && planFactLoading && (
+            <div style={{ padding: 10, color: 'var(--text-tertiary)' }}>Загрузка план-факт...</div>
+          )}
+          {planFactEnabled && planFactError && (
+            <div className="alert alert-danger" style={{ marginTop: 10 }}>{planFactError}</div>
+          )}
         </div>
       </div>
 

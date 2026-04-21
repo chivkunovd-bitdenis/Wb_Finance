@@ -12,6 +12,89 @@ logger = logging.getLogger(__name__)
 SALES_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 
 
+def _wb_header_int(resp: requests.Response, name: str) -> int | None:
+    v = resp.headers.get(name)
+    if v is None:
+        return None
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+def _wb_error_detail(resp: requests.Response) -> tuple[str | None, str | None, str | None]:
+    """
+    Extract (title, detail, request_id) from WB JSON error if present.
+    WB often returns: {"title": "...", "detail": "...", "requestId": "..."} on 4xx/5xx.
+    """
+    try:
+        j = resp.json()
+    except Exception:
+        return None, None, None
+    if not isinstance(j, dict):
+        return None, None, None
+    title = j.get("title")
+    detail = j.get("detail")
+    request_id = j.get("requestId") or j.get("request_id")
+    return (
+        str(title)[:200] if title else None,
+        str(detail)[:600] if detail else None,
+        str(request_id)[:120] if request_id else None,
+    )
+
+
+def _log_wb_http_error(
+    *,
+    resp: requests.Response,
+    op: str,
+    url: str,
+    log_context: str | None = None,
+    extra: dict[str, object] | None = None,
+    level: int = logging.WARNING,
+) -> None:
+    """
+    Log WB HTTP error in a diagnosis-friendly way:
+    - http code + url/op + optional period/rrid/chunk
+    - rate limit headers + requestId/detail from body (if any)
+    """
+    status = int(resp.status_code)
+    limit = _wb_header_int(resp, "X-RateLimit-Limit")
+    remaining = _wb_header_int(resp, "X-RateLimit-Remaining")
+    reset = _wb_header_int(resp, "X-RateLimit-Reset")
+    retry_after = resp.headers.get("Retry-After")
+    title, detail, request_id = _wb_error_detail(resp)
+    try:
+        body_preview = (resp.text or "")[:300].replace("\n", "\\n")
+    except Exception:
+        body_preview = "<no-body>"
+
+    parts: list[str] = [f"wb_http op={op}", f"http={status}", f"url={url}"]
+    if log_context:
+        parts.append(str(log_context)[:300])
+    if limit is not None:
+        parts.append(f"limit={limit}")
+    if remaining is not None:
+        parts.append(f"remaining={remaining}")
+    if reset is not None:
+        parts.append(f"reset_sec={reset}")
+    if retry_after:
+        parts.append(f"retry_after={str(retry_after)[:32]}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    if title:
+        parts.append(f"title={title}")
+    if detail:
+        parts.append(f"detail={detail}")
+    if extra:
+        for k, v in extra.items():
+            if v is None:
+                continue
+            parts.append(f"{k}={str(v)[:200]}")
+    parts.append(f"body_preview={body_preview}")
+
+    logger.log(level, " ".join(parts))
+
+
 def _parse_date(value) -> str | None:
     """Привести к YYYY-MM-DD."""
     if not value:
@@ -34,7 +117,15 @@ def fetch_sales(date_from: str, date_to: str, wb_api_key: str) -> list[dict]:
     while True:
         url = f"{SALES_URL}?dateFrom={date_from}&dateTo={date_to}&period=daily&limit=100000&rrid={rrid}"
         resp = requests.get(url, headers=headers, timeout=120)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            _log_wb_http_error(
+                resp=resp,
+                op="sales",
+                url=SALES_URL,
+                extra={"date_from": date_from, "date_to": date_to, "rrid": rrid},
+                level=logging.WARNING if resp.status_code in {429, 500, 502, 503, 504} else logging.ERROR,
+            )
+            resp.raise_for_status()
         data = resp.json()
         if not data or not isinstance(data, list):
             break
@@ -111,6 +202,13 @@ def fetch_ads(date_from: str, date_to: str, wb_api_key: str) -> list[dict]:
     url = f"{ADS_UPD_URL}?from={date_from}&to={date_to}"
     resp = requests.get(url, headers=headers, timeout=60)
     if resp.status_code != 200:
+        _log_wb_http_error(
+            resp=resp,
+            op="ads_upd",
+            url=ADS_UPD_URL,
+            extra={"date_from": date_from, "date_to": date_to},
+            level=logging.WARNING if resp.status_code in {429, 500, 502, 503, 504} else logging.ERROR,
+        )
         return []
     data = resp.json()
     if not data or not isinstance(data, list):
@@ -194,13 +292,15 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
     }
     resp = requests.post(FUNNEL_PRODUCTS_URL, json=payload, headers=headers, timeout=120)
     if resp.status_code != 200:
-        body_preview = ""
-        try:
-            body_preview = str(resp.text)[:500]
-        except Exception:
-            body_preview = "<no-body>"
+        _log_wb_http_error(
+            resp=resp,
+            op="funnel_products",
+            url=FUNNEL_PRODUCTS_URL,
+            extra={"day": day, "nm_in_chunk": len(nm_ids)},
+            level=logging.WARNING if resp.status_code in {429, 500, 502, 503, 504} else logging.ERROR,
+        )
         raise requests.HTTPError(
-            f"{resp.status_code} {resp.reason} for {FUNNEL_PRODUCTS_URL}; body={body_preview}",
+            f"{resp.status_code} {resp.reason} for {FUNNEL_PRODUCTS_URL}",
             response=resp,
         )
     body = resp.json()
@@ -460,6 +560,21 @@ def fetch_funnel(
                 )
                 break
             if resp.status_code not in FUNNEL_RETRYABLE_HTTP:
+                _log_wb_http_error(
+                    resp=resp,
+                    op="funnel_history",
+                    url=FUNNEL_URL,
+                    log_context=log_context,
+                    extra={
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "chunk": f"{chunk_no}/{n_chunks}",
+                        "nm_in_chunk": len(chunk),
+                        "tries": tries,
+                        "fatal": True,
+                    },
+                    level=logging.ERROR,
+                )
                 logger.error(
                     _funnel_wb_msg(
                         log_context,
@@ -474,6 +589,21 @@ def fetch_funnel(
                 )
                 resp.raise_for_status()
             if tries >= FUNNEL_CHUNK_MAX_ATTEMPTS:
+                _log_wb_http_error(
+                    resp=resp,
+                    op="funnel_history",
+                    url=FUNNEL_URL,
+                    log_context=log_context,
+                    extra={
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "chunk": f"{chunk_no}/{n_chunks}",
+                        "nm_in_chunk": len(chunk),
+                        "tries": tries,
+                        "exhausted": True,
+                    },
+                    level=logging.ERROR,
+                )
                 logger.error(
                     _funnel_wb_msg(
                         log_context,
@@ -488,6 +618,21 @@ def fetch_funnel(
                 )
                 resp.raise_for_status()
             delay = _funnel_chunk_backoff_sec(tries, int(resp.status_code))
+            _log_wb_http_error(
+                resp=resp,
+                op="funnel_history",
+                url=FUNNEL_URL,
+                log_context=log_context,
+                extra={
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "chunk": f"{chunk_no}/{n_chunks}",
+                    "nm_in_chunk": len(chunk),
+                    "tries": f"{tries}/{FUNNEL_CHUNK_MAX_ATTEMPTS}",
+                    "sleep_sec": f"{delay:.1f}",
+                },
+                level=logging.WARNING,
+            )
             logger.warning(
                 _funnel_wb_msg(
                     log_context,

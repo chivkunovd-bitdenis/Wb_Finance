@@ -68,6 +68,17 @@ FUNNEL_DAY_KEYS = {
     "order_sum", "buyout_percent", "cr_to_cart", "cr_to_order",
 }
 
+PLAN_FACT_MONTH_KEYS = {"month", "metrics"}
+PLAN_FACT_METRIC_KEYS = {
+    "metric_key",
+    "is_percent",
+    "plan",
+    "fact",
+    "pct_of_plan",
+    "forecast",
+    "forecast_pct_of_plan",
+}
+
 
 @pytest.fixture
 def authenticated_client(real_db_session):
@@ -727,6 +738,127 @@ def test_pnl_only_operational_expenses_creates_day_and_is_negative_margin(authen
     assert len(items) == 1
     assert items[0]["operation_expenses"] == amount
     assert items[0]["margin"] == -amount
+
+
+def test_plan_fact_save_and_month_metrics_contract(authenticated_client):
+    """
+    План-факт:
+    - POST /dashboard/plan-fact/plans сохраняет планы на месяц (upsert) и применяет derived суммы от % (от revenue).
+    - GET /dashboard/plan-fact/months возвращает помесячный блок с метриками, где fact/plan и отношения месячные
+      и НЕ зависят от выбранного периода (date_from/date_to может быть подмножеством месяца).
+    """
+    client, session, user_id, token = authenticated_client
+
+    # Use a past month to make forecast deterministic (remaining_days=0 => forecast == fact).
+    d1 = date(2020, 1, 1)
+    d2 = date(2020, 1, 2)
+    session.add_all(
+        [
+            PnlDaily(
+                user_id=user_id,
+                date=d1,
+                revenue=100,
+                commission=10,
+                logistics=5,
+                penalties=1,
+                storage=2,
+                ads_spend=3,
+                cogs=50,
+                tax=6,
+                operation_expenses=4,
+                margin=19,
+            ),
+            PnlDaily(
+                user_id=user_id,
+                date=d2,
+                revenue=200,
+                commission=20,
+                logistics=10,
+                penalties=0,
+                storage=4,
+                ads_spend=6,
+                cogs=100,
+                tax=12,
+                operation_expenses=8,
+                margin=40,
+            ),
+            # orders_sum comes from FunnelDaily aggregated across nm_id
+            FunnelDaily(
+                user_id=user_id,
+                date=d1,
+                nm_id=1,
+                vendor_code="A",
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=111,
+            ),
+            FunnelDaily(
+                user_id=user_id,
+                date=d2,
+                nm_id=2,
+                vendor_code="B",
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=222,
+            ),
+        ]
+    )
+    session.commit()
+
+    # Save plans for Jan 2020: revenue + percent-based cost plan.
+    save_res = client.post(
+        "/dashboard/plan-fact/plans",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "month": "2020-01-01",
+            "values": {
+                "revenue": 1000,
+                "commission_pct": 10,  # should derive commission plan = 100
+            },
+        },
+    )
+    assert save_res.status_code == 200
+    saved = save_res.json()
+    assert saved["month"] == "2020-01-01"
+    assert saved["values"]["revenue"] == 1000.0
+    assert saved["values"]["commission_pct"] == 10.0
+    assert saved["values"]["commission"] == 100.0
+
+    # Query only one day as selected period; month stats still full month.
+    r = client.get(
+        "/dashboard/plan-fact/months",
+        params={"date_from": "2020-01-02", "date_to": "2020-01-02"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert set(items[0].keys()) == PLAN_FACT_MONTH_KEYS
+    assert items[0]["month"] == "2020-01-01"
+    metrics = items[0]["metrics"]
+    assert isinstance(metrics, list)
+    assert len(metrics) > 0
+    for row in metrics:
+        assert set(row.keys()) == PLAN_FACT_METRIC_KEYS
+
+    by_key = {x["metric_key"]: x for x in metrics}
+    assert by_key["revenue"]["is_percent"] is False
+    assert by_key["revenue"]["fact"] == 300.0  # 100 + 200 for full month
+    assert by_key["revenue"]["plan"] == 1000.0
+    assert by_key["revenue"]["pct_of_plan"] == 0.3  # fact/plan
+    assert by_key["revenue"]["forecast"] == 300.0  # past month => forecast == fact
+    assert by_key["revenue"]["forecast_pct_of_plan"] == 0.3
+
+    assert by_key["orders_sum"]["fact"] == 333.0  # 111 + 222
+
+    # Percent metric: no forecast fields
+    assert by_key["commission_pct"]["is_percent"] is True
+    assert by_key["commission_pct"]["plan"] == 10.0
+    assert by_key["commission_pct"]["pct_of_plan"] is None
+    assert by_key["commission_pct"]["forecast"] is None
 
 
 def test_real_wb_sales_response_structure():
