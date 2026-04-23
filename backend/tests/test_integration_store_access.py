@@ -107,9 +107,9 @@ def test_dashboard_state_autostarts_for_granted_store(client_real_db, real_db_se
     assert rg.status_code == 200
 
     viewer_token = _token_for(str(viewer.id))
-    with patch("app.routers.dashboard.sync_funnel_ytd_step") as mock_funnel_task, patch(
+    with patch("app.routers.dashboard.sync_funnel_ytd_step"), patch(
         "app.routers.dashboard.sync_finance_backfill_step"
-    ) as mock_fin_task:
+    ):
         r = client_real_db.get(
             "/dashboard/state",
             headers={
