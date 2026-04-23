@@ -4,12 +4,13 @@ Celery-задачи: синк с WB и пересчёт P&L.
 import logging
 import random
 import time
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from typing import cast
 
 import requests
 from celery_app.celery import celery_app
 from sqlalchemy import delete, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import SessionLocal
@@ -21,6 +22,7 @@ from app.models.raw_ads import RawAd
 from app.models.funnel_daily import FunnelDaily
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.finance_backfill_state import FinanceBackfillState
+from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.models.pnl_daily import PnlDaily
 from app.models.operational_expense import OperationalExpense
 from app.models.sku_daily import SkuDaily
@@ -51,6 +53,7 @@ FUNNEL_YTD_HTTP_RETRY_CODES = {429, 500, 502, 503, 504}
 WB_MAX_RETRY_AFTER_SEC = 12 * 60 * 60  # safety cap: 12h
 
 FUNNEL_BACKFILL_START_DATE = date(2026, 1, 1)
+FINANCE_MISSING_LOOKBACK_DAYS = 45
 
 
 def _funnel_nm_ids(db, *, user_id: str, date_from: date, date_to: date) -> list[int]:
@@ -343,7 +346,15 @@ def _ensure_articles_from_raw(db, user_id: str, start: date, end: date, subject_
 
 
 @celery_app.task(name="sync_sales")
-def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None = None) -> dict:
+def sync_sales(
+    user_id: str,
+    date_from: str,
+    date_to: str,
+    retry_raw: str | None = None,
+    *,
+    schedule_retry: bool = True,
+    enqueue_recalc: bool = True,
+) -> dict:
     """
     Синхронизация продаж с WB за период [date_from, date_to].
     date_from, date_to в формате YYYY-MM-DD.
@@ -361,6 +372,8 @@ def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else None
             if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                if not schedule_retry:
+                    raise
                 prev_code, prev_n = _retry_http_parse(retry_raw)
                 retry_n = (prev_n + 1) if prev_code == code else 1
                 if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
@@ -450,8 +463,9 @@ def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None
                 db.commit()
         except Exception:
             db.rollback()
-        recalculate_pnl.delay(user_id, date_from, date_to)
-        recalculate_sku_daily.delay(user_id, date_from, date_to)
+        if enqueue_recalc:
+            recalculate_pnl.delay(user_id, date_from, date_to)
+            recalculate_sku_daily.delay(user_id, date_from, date_to)
         return {"ok": True, "count": inserted}
     except Exception as e:
         db.rollback()
@@ -461,7 +475,15 @@ def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None
 
 
 @celery_app.task(name="sync_ads")
-def sync_ads(user_id: str, date_from: str, date_to: str) -> dict:
+def sync_ads(
+    user_id: str,
+    date_from: str,
+    date_to: str,
+    retry_raw: str | None = None,
+    *,
+    schedule_retry: bool = True,
+    enqueue_recalc: bool = True,
+) -> dict:
     """
     Синхронизация рекламы с WB за период: adv/v1/upd + детали кампаний, расход по nm_id поровну.
     """
@@ -473,7 +495,35 @@ def sync_ads(user_id: str, date_from: str, date_to: str) -> dict:
         if not user.wb_api_key or not user.wb_api_key.strip():
             return {"ok": False, "error": "no_wb_api_key"}
 
-        rows = fetch_ads(date_from, date_to, user.wb_api_key.strip())
+        try:
+            rows = fetch_ads(date_from, date_to, user.wb_api_key.strip())
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                if not schedule_retry:
+                    raise
+                prev_code, prev_n = _retry_http_parse(retry_raw)
+                retry_n = (prev_n + 1) if prev_code == code else 1
+                if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
+                    delay = _retry_http_delay_with_headers(int(code), retry_n, exc.response)
+                    sync_ads.apply_async(
+                        kwargs={
+                            "user_id": user_id,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                            "retry_raw": _retry_http_marker(int(code), retry_n),
+                        },
+                        countdown=delay,
+                    )
+                    return {
+                        "ok": False,
+                        "error": "wb_retry_scheduled",
+                        "http_code": int(code),
+                        "retry": retry_n,
+                        "delay_sec": delay,
+                    }
+                return {"ok": False, "error": "wb_retry_limit", "http_code": int(code)}
+            raise
         if not rows:
             return {"ok": True, "count": 0}
 
@@ -509,8 +559,9 @@ def sync_ads(user_id: str, date_from: str, date_to: str) -> dict:
                 db.commit()
         except Exception:
             db.rollback()
-        recalculate_pnl.delay(user_id, date_from, date_to)
-        recalculate_sku_daily.delay(user_id, date_from, date_to)
+        if enqueue_recalc:
+            recalculate_pnl.delay(user_id, date_from, date_to)
+            recalculate_sku_daily.delay(user_id, date_from, date_to)
         return {"ok": True, "count": len(rows)}
     except Exception as e:
         db.rollback()
@@ -990,6 +1041,26 @@ def sync_finance_backfill_step(user_id: str, year: int) -> dict:
         if through < year_start:
             return {"ok": True, "message": "nothing_to_backfill", "year": y}
 
+        # Приоритет: если есть pending/running missing-tail догрузка (обычно за вчера),
+        # не продолжаем годовой backfill, чтобы не съедать лимиты WB.
+        now_dt = datetime.now(timezone.utc)
+        window_from = through - timedelta(days=FINANCE_MISSING_LOOKBACK_DAYS)
+        pending_missing = (
+            db.query(FinanceMissingSyncState.id)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_to >= window_from,
+                FinanceMissingSyncState.date_to <= through,
+                FinanceMissingSyncState.status != "complete",
+                func.coalesce(FinanceMissingSyncState.next_run_at, now_dt) >= now_dt,
+            )
+            .first()
+            is not None
+        )
+        if pending_missing:
+            sync_finance_backfill_step.apply_async(args=[user_id, y], countdown=600)
+            return {"ok": True, "message": "deferred_due_to_missing_tail", "year": y}
+
         state = (
             db.query(FinanceBackfillState)
             .filter(
@@ -1082,6 +1153,118 @@ def sync_finance_backfill_step(user_id: str, year: int) -> dict:
             db.add(st)
             db.commit()
         return {"ok": False, "error": str(e)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="sync_finance_missing_range")
+def sync_finance_missing_range(user_id: str, date_from: str, date_to: str) -> dict:
+    """
+    Точечная догрузка финансов только за missing-tail диапазон (обычно вчера).
+    Дедуп/прогресс — в таблице finance_missing_sync_state.
+    """
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            return {"ok": False, "error": "user_not_found"}
+        if not user.wb_api_key or not user.wb_api_key.strip():
+            return {"ok": False, "error": "no_wb_api_key"}
+
+        df_d = date.fromisoformat(date_from)
+        dt_d = date.fromisoformat(date_to)
+
+        # Upsert state row
+        state = (
+            db.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_from == df_d,
+                FinanceMissingSyncState.date_to == dt_d,
+            )
+            .first()
+        )
+        if state is None:
+            state = FinanceMissingSyncState(
+                user_id=user_id,
+                date_from=df_d,
+                date_to=dt_d,
+                status="idle",
+            )
+            db.add(state)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                state = (
+                    db.query(FinanceMissingSyncState)
+                    .filter(
+                        FinanceMissingSyncState.user_id == user_id,
+                        FinanceMissingSyncState.date_from == df_d,
+                        FinanceMissingSyncState.date_to == dt_d,
+                    )
+                    .first()
+                )
+        assert state is not None
+
+        now_dt = datetime.now(timezone.utc)
+        if state.status == "running":
+            return {"ok": True, "message": "already_running"}
+        if state.next_run_at is not None:
+            nr = state.next_run_at
+            if nr.tzinfo is None:
+                nr = nr.replace(tzinfo=timezone.utc)
+            if nr > now_dt:
+                return {"ok": True, "message": "scheduled", "next_run_at": nr.isoformat()}
+
+        state.status = "running"
+        state.error_message = None
+        state.next_run_at = None
+        db.add(state)
+        db.commit()
+
+        try:
+            sync_sales(
+                user_id,
+                date_from,
+                date_to,
+                schedule_retry=False,
+                enqueue_recalc=False,
+            )
+            sync_ads(
+                user_id,
+                date_from,
+                date_to,
+                schedule_retry=False,
+                enqueue_recalc=False,
+            )
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                state.retry_count = int(state.retry_count or 0) + 1
+                state.last_http_code = int(code)
+                delay = _retry_http_delay_with_headers(int(code), int(state.retry_count), exc.response)
+                state.next_run_at = now_dt + timedelta(seconds=delay)
+                state.status = "idle"
+                state.error_message = f"retry_scheduled http={code} delay={delay}"
+                db.add(state)
+                db.commit()
+                sync_finance_missing_range.apply_async(args=[user_id, date_from, date_to], countdown=delay)
+                return {"ok": False, "error": "wb_retry_scheduled", "http_code": int(code), "delay_sec": delay}
+            raise
+
+        recalculate_pnl.delay(user_id, date_from, date_to)
+        recalculate_sku_daily.delay(user_id, date_from, date_to)
+
+        state.status = "complete"
+        state.error_message = None
+        state.next_run_at = None
+        db.add(state)
+        db.commit()
+        return {"ok": True, "message": "complete"}
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc)}
     finally:
         db.close()
 

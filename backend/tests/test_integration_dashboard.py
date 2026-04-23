@@ -291,22 +291,132 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_sales.delay") as mock_sales:
-        with patch("app.routers.dashboard.sync_ads.delay") as mock_ads:
-            with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
-                r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
-                assert r.status_code == 200
-                mock_backfill.assert_not_called()
-                mock_sales.assert_called_once()
-                mock_ads.assert_called_once()
-                args_sales, _ = mock_sales.call_args
-                args_ads, _ = mock_ads.call_args
-                assert args_sales[0] == user_id
-                assert args_sales[1] == yesterday.isoformat()
-                assert args_sales[2] == yesterday.isoformat()
-                assert args_ads[0] == user_id
-                assert args_ads[1] == yesterday.isoformat()
-                assert args_ads[2] == yesterday.isoformat()
+    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
+            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 200
+            mock_backfill.assert_not_called()
+            mock_missing.assert_called_once()
+            args, _kwargs = mock_missing.call_args
+            assert args[0] == user_id
+            assert args[1] == yesterday.isoformat()
+            assert args[2] == yesterday.isoformat()
+
+
+def test_dashboard_state_finance_missing_range_is_deduped_when_running(authenticated_client):
+    """Повторный вход не должен ставить missing-range задачу, если она уже running."""
+    client, session, user_id, token = authenticated_client
+    from datetime import timezone as _tz
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    day_before = today - timedelta(days=2)
+
+    # активируем финансовый автологик: наличие raw_sales + pnl_daily за день до вчера
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=day_before,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=day_before,
+            revenue=100,
+            commission=10,
+            logistics=1,
+            penalties=0,
+            storage=0,
+            ads_spend=0,
+            cogs=10,
+            tax=6,
+            margin=73,
+        )
+    )
+
+    # уже есть state running на диапазон вчера
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+
+    session.add(
+        FinanceMissingSyncState(
+            user_id=user_id,
+            date_from=yesterday,
+            date_to=yesterday,
+            status="running",
+            next_run_at=None,
+            updated_at=datetime.now(_tz.utc),
+        )
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_missing.assert_not_called()
+
+
+def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_present(authenticated_client):
+    """
+    Если вчера уже есть, но в пределах lookback есть дыра в середине —
+    /dashboard/state должен поставить догрузку по этой дыре (ограниченно), без запуска backfill.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    d1 = yesterday - timedelta(days=10)
+    d2 = yesterday - timedelta(days=9)
+    hole_start = yesterday - timedelta(days=7)
+    hole_end = yesterday - timedelta(days=6)
+
+    # eligibility: raw_sales exists
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=d1,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    # pnl present for yesterday and some earlier days, but missing the middle hole days
+    session.add_all(
+        [
+            PnlDaily(user_id=user_id, date=d1, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
+            PnlDaily(user_id=user_id, date=d2, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
+            PnlDaily(user_id=user_id, date=yesterday, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
+        ]
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
+            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 200
+            mock_backfill.assert_not_called()
+            assert mock_missing.called
+            # at least one call should cover the hole_end..hole_start region (order doesn't matter)
+            calls = [c.args for c in mock_missing.call_args_list]
+            assert any(args[1] == hole_start.isoformat() and args[2] == hole_end.isoformat() for args in calls) or any(
+                hole_start.isoformat() <= args[1] <= hole_end.isoformat() or hole_start.isoformat() <= args[2] <= hole_end.isoformat()
+                for args in calls
+            )
 
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):
     """Данные из pnl_daily возвращаются через GET /dashboard/pnl без искажений."""

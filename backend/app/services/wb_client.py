@@ -209,6 +209,11 @@ def fetch_ads(date_from: str, date_to: str, wb_api_key: str) -> list[dict]:
             extra={"date_from": date_from, "date_to": date_to},
             level=logging.WARNING if resp.status_code in {429, 500, 502, 503, 504} else logging.ERROR,
         )
+        if resp.status_code in {429, 500, 502, 503, 504}:
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason} for {ADS_UPD_URL}",
+                response=resp,
+            )
         return []
     data = resp.json()
     if not data or not isinstance(data, list):

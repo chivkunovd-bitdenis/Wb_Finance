@@ -27,12 +27,10 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import (
-    sync_funnel_ytd_step,
-    sync_finance_backfill_step,
-    sync_sales,
-    sync_ads,
-)
+from celery_app.tasks import sync_funnel_ytd_step, sync_finance_backfill_step, sync_finance_missing_range
+from app.models.finance_missing_sync_state import FinanceMissingSyncState
+from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
+from sqlalchemy.exc import IntegrityError
 from app.schemas.dashboard import (
     PnlDayResponse,
     ArticleResponse,
@@ -54,9 +52,10 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 logger = logging.getLogger(__name__)
 
 FUNNEL_BACKFILL_START_DATE = date_type(2026, 1, 1)
-FINANCE_YESTERDAY_WINDOW_DAYS = 14
-FINANCE_YESTERDAY_SCHEDULED_MARK = "__yesterday_sync_scheduled__"
-FINANCE_YESTERDAY_SCHEDULE_COOLDOWN = timedelta(minutes=10)
+FINANCE_MISSING_TAIL_LOOKBACK_DAYS = 45
+FINANCE_MISSING_TAIL_COOLDOWN = timedelta(minutes=10)
+FINANCE_HOLES_MAX_RANGES_PER_ENTRY = 3
+FINANCE_HOLES_MAX_RANGE_DAYS = 7
 
 
 def _repair_stuck_funnel_ytd_running(
@@ -236,66 +235,128 @@ def _maybe_start_finance_backfill(
     if not has_any_sales:
         return
 
-    # Если в целом финансы в витрине есть, но ровно за вчера нет — достаточно точечно
-    # синкнуть только вчера, не запуская годовой backfill.
-    has_yesterday_pnl = (
-        db.query(PnlDaily.id)
-        .filter(PnlDaily.user_id == user.id, PnlDaily.date == through)
-        .first()
-        is not None
+    # Warm path: точечно закрываем missing-tail (обычно вчера).
+    miss = compute_missing_tail_range(
+        db,
+        user_id=str(user.id),
+        through=through,
+        lookback_days=FINANCE_MISSING_TAIL_LOOKBACK_DAYS,
     )
-    if not has_yesterday_pnl:
-        window_from = through - timedelta(days=FINANCE_YESTERDAY_WINDOW_DAYS)
-        any_recent_pnl = (
-            db.query(PnlDaily.id)
+    if miss is not None:
+        # Дедуп: не плодим одну и ту же задачу на каждый refresh.
+        state = (
+            db.query(FinanceMissingSyncState)
             .filter(
-                PnlDaily.user_id == user.id,
-                PnlDaily.date >= window_from,
-                PnlDaily.date < through,
+                FinanceMissingSyncState.user_id == user.id,
+                FinanceMissingSyncState.date_from == miss.date_from,
+                FinanceMissingSyncState.date_to == miss.date_to,
             )
             .first()
-            is not None
         )
-        if any_recent_pnl:
-            row = (
-                db.query(FinanceBackfillState)
-                .filter(
-                    FinanceBackfillState.user_id == user.id,
-                    FinanceBackfillState.calendar_year == calendar_year,
-                )
-                .first()
-            )
-            if row and row.status in {"running", "complete"}:
+        now_dt = datetime.now(timezone.utc)
+        if state is not None:
+            if state.status == "running":
                 return
-
-            # анти-спам: не ставим "вчера" на каждый refresh
-            if row and row.error_message == FINANCE_YESTERDAY_SCHEDULED_MARK:
-                updated = row.updated_at
-                now = datetime.now(timezone.utc)
-                if updated.tzinfo is None:
-                    updated = updated.replace(tzinfo=timezone.utc)
-                if now - updated <= FINANCE_YESTERDAY_SCHEDULE_COOLDOWN:
+            if state.next_run_at is not None:
+                nr = state.next_run_at
+                if nr.tzinfo is None:
+                    nr = nr.replace(tzinfo=timezone.utc)
+                if nr > now_dt:
                     return
-
-            if row is None:
-                row = FinanceBackfillState(
-                    user_id=user.id,
-                    calendar_year=calendar_year,
-                    status="idle",
-                    error_message=FINANCE_YESTERDAY_SCHEDULED_MARK,
-                )
-            else:
-                row.status = "idle"
-                row.error_message = FINANCE_YESTERDAY_SCHEDULED_MARK
-            db.add(row)
-            db.commit()
+            # анти-спам кулдаун для idle/error без next_run_at
+            updated = state.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if now_dt - updated <= FINANCE_MISSING_TAIL_COOLDOWN:
+                return
+        else:
+            state = FinanceMissingSyncState(
+                user_id=str(user.id),
+                date_from=miss.date_from,
+                date_to=miss.date_to,
+                status="idle",
+            )
+            db.add(state)
             try:
-                day = through.isoformat()
-                sync_sales.delay(str(user.id), day, day)
-                sync_ads.delay(str(user.id), day, day)
-            except Exception as exc:
-                logger.exception("Celery delay failed (sync_sales/sync_ads for yesterday): %s", exc)
-            return
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+
+        try:
+            sync_finance_missing_range.delay(
+                str(user.id),
+                miss.date_from.isoformat(),
+                miss.date_to.isoformat(),
+            )
+        except Exception as exc:
+            logger.exception("Celery delay failed (sync_finance_missing_range): %s", exc)
+        return
+
+    # Если хвоста нет (вчера уже присутствует), можно закрывать остальные дыры в окне lookback.
+    window_from = through - timedelta(days=FINANCE_MISSING_TAIL_LOOKBACK_DAYS)
+    holes = compute_missing_ranges_in_window(
+        db,
+        user_id=str(user.id),
+        date_from=window_from,
+        date_to=through,
+    )
+    # Ставим только ограниченное число диапазонов за один вход, начиная с самых свежих дыр.
+    queued = 0
+    for rng in holes:
+        if queued >= FINANCE_HOLES_MAX_RANGES_PER_ENTRY:
+            break
+        # Ограничиваем длину диапазона, чтобы не превращать warm-path в бэкфилл.
+        # Если дыра длиннее — чиним только последнюю часть (ближе к today), остальное оставляем фону/следующим входам.
+        df = rng.date_from
+        dt = rng.date_to
+        if (dt - df).days + 1 > FINANCE_HOLES_MAX_RANGE_DAYS:
+            df = dt - timedelta(days=FINANCE_HOLES_MAX_RANGE_DAYS - 1)
+
+        state = (
+            db.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user.id,
+                FinanceMissingSyncState.date_from == df,
+                FinanceMissingSyncState.date_to == dt,
+            )
+            .first()
+        )
+        now_dt = datetime.now(timezone.utc)
+        if state is not None:
+            if state.status == "running":
+                continue
+            if state.next_run_at is not None:
+                nr = state.next_run_at
+                if nr.tzinfo is None:
+                    nr = nr.replace(tzinfo=timezone.utc)
+                if nr > now_dt:
+                    continue
+            updated = state.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if now_dt - updated <= FINANCE_MISSING_TAIL_COOLDOWN:
+                continue
+        else:
+            state = FinanceMissingSyncState(
+                user_id=str(user.id),
+                date_from=df,
+                date_to=dt,
+                status="idle",
+            )
+            db.add(state)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                continue
+        try:
+            sync_finance_missing_range.delay(str(user.id), df.isoformat(), dt.isoformat())
+            queued += 1
+        except Exception as exc:
+            logger.exception("Celery delay failed (sync_finance_missing_range): %s", exc)
+
+    if queued:
+        return
 
     # Если уже есть ранние дни года в pnl_daily — значит финансовый backfill хотя бы частично начат.
     first_pnl = (

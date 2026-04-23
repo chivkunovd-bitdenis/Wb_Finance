@@ -7,6 +7,7 @@ from app.models.pnl_daily import PnlDaily
 from app.models.funnel_daily import FunnelDaily
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.finance_backfill_state import FinanceBackfillState
+from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.models.sku_daily import SkuDaily
 from app.models.operational_expense import OperationalExpense
 from app.models.subscription import Subscription
@@ -30,6 +31,7 @@ __all__ = [
     "FunnelDaily",
     "FunnelBackfillState",
     "FinanceBackfillState",
+    "FinanceMissingSyncState",
     "SkuDaily",
     "OperationalExpense",
     "Subscription",
