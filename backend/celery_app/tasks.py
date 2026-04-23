@@ -469,6 +469,11 @@ def sync_sales(
         return {"ok": True, "count": inserted}
     except Exception as e:
         db.rollback()
+        # Важно для оркестраторов (например, sync_finance_missing_range):
+        # если schedule_retry=False, мы должны ПРОПУСТИТЬ наверх retryable HTTPError,
+        # чтобы внешний orchestrator мог выставить единый state/next_run_at и ретрай себя.
+        if isinstance(e, requests.HTTPError) and not schedule_retry:
+            raise
         return {"ok": False, "error": str(e)}
     finally:
         db.close()
@@ -565,6 +570,8 @@ def sync_ads(
         return {"ok": True, "count": len(rows)}
     except Exception as e:
         db.rollback()
+        if isinstance(e, requests.HTTPError) and not schedule_retry:
+            raise
         return {"ok": False, "error": str(e)}
     finally:
         db.close()
