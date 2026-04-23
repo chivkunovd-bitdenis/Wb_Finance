@@ -144,6 +144,23 @@ def test_dashboard_state_finance_missing_range_dedup_respects_next_run_at(real_d
             quantity=1,
         )
     )
+    # Важно: для новой логики дыр "вчера присутствует" определяется по raw_sales,
+    # иначе сработает missing-tail и тест уйдёт не по той ветке.
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=yesterday,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
     session.add(
         PnlDaily(
             user_id=user_id,

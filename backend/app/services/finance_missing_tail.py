@@ -5,7 +5,8 @@ from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
-from app.models.pnl_daily import PnlDaily
+from app.models.raw_sales import RawSale
+from app.models.raw_ads import RawAd
 
 
 @dataclass(frozen=True)
@@ -22,40 +23,64 @@ def compute_missing_tail_range(
     lookback_days: int = 45,
 ) -> DateRange | None:
     """
-    Найти "хвостовую" дыру в pnl_daily, которая заканчивается на `through` (обычно вчера).
+    Найти "хвостовую" дыру в сырье (raw_sales/raw_ads), которая заканчивается на `through` (обычно вчера).
 
     Возвращает диапазон [date_from..date_to], где date_to == through.
-    Если `through` уже присутствует в pnl_daily — возвращает None.
+    Если `through` уже присутствует в сырье (с учётом того, что реклама опциональна) — возвращает None.
 
     Важно: мы намеренно НЕ пытаемся чинить "дыры в середине" при входе пользователя.
     """
     if lookback_days <= 0:
         return None
     window_from = through - timedelta(days=lookback_days)
-    rows = (
-        db.query(PnlDaily.date)
+
+    sales_rows = (
+        db.query(RawSale.date)
         .filter(
-            PnlDaily.user_id == user_id,
-            PnlDaily.date >= window_from,
-            PnlDaily.date <= through,
+            RawSale.user_id == user_id,
+            RawSale.date >= window_from,
+            RawSale.date <= through,
         )
+        .distinct()
         .all()
     )
-    present = {r[0] for r in rows if r and r[0] is not None}
-    if through in present:
+    present_sales = {r[0] for r in sales_rows if r and r[0] is not None}
+
+    # Реклама опциональна: если у пользователя в окне нет ни одной raw_ads — не считаем отсутствие ads "дырой".
+    ads_rows = (
+        db.query(RawAd.date)
+        .filter(
+            RawAd.user_id == user_id,
+            RawAd.date >= window_from,
+            RawAd.date <= through,
+        )
+        .distinct()
+        .all()
+    )
+    present_ads = {r[0] for r in ads_rows if r and r[0] is not None}
+    has_ads_data = bool(present_ads)
+
+    def _is_complete(d: date) -> bool:
+        if d not in present_sales:
+            return False
+        if has_ads_data and d not in present_ads:
+            return False
+        return True
+
+    if _is_complete(through):
         return None
 
     # Хвостовая дыра: идём от through назад, пока дат нет.
     cursor = through
     missing_start = through
     while cursor >= window_from:
-        if cursor in present:
+        if _is_complete(cursor):
             break
         missing_start = cursor
         cursor -= timedelta(days=1)
 
-    # Если в окне нет НИ ОДНОЙ даты — это не warm-path, пусть это обрабатывается cold-start/backfill.
-    if not present:
+    # Если в окне нет НИ ОДНОЙ даты продаж — это не warm-path, пусть это обрабатывается cold-start/backfill.
+    if not present_sales:
         return None
 
     return DateRange(date_from=missing_start, date_to=through)
@@ -69,31 +94,57 @@ def compute_missing_ranges_in_window(
     date_to: date,
 ) -> list[DateRange]:
     """
-    Найти все "дыры" в pnl_daily на отрезке [date_from..date_to] (включительно).
+    Найти все "дыры" в сырье (raw_sales/raw_ads) на отрезке [date_from..date_to] (включительно).
 
     Возвращает список диапазонов отсутствующих дней, отсортированный от более новых к более старым.
     """
     if date_from > date_to:
         return []
-    rows = (
-        db.query(PnlDaily.date)
+
+    sales_rows = (
+        db.query(RawSale.date)
         .filter(
-            PnlDaily.user_id == user_id,
-            PnlDaily.date >= date_from,
-            PnlDaily.date <= date_to,
+            RawSale.user_id == user_id,
+            RawSale.date >= date_from,
+            RawSale.date <= date_to,
         )
+        .distinct()
         .all()
     )
-    present = {r[0] for r in rows if r and r[0] is not None}
-    if not present:
+    present_sales = {r[0] for r in sales_rows if r and r[0] is not None}
+    if not present_sales:
         return []
+    # Если покрытие слишком разреженное (например, есть только один день) —
+    # это больше похоже на "первичную загрузку/бэкфилл", а не на точечную починку дыр.
+    if len(present_sales) < 2:
+        return []
+
+    ads_rows = (
+        db.query(RawAd.date)
+        .filter(
+            RawAd.user_id == user_id,
+            RawAd.date >= date_from,
+            RawAd.date <= date_to,
+        )
+        .distinct()
+        .all()
+    )
+    present_ads = {r[0] for r in ads_rows if r and r[0] is not None}
+    has_ads_data = bool(present_ads)
+
+    def _is_complete(d: date) -> bool:
+        if d not in present_sales:
+            return False
+        if has_ads_data and d not in present_ads:
+            return False
+        return True
 
     missing: list[DateRange] = []
     cur = date_to
     run_end: date | None = None
     run_start: date | None = None
     while cur >= date_from:
-        if cur not in present:
+        if not _is_complete(cur):
             if run_end is None:
                 run_end = cur
                 run_start = cur

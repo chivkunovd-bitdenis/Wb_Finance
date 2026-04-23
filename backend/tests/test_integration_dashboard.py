@@ -379,25 +379,49 @@ def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_p
     hole_start = yesterday - timedelta(days=7)
     hole_end = yesterday - timedelta(days=6)
 
-    # eligibility: raw_sales exists
-    session.add(
-        RawSale(
-            user_id=user_id,
-            date=d1,
-            nm_id=123,
-            doc_type="Продажа",
-            retail_price=100,
-            ppvz_for_pay=90,
-            delivery_rub=5,
-            penalty=0,
-            additional_payment=0,
-            storage_fee=0,
-            quantity=1,
-        )
-    )
-    # pnl present for yesterday and some earlier days, but missing the middle hole days
+    # eligibility + "yesterday present": raw_sales must exist for вчера, иначе сработает missing-tail.
     session.add_all(
         [
+            RawSale(
+                user_id=user_id,
+                date=d1,
+                nm_id=123,
+                doc_type="Продажа",
+                retail_price=100,
+                ppvz_for_pay=90,
+                delivery_rub=5,
+                penalty=0,
+                additional_payment=0,
+                storage_fee=0,
+                quantity=1,
+            ),
+            RawSale(
+                user_id=user_id,
+                date=d2,
+                nm_id=123,
+                doc_type="Продажа",
+                retail_price=100,
+                ppvz_for_pay=90,
+                delivery_rub=5,
+                penalty=0,
+                additional_payment=0,
+                storage_fee=0,
+                quantity=1,
+            ),
+            RawSale(
+                user_id=user_id,
+                date=yesterday,
+                nm_id=123,
+                doc_type="Продажа",
+                retail_price=100,
+                ppvz_for_pay=90,
+                delivery_rub=5,
+                penalty=0,
+                additional_payment=0,
+                storage_fee=0,
+                quantity=1,
+            ),
+            # P&L тут не влияет на определение дыр, но пусть присутствует как "витрина есть".
             PnlDaily(user_id=user_id, date=d1, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
             PnlDaily(user_id=user_id, date=d2, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
             PnlDaily(user_id=user_id, date=yesterday, revenue=1, commission=0, logistics=0, penalties=0, storage=0, ads_spend=0, cogs=0, tax=0, margin=1, operation_expenses=0),
