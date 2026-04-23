@@ -242,6 +242,72 @@ def test_dashboard_state_resets_stuck_running_funnel_backfill_and_autostarts(aut
         assert r.status_code == 200
         mock_delay.assert_called_once()
 
+
+def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_missing(authenticated_client):
+    """
+    Как должно работать (финансы):
+    - данные в pnl_daily за последние дни есть,
+    - но ровно за вчера отсутствуют,
+    => /dashboard/state должен поставить в очередь sync_sales + sync_ads только за вчера,
+       а не запускать годовой finance backfill.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    day_before = today - timedelta(days=2)
+
+    # Чтобы финансовая логика была активна: должны быть хоть какие-то raw_sales за год.
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=day_before,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    # Есть P&L за день до вчера (т.е. "в остальные дни есть"), но за вчера нет.
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=day_before,
+            revenue=100,
+            commission=10,
+            logistics=1,
+            penalties=0,
+            storage=0,
+            ads_spend=0,
+            cogs=10,
+            tax=6,
+            margin=73,
+        )
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_sales.delay") as mock_sales:
+        with patch("app.routers.dashboard.sync_ads.delay") as mock_ads:
+            with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
+                r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+                assert r.status_code == 200
+                mock_backfill.assert_not_called()
+                mock_sales.assert_called_once()
+                mock_ads.assert_called_once()
+                args_sales, _ = mock_sales.call_args
+                args_ads, _ = mock_ads.call_args
+                assert args_sales[0] == user_id
+                assert args_sales[1] == yesterday.isoformat()
+                assert args_sales[2] == yesterday.isoformat()
+                assert args_ads[0] == user_id
+                assert args_ads[1] == yesterday.isoformat()
+                assert args_ads[2] == yesterday.isoformat()
+
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):
     """Данные из pnl_daily возвращаются через GET /dashboard/pnl без искажений."""
     client, session, user_id, token = authenticated_client

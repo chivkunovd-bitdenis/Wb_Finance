@@ -46,6 +46,10 @@ FUNNEL_YTD_429_RETRY_MAX_SEC = 1800
 FUNNEL_YTD_429_RETRY_LIMIT = 12
 FUNNEL_YTD_HTTP_RETRY_CODES = {429, 500, 502, 503, 504}
 
+# WB иногда возвращает реальное окно "когда можно снова" через заголовки.
+# В логах это видно как reset_sec=... (X-RateLimit-Reset). Значение может быть часами.
+WB_MAX_RETRY_AFTER_SEC = 12 * 60 * 60  # safety cap: 12h
+
 FUNNEL_BACKFILL_START_DATE = date(2026, 1, 1)
 
 
@@ -202,6 +206,49 @@ def _retry_http_delay_sec(code: int, retry_n: int) -> int:
     return int(core + random.randint(0, 30))
 
 
+def _wb_retry_after_sec(resp: requests.Response) -> int | None:
+    """
+    Попробовать извлечь реальный retry-after из ответа WB.
+
+    При глобальном лимите WB возвращает:
+    - X-RateLimit-Reset: секунды до снятия ограничения (может быть большим)
+    - Retry-After: иногда тоже присутствует
+    """
+    try:
+        reset = resp.headers.get("X-RateLimit-Reset")
+        if reset is not None:
+            v = int(str(reset).strip())
+            if v > 0:
+                return v
+    except Exception:
+        pass
+    try:
+        ra = resp.headers.get("Retry-After")
+        if ra is not None and str(ra).strip().isdigit():
+            v2 = int(str(ra).strip())
+            if v2 > 0:
+                return v2
+    except Exception:
+        pass
+    return None
+
+
+def _retry_http_delay_with_headers(code: int, retry_n: int, resp: requests.Response | None) -> int:
+    """
+    Delay для retry HTTP с учётом заголовков WB (важно для 429).
+    """
+    fallback = _retry_http_delay_sec(code, retry_n)
+    if code != 429 or resp is None:
+        return fallback
+    retry_after = _wb_retry_after_sec(resp)
+    if retry_after is None:
+        return fallback
+    # Уважаем окно WB, но оставляем safety cap и небольшой jitter.
+    capped = min(WB_MAX_RETRY_AFTER_SEC, retry_after)
+    jitter = random.randint(0, 30)
+    return int(max(fallback, capped + jitter))
+
+
 def _build_desc_days_batch(cursor: date, year_start: date, limit: int) -> list[date]:
     """Собрать batch дат в обратном порядке: cursor, cursor-1, ..."""
     days_batch: list[date] = []
@@ -317,7 +364,7 @@ def sync_sales(user_id: str, date_from: str, date_to: str, retry_raw: str | None
                 prev_code, prev_n = _retry_http_parse(retry_raw)
                 retry_n = (prev_n + 1) if prev_code == code else 1
                 if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
-                    delay = _retry_http_delay_sec(int(code), retry_n)
+                    delay = _retry_http_delay_with_headers(int(code), retry_n, exc.response)
                     sync_sales.apply_async(
                         kwargs={
                             "user_id": user_id,
@@ -557,7 +604,7 @@ def sync_funnel(
                 prev_code, prev_n = _retry_http_parse(retry_raw)
                 retry_n = (prev_n + 1) if prev_code == code else 1
                 if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
-                    delay = _retry_http_delay_sec(int(code), retry_n)
+                    delay = _retry_http_delay_with_headers(int(code), retry_n, exc.response)
                     sync_funnel.apply_async(
                         kwargs={
                             "user_id": user_id,
@@ -894,7 +941,7 @@ def sync_funnel_ytd_step(user_id: str, year: int | None = None) -> dict:
                 st.error_message = _retry_http_marker(code, retry_n)
                 db.add(st)
                 db.commit()
-                delay = _retry_http_delay_sec(code, retry_n)
+                delay = _retry_http_delay_with_headers(code, retry_n, e.response if isinstance(e, requests.HTTPError) else None)
                 sync_funnel_ytd_step.apply_async(args=[user_id, y], countdown=delay)
                 return {
                     "ok": False,
@@ -994,7 +1041,7 @@ def sync_finance_backfill_step(user_id: str, year: int) -> dict:
                     state.error_message = _retry_http_marker(int(code), retry_n)
                     db.add(state)
                     db.commit()
-                    delay = _retry_http_delay_sec(int(code), retry_n)
+                    delay = _retry_http_delay_with_headers(int(code), retry_n, exc.response)
                     sync_finance_backfill_step.apply_async(args=[user_id, y], countdown=delay)
                     return {
                         "ok": False,

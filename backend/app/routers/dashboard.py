@@ -27,7 +27,12 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import sync_funnel_ytd_step, sync_finance_backfill_step
+from celery_app.tasks import (
+    sync_funnel_ytd_step,
+    sync_finance_backfill_step,
+    sync_sales,
+    sync_ads,
+)
 from app.schemas.dashboard import (
     PnlDayResponse,
     ArticleResponse,
@@ -49,6 +54,9 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 logger = logging.getLogger(__name__)
 
 FUNNEL_BACKFILL_START_DATE = date_type(2026, 1, 1)
+FINANCE_YESTERDAY_WINDOW_DAYS = 14
+FINANCE_YESTERDAY_SCHEDULED_MARK = "__yesterday_sync_scheduled__"
+FINANCE_YESTERDAY_SCHEDULE_COOLDOWN = timedelta(minutes=10)
 
 
 def _repair_stuck_funnel_ytd_running(
@@ -227,6 +235,67 @@ def _maybe_start_finance_backfill(
     )
     if not has_any_sales:
         return
+
+    # Если в целом финансы в витрине есть, но ровно за вчера нет — достаточно точечно
+    # синкнуть только вчера, не запуская годовой backfill.
+    has_yesterday_pnl = (
+        db.query(PnlDaily.id)
+        .filter(PnlDaily.user_id == user.id, PnlDaily.date == through)
+        .first()
+        is not None
+    )
+    if not has_yesterday_pnl:
+        window_from = through - timedelta(days=FINANCE_YESTERDAY_WINDOW_DAYS)
+        any_recent_pnl = (
+            db.query(PnlDaily.id)
+            .filter(
+                PnlDaily.user_id == user.id,
+                PnlDaily.date >= window_from,
+                PnlDaily.date < through,
+            )
+            .first()
+            is not None
+        )
+        if any_recent_pnl:
+            row = (
+                db.query(FinanceBackfillState)
+                .filter(
+                    FinanceBackfillState.user_id == user.id,
+                    FinanceBackfillState.calendar_year == calendar_year,
+                )
+                .first()
+            )
+            if row and row.status in {"running", "complete"}:
+                return
+
+            # анти-спам: не ставим "вчера" на каждый refresh
+            if row and row.error_message == FINANCE_YESTERDAY_SCHEDULED_MARK:
+                updated = row.updated_at
+                now = datetime.now(timezone.utc)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                if now - updated <= FINANCE_YESTERDAY_SCHEDULE_COOLDOWN:
+                    return
+
+            if row is None:
+                row = FinanceBackfillState(
+                    user_id=user.id,
+                    calendar_year=calendar_year,
+                    status="idle",
+                    error_message=FINANCE_YESTERDAY_SCHEDULED_MARK,
+                )
+            else:
+                row.status = "idle"
+                row.error_message = FINANCE_YESTERDAY_SCHEDULED_MARK
+            db.add(row)
+            db.commit()
+            try:
+                day = through.isoformat()
+                sync_sales.delay(str(user.id), day, day)
+                sync_ads.delay(str(user.id), day, day)
+            except Exception as exc:
+                logger.exception("Celery delay failed (sync_sales/sync_ads for yesterday): %s", exc)
+            return
 
     # Если уже есть ранние дни года в pnl_daily — значит финансовый backfill хотя бы частично начат.
     first_pnl = (
