@@ -53,6 +53,7 @@ STATE_KEYS = {
     "funnel_ytd_backfill",
     "finance_backfill",
     "finance_backfill_2025",
+    "finance_missing_sync",
 }
 FUNNEL_YTD_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
 FINANCE_BACKFILL_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}

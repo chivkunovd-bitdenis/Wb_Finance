@@ -604,6 +604,35 @@ def get_dashboard_state(
             "error_message": err,
         }
 
+    def _finance_missing_sync_state() -> dict | None:
+        """
+        Для UI: состояние точечной догрузки "дыр" (missing-range).
+        Возвращаем последнюю запись в окне lookback, чтобы фронт мог показать баннер/лоадер.
+        """
+        window_from = through_cap - timedelta(days=FINANCE_MISSING_TAIL_LOOKBACK_DAYS)
+        row = (
+            db.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == store_user.id,
+                FinanceMissingSyncState.date_to >= window_from,
+                FinanceMissingSyncState.date_to <= through_cap,
+            )
+            .order_by(FinanceMissingSyncState.updated_at.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        next_run = row.next_run_at
+        if next_run is not None and next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        return {
+            "status": row.status,
+            "date_from": row.date_from.isoformat(),
+            "date_to": row.date_to.isoformat(),
+            "next_run_at": next_run.isoformat() if next_run is not None else None,
+            "error_message": (row.error_message[:500] if row.error_message else None),
+        }
+
     return {
         "has_data": has_data,
         "min_date": min_date.isoformat() if min_date else None,
@@ -617,6 +646,7 @@ def get_dashboard_state(
         # Для UI loader'ов: показывать прогресс ретроспективной догрузки финансов.
         "finance_backfill": _finance_state_for(2026),
         "finance_backfill_2025": _finance_state_for(2025),
+        "finance_missing_sync": _finance_missing_sync_state(),
     }
 
 

@@ -63,6 +63,7 @@ export default function Layout() {
   const funnelYtdStatus = dashboardState?.funnel_ytd_backfill?.status || 'idle';
   const financeBackfill2026 = dashboardState?.finance_backfill || null;
   const financeBackfill2025 = dashboardState?.finance_backfill_2025 || null;
+  const financeMissingSync = dashboardState?.finance_missing_sync || null;
   const financeStatus2026 = financeBackfill2026?.status || 'idle';
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
   const loadBillingStatus = useCallback(async () => {
@@ -520,6 +521,35 @@ export default function Layout() {
                     ? ` (сейчас: ${new Date(financeBackfill2026.last_completed_date + 'T12:00:00').toLocaleDateString('ru')})`
                     : ''}
                   <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
+                </div>
+              )}
+              {(financeMissingSync?.status === 'running'
+                || (financeMissingSync?.status === 'idle' && financeMissingSync?.next_run_at)
+                || financeMissingSync?.status === 'error') && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: '#e7f3ff',
+                    color: '#004085',
+                    padding: '10px 15px',
+                    borderRadius: 8,
+                    border: '1px solid #b8daff',
+                    width: 'fit-content',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span className="loader-spinner-sm" aria-hidden />
+                  <span>
+                    🔄 Догружаем финансы по пропущенным дням ({financeMissingSync.date_from}–{financeMissingSync.date_to})
+                    {financeMissingSync.next_run_at
+                      ? `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
+                      : ''}
+                    {financeMissingSync.status === 'error' && financeMissingSync.error_message
+                      ? `; ошибка: ${financeMissingSync.error_message}`
+                      : ''}
+                  </span>
                 </div>
               )}
               {(financeStatus2025 === 'running' || backfill2025Syncing) && financeBackfill2025?.through_date && (
