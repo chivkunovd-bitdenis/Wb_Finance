@@ -206,6 +206,22 @@ body {
   background: var(--bg-secondary);
 }
 
+.btn-danger {
+  background: var(--red);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-danger:hover {
+  background: #dc2626;
+}
+
 /* === Content === */
 .content {
   flex: 1;

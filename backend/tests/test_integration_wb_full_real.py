@@ -16,6 +16,7 @@
 - все операции идут в транзакции через real_db_session, в конце всё откатывается.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,7 +35,13 @@ from celery_app.tasks import sync_sales, sync_ads, sync_funnel, recalculate_pnl
 from tests.test_wb_client_real import _get_wb_key, _short_period
 
 
-pytestmark = pytest.mark.wb_real
+pytestmark = [
+    pytest.mark.wb_real,
+    pytest.mark.skipif(
+        (os.getenv("RUN_REAL_WB_TESTS") or "").strip() not in {"1", "true", "TRUE", "yes", "YES"},
+        reason="Real WB API tests are disabled by default. Set RUN_REAL_WB_TESTS=1 to enable.",
+    ),
+]
 
 
 @pytest.fixture

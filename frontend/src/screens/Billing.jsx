@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api';
+import { useStore } from '../StoreContext';
 
 const PLAN_PRICE = 1490;
 
@@ -29,6 +30,7 @@ function formatDate(dateStr) {
 }
 
 export default function Billing({ billingStatus, onRefreshStatus }) {
+  useStore();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);

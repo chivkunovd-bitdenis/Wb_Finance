@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.VITE_API_URL !== undefined && import.meta.env.V
   : '';
 
 const TOKEN_KEY = 'wb_finance_token';
+const ACTIVE_STORE_KEY = 'wb_finance_active_store_owner_id';
 
 const FETCH_TIMEOUT_MS = 60_000;
 
@@ -59,6 +60,8 @@ function headers(withAuth = true) {
   const h = { 'Content-Type': 'application/json' };
   const t = getToken();
   if (withAuth && t) h['Authorization'] = `Bearer ${t}`;
+  const storeOwnerId = (lsGet(ACTIVE_STORE_KEY) || '').trim();
+  if (storeOwnerId) h['X-Store-Owner-Id'] = storeOwnerId;
   return h;
 }
 
@@ -441,5 +444,55 @@ export async function saveTaxRate(taxRate) {
   });
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Stores (access + switching) ──────────────────────────────────────────────
+
+export async function getStores() {
+  const res = await apiFetch(`${API_BASE}/stores`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getOutgoingStoreGrants() {
+  const res = await apiFetch(`${API_BASE}/stores/grants`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function grantStoreAccess(granteeEmail) {
+  const res = await apiFetch(`${API_BASE}/stores/grants`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ grantee_email: granteeEmail }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function revokeStoreAccess(granteeEmail) {
+  const res = await apiFetch(`${API_BASE}/stores/grants/revoke`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ grantee_email: granteeEmail }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
   return res.json();
 }

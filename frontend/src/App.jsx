@@ -1,5 +1,6 @@
 import { useAuth } from './AuthContext';
 import { CacheProvider } from './CacheContext';
+import { StoreProvider } from './StoreContext';
 import LoginPage from './LoginPage';
 import Layout from './Layout';
 
@@ -11,8 +12,10 @@ export default function App() {
   }
 
   return (
-    <CacheProvider>
-      <Layout />
-    </CacheProvider>
+    <StoreProvider>
+      <CacheProvider>
+        <Layout />
+      </CacheProvider>
+    </StoreProvider>
   );
 }

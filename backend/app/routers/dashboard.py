@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_store_context
 from app.models.user import User
 from app.models.pnl_daily import PnlDaily
 from app.models.article import Article
@@ -42,6 +42,7 @@ from app.schemas.dashboard import (
     PlanFactMonthMetricsResponse,
     PlanFactMetricRow,
 )
+from app.services.store_access_service import StoreContext
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -382,7 +383,7 @@ def _derive_numeric_plans_from_revenue(values: dict[str, float]) -> dict[str, fl
 
 @router.get("/state")
 def get_dashboard_state(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """
@@ -394,7 +395,8 @@ def get_dashboard_state(
     - has_funnel: есть ли какие‑то данные в воронке;
     - funnel_ytd_backfill: статус фоновой догрузки воронки с начала года (products API).
     """
-    q = db.query(PnlDaily).filter(PnlDaily.user_id == current_user.id)
+    store_user = store_ctx.store_owner
+    q = db.query(PnlDaily).filter(PnlDaily.user_id == store_user.id)
     first = q.order_by(PnlDaily.date.asc()).first()
     last = q.order_by(PnlDaily.date.desc()).first()
 
@@ -407,7 +409,7 @@ def get_dashboard_state(
 
     has_funnel = (
         db.query(FunnelDaily)
-        .filter(FunnelDaily.user_id == current_user.id)
+        .filter(FunnelDaily.user_id == store_user.id)
         .first()
         is not None
     )
@@ -418,15 +420,15 @@ def get_dashboard_state(
     through_cap = yesterday if yesterday <= date_type(2026, 12, 31) else date_type(2026, 12, 31)
     through_iso = through_cap.isoformat() if through_cap >= y_start else None
 
-    _repair_stuck_funnel_ytd_running(db, str(current_user.id), y)
-    _repair_hollow_funnel_ytd(db, str(current_user.id), y, y_start, through_cap)
-    _maybe_start_funnel_ytd_backfill(db, current_user, y, y_start, through_cap)
-    _maybe_start_finance_backfill(db, current_user, y, y_start, through_cap)
+    _repair_stuck_funnel_ytd_running(db, str(store_user.id), y)
+    _repair_hollow_funnel_ytd(db, str(store_user.id), y, y_start, through_cap)
+    _maybe_start_funnel_ytd_backfill(db, store_user, y, y_start, through_cap)
+    _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
 
     fb_row = (
         db.query(FunnelBackfillState)
         .filter(
-            FunnelBackfillState.user_id == current_user.id,
+            FunnelBackfillState.user_id == store_user.id,
             FunnelBackfillState.calendar_year == y,
         )
         .first()
@@ -456,7 +458,7 @@ def get_dashboard_state(
         row = (
             db.query(FinanceBackfillState)
             .filter(
-                FinanceBackfillState.user_id == current_user.id,
+                FinanceBackfillState.user_id == store_user.id,
                 FinanceBackfillState.calendar_year == year,
             )
             .first()
@@ -479,6 +481,8 @@ def get_dashboard_state(
         "has_2025": has_2025,
         "has_2026": has_2026,
         "has_funnel": has_funnel,
+        "autostart_disabled": False,
+        "autostart_disabled_reason": None,
         "funnel_ytd_backfill": funnel_ytd_backfill,
         # Для UI loader'ов: показывать прогресс ретроспективной догрузки финансов.
         "finance_backfill": _finance_state_for(2026),
@@ -490,11 +494,11 @@ def get_dashboard_state(
 def get_pnl(
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """P&L по дням из витрины pnl_daily. Опционально фильтр по датам."""
-    q = db.query(PnlDaily).filter(PnlDaily.user_id == current_user.id)
+    q = db.query(PnlDaily).filter(PnlDaily.user_id == store_ctx.store_owner.id)
     if date_from:
         q = q.filter(PnlDaily.date >= date_type.fromisoformat(date_from))
     if date_to:
@@ -520,10 +524,11 @@ def get_pnl(
 
 @router.get("/articles", response_model=list[ArticleResponse])
 def get_articles(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Список артикулов с себестоимостью."""
+    current_user = store_ctx.store_owner
     article_vendor_code_norm = func.nullif(func.btrim(Article.vendor_code), "")
     latest_vendor_code_sq = (
         db.query(
@@ -583,10 +588,11 @@ def get_articles(
 @router.put("/articles/cost")
 def save_articles_cost(
     body: list[ArticleCostUpdate],
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Обновить себестоимость по артикулам (как в GAS apiSaveArticlesCost). После сохранения пересчёт P&L и sku_daily не вызывается автоматически — можно дернуть POST /sync/recalculate."""
+    current_user = store_ctx.store_owner
     for item in body:
         art = (
             db.query(Article)
@@ -603,10 +609,11 @@ def save_articles_cost(
 def get_funnel(
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Воронка по дням и артикулам. Опционально фильтр по датам."""
+    current_user = store_ctx.store_owner
     def _normalize_vendor_code(v: str | None) -> str | None:
         """Treat None/empty/whitespace as missing."""
         if v is None:
@@ -684,11 +691,11 @@ def get_sku_timeseries(
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
     nm_id: int | None = Query(None, description="Фильтр по артикулу"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Time-series по артикулам из витрины sku_daily. Опционально фильтр по датам и nm_id."""
-    q = db.query(SkuDaily).filter(SkuDaily.user_id == current_user.id)
+    q = db.query(SkuDaily).filter(SkuDaily.user_id == store_ctx.store_owner.id)
     if date_from:
         q = q.filter(SkuDaily.date >= date_type.fromisoformat(date_from))
     if date_to:
@@ -722,11 +729,11 @@ def get_sku_timeseries(
 def get_operational_expenses(
     date_from: str | None = Query(None, description="YYYY-MM-DD"),
     date_to: str | None = Query(None, description="YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Операционные расходы по дням (для вкладки управления)."""
-    q = db.query(OperationalExpense).filter(OperationalExpense.user_id == current_user.id)
+    q = db.query(OperationalExpense).filter(OperationalExpense.user_id == store_ctx.store_owner.id)
     if date_from:
         q = q.filter(OperationalExpense.date >= date_type.fromisoformat(date_from))
     if date_to:
@@ -747,12 +754,13 @@ def get_operational_expenses(
 @router.post("/operational-expenses", response_model=OperationalExpenseResponse)
 def create_operational_expense(
     body: OperationalExpenseCreate,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Создать операционные расходы и вернуть созданную запись."""
     from app.models.base import uuid_gen  # локальный импорт: чтобы не засорять файл
 
+    current_user = store_ctx.store_owner
     exp = OperationalExpense(
         id=uuid_gen(),
         user_id=current_user.id,
@@ -775,10 +783,11 @@ def create_operational_expense(
 def update_operational_expense(
     expense_id: str,
     body: OperationalExpenseUpdate,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Обновить операционные расходы."""
+    current_user = store_ctx.store_owner
     exp = (
         db.query(OperationalExpense)
         .filter(OperationalExpense.user_id == current_user.id, OperationalExpense.id == expense_id)
@@ -803,13 +812,14 @@ def update_operational_expense(
 @router.post("/plan-fact/plans", response_model=PlanFactMonthResponse)
 def save_plan_fact_month(
     body: PlanFactMonthRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """
     Save (upsert) plan values for a month.
     Month must be the first day of month (YYYY-MM-01).
     """
+    current_user = store_ctx.store_owner
     month = _month_start(body.month)
     values = _derive_numeric_plans_from_revenue({k: float(v) for k, v in (body.values or {}).items()})
 
@@ -841,7 +851,7 @@ def save_plan_fact_month(
 def get_plan_fact_months(
     date_from: str = Query(..., description="YYYY-MM-DD"),
     date_to: str = Query(..., description="YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """
@@ -855,6 +865,7 @@ def get_plan_fact_months(
         return []
 
     # Preload plans for all months.
+    current_user = store_ctx.store_owner
     plan_rows = (
         db.query(MonthlyPlan)
         .filter(MonthlyPlan.user_id == current_user.id, MonthlyPlan.month.in_(months))

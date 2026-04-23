@@ -48,6 +48,8 @@ STATE_KEYS = {
     "has_2025",
     "has_2026",
     "has_funnel",
+    "autostart_disabled",
+    "autostart_disabled_reason",
     "funnel_ytd_backfill",
     "finance_backfill",
     "finance_backfill_2025",

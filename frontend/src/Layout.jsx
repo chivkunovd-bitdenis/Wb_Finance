@@ -11,10 +11,13 @@ import Funnel from './screens/Funnel';
 import Costs from './screens/Costs';
 import OperationalExpenses from './screens/OperationalExpenses';
 import Billing from './screens/Billing';
+import Settings from './screens/Settings';
+import { useStore } from './StoreContext';
 
 export default function Layout() {
   const { logout: authLogout } = useAuth();
   const { cache, updateCache, clearCache } = useCache();
+  const { activeStoreOwnerId, activeStoreLabel } = useStore();
   const logout = useCallback(() => {
     clearCache();
     authLogout();
@@ -73,6 +76,25 @@ export default function Layout() {
       }
     }
   }, [authLogout, clearCache]);
+
+  // When store context changes, reset dashboard-specific state (but keep cache; it's store-scoped with LRU).
+  useEffect(() => {
+    setDashboardState(null);
+    setInitialLoading(true);
+    setInitialTriggered(false);
+    setWaitForFunnelAfterInitial(false);
+    setInitialError('');
+    setRecentSyncing(false);
+    setRecentTriggeredOnce(false);
+    setBackfill2026Syncing(false);
+    setBackfill2026TriggeredOnce(false);
+    setBackfill2025Syncing(false);
+    setBackfill2025TriggeredOnce(false);
+    setFunnelYtdLaunchPending(false);
+    funnelYtdBootstrappedRef.current = false;
+    lastSyncedPeriodRef.current = { dateFrom: null, dateTo: null };
+    setRefreshTrigger((t) => t + 1);
+  }, [activeStoreOwnerId]);
 
   const onUpdateWb = useCallback(async () => {
     if (!dateFrom || !dateTo) {
@@ -216,7 +238,7 @@ export default function Layout() {
     return () => {
       cancelled = true;
     };
-  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache]);
+  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId]);
 
   // Как только экран перешёл из «первая загрузка» в «дашборд» — один раз запускаем автосинк последних 7 дней
   useEffect(() => {
@@ -362,6 +384,7 @@ export default function Layout() {
       <div className="main">
         <Topbar
           title={screenTitle}
+          activeStoreLabel={activeStoreLabel}
           dateFromDraft={dateFromDraft}
           dateToDraft={dateToDraft}
           setDateFromDraft={setDateFromDraft}
@@ -613,6 +636,7 @@ export default function Layout() {
                   path="/billing"
                   element={<Billing billingStatus={billingStatus} onRefreshStatus={loadBillingStatus} />}
                 />
+                <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </>
                 )}

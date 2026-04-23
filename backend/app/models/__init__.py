@@ -17,6 +17,8 @@ from app.models.webhook_event import WebhookEvent
 from app.models.daily_brief import DailyBrief
 from app.models.promo_code import PromoCode
 from app.models.monthly_plan import MonthlyPlan
+from app.models.store_access_grant import StoreAccessGrant
+from app.models.store_access_audit_event import StoreAccessAuditEvent
 
 __all__ = [
     "Base",
@@ -38,4 +40,6 @@ __all__ = [
     "DailyBrief",
     "PromoCode",
     "MonthlyPlan",
+    "StoreAccessGrant",
+    "StoreAccessAuditEvent",
 ]

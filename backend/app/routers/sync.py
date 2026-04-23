@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from celery import chord
 from fastapi import APIRouter, Depends, Body, HTTPException, status
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_store_context
 from app.models.user import User
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.schemas.sync import (
@@ -30,6 +30,7 @@ from celery_app.tasks import (
     recalculate_pnl,
     recalculate_sku_daily,
 )
+from app.services.store_access_service import StoreContext
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 logger = logging.getLogger(__name__)
@@ -69,8 +70,8 @@ def _delay_or_503(task, context: str, *args, **kwargs):
         ) from exc
 
 
-def _require_wb_key(current_user: User):
-    if not current_user.wb_api_key or not current_user.wb_api_key.strip():
+def _require_wb_key(store_user: User):
+    if not store_user.wb_api_key or not store_user.wb_api_key.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="WB API ключ не задан. Добавь ключ при регистрации или в профиле.",
@@ -106,14 +107,15 @@ def _month_chunks(start: date, end: date) -> list[tuple[str, str]]:
 @router.post("/sales", response_model=SyncTaskResponse)
 def trigger_sync_sales(
     body: SyncSalesRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """Поставить в очередь задачу синхронизации продаж с WB за период."""
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     result = _delay_or_503(
         sync_sales,
         "sync_sales",
-        str(current_user.id),
+        str(store_user.id),
         body.date_from,
         body.date_to,
     )
@@ -126,14 +128,15 @@ def trigger_sync_sales(
 @router.post("/ads", response_model=SyncTaskResponse)
 def trigger_sync_ads(
     body: SyncSalesRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """Поставить в очередь задачу синхронизации рекламы с WB за период."""
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     result = _delay_or_503(
         sync_ads,
         "sync_ads",
-        str(current_user.id),
+        str(store_user.id),
         body.date_from,
         body.date_to,
     )
@@ -146,13 +149,14 @@ def trigger_sync_ads(
 @router.post("/funnel", response_model=SyncTaskResponse)
 def trigger_sync_funnel(
     body: SyncFunnelRequest | None = Body(None),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """Поставить в очередь задачу синхронизации воронки. Период опционален — по умолчанию последние 7 дней."""
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     if body is None:
         body = SyncFunnelRequest()
-    result = _delay_or_503(sync_funnel, "sync_funnel", str(current_user.id), body.date_from, body.date_to)
+    result = _delay_or_503(sync_funnel, "sync_funnel", str(store_user.id), body.date_from, body.date_to)
     return SyncTaskResponse(
         task_id=result.id,
         message="Задача синхронизации воронки поставлена в очередь.",
@@ -162,14 +166,15 @@ def trigger_sync_funnel(
 @router.post("/period", response_model=SyncTaskResponse)
 def trigger_sync_period(
     body: SyncSalesRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
     Синхронизация продаж+рекламы+воронки за произвольный период, в правильном порядке:
     sync_sales + sync_ads -> sync_funnel (чтобы articles успели заполниться).
     """
-    _require_wb_key(current_user)
-    user_id = str(current_user.id)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
+    user_id = str(store_user.id)
     async_result = _chord_or_503(
         [
             sync_sales.s(user_id, body.date_from, body.date_to),
@@ -186,19 +191,20 @@ def trigger_sync_period(
 
 @router.post("/funnel/backfill-ytd", response_model=SyncTaskResponse)
 def trigger_funnel_backfill_ytd(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """
     Фоновая догрузка воронки с 1 января текущего года до вчера.
     Использует POST /analytics/v3/sales-funnel/products по одному дню (агрегаты), чанки nmIds.
     """
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     y = 2026
     row = (
         db.query(FunnelBackfillState)
         .filter(
-            FunnelBackfillState.user_id == current_user.id,
+            FunnelBackfillState.user_id == store_user.id,
             FunnelBackfillState.calendar_year == y,
         )
         .first()
@@ -213,7 +219,7 @@ def trigger_funnel_backfill_ytd(
                 task_id="running",
                 message="Догрузка воронки уже идёт — данные появятся по мере готовности.",
             )
-    result = _delay_or_503(sync_funnel_ytd_step, "sync_funnel_ytd_step", str(current_user.id), y)
+    result = _delay_or_503(sync_funnel_ytd_step, "sync_funnel_ytd_step", str(store_user.id), y)
     return SyncTaskResponse(
         task_id=result.id,
         message=f"Запущена фоновая догрузка воронки за {y} год.",
@@ -223,14 +229,15 @@ def trigger_funnel_backfill_ytd(
 @router.post("/recalculate", response_model=SyncTaskResponse)
 def trigger_recalculate(
     body: SyncSalesRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """Поставить в очередь пересчёт pnl_daily и sku_daily за период (без синка с WB)."""
-    _delay_or_503(recalculate_pnl, "recalculate_pnl", str(current_user.id), body.date_from, body.date_to)
+    store_user = store_ctx.store_owner
+    _delay_or_503(recalculate_pnl, "recalculate_pnl", str(store_user.id), body.date_from, body.date_to)
     result = _delay_or_503(
         recalculate_sku_daily,
         "recalculate_sku_daily",
-        str(current_user.id),
+        str(store_user.id),
         body.date_from,
         body.date_to,
     )
@@ -242,7 +249,7 @@ def trigger_recalculate(
 
 @router.post("/initial", response_model=SyncTaskResponse)
 def trigger_initial_sync(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
     Первая синхронизация для нового пользователя.
@@ -256,7 +263,8 @@ def trigger_initial_sync(
     Endpoint возвращает только факт постановки задач; фронт может опрашивать /dashboard/state,
     чтобы понять, когда has_data и has_funnel станут True.
     """
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     today = date.today()
     date_to = today - timedelta(days=1)
     date_from = date_to - timedelta(days=29)
@@ -264,7 +272,7 @@ def trigger_initial_sync(
     df = date_from.isoformat()
     dt = date_to.isoformat()
 
-    user_id = str(current_user.id)
+    user_id = str(store_user.id)
     # chord: нельзя.delay(sync_funnel) сразу — воронке нужны articles из sales/ads
     async_result = _chord_or_503(
         [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
@@ -280,7 +288,7 @@ def trigger_initial_sync(
 
 @router.post("/recent", response_model=SyncTaskResponse)
 def trigger_recent_sync(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
     Автосинк для сценария «не первый вход».
@@ -292,7 +300,8 @@ def trigger_recent_sync(
 
     Окно 7 дней совпадает с дефолтным окном воронки и логикой GAS.
     """
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     today = date.today()
     date_to = today - timedelta(days=1)
     date_from = date_to - timedelta(days=6)
@@ -300,7 +309,7 @@ def trigger_recent_sync(
     df = date_from.isoformat()
     dt = date_to.isoformat()
 
-    user_id = str(current_user.id)
+    user_id = str(store_user.id)
     async_result = _chord_or_503(
         [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
         after_period_sync_enqueue_funnel.s(user_id, df, dt),
@@ -315,7 +324,7 @@ def trigger_recent_sync(
 
 @router.post("/backfill/2026", response_model=SyncBatchResponse)
 def trigger_backfill_2026(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
     Догрузка «основного диапазона» 2026 (как в GAS triggerLoad2026ThenMaybe2025):
@@ -323,7 +332,8 @@ def trigger_backfill_2026(
     - продажи и реклама ставятся в очередь чанками по месяцам (чтобы задачи были стабильнее);
     - воронка ставится отдельно на окно последних 7 дней (по умолчанию в задаче именно так).
     """
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     today = date.today()
     date_to = today - timedelta(days=1)
     date_from = date(2026, 1, 1)
@@ -334,7 +344,7 @@ def trigger_backfill_2026(
             message="Догрузка 2026 не требуется: текущая дата меньше начала 2026 года.",
         )
 
-    user_id = str(current_user.id)
+    user_id = str(store_user.id)
     chunks = _month_chunks(date_from, date_to)
     task_ids: list[str] = []
     for df, dt in chunks:
@@ -354,16 +364,17 @@ def trigger_backfill_2026(
 
 @router.post("/backfill/2025", response_model=SyncBatchResponse)
 def trigger_backfill_2025(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
     Догрузка архива 2025 по месяцам (как в GAS loadNextArchiveChunk / apiLoadArchiveChunk).
     Период: 2025-01-01 .. 2025-12-31. Задачи sync_sales и sync_ads по каждому месяцу.
     """
-    _require_wb_key(current_user)
+    store_user = store_ctx.store_owner
+    _require_wb_key(store_user)
     date_from = date(2025, 1, 1)
     date_to = date(2025, 12, 31)
-    user_id = str(current_user.id)
+    user_id = str(store_user.id)
     chunks = _month_chunks(date_from, date_to)
     task_ids: list[str] = []
     for df, dt in chunks:

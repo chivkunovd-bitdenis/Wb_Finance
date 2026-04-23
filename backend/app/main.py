@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, sync, dashboard, billing
+from app.routers import auth, sync, dashboard, billing, stores
 from app.routers import daily_brief
 from app.middleware.request_logging import RequestLoggingMiddleware
 
@@ -39,6 +39,7 @@ app.include_router(sync.router)
 app.include_router(dashboard.router)
 app.include_router(billing.router)
 app.include_router(daily_brief.router)
+app.include_router(stores.router)
 
 
 @app.get("/health")

@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.db import get_db
+from app.dependencies import get_store_context
+from app.services.store_access_service import StoreContext
 
 FAKE_HASH = "$2b$12$faketesthash"
 
@@ -106,6 +108,67 @@ def client_sync_no_key():
             app.dependency_overrides.pop(get_db, None)
 
 
+@pytest.fixture
+def client_sync_granted():
+    """
+    Клиент, в котором пользователь авторизован как viewer, но store_ctx.is_owner == False.
+
+    Важно: здесь мы подменяем get_store_context напрямую, чтобы тестировать guardrail
+    /sync/* не углубляясь в grant-таблицы и заголовки.
+    """
+    from app.models.user import User
+
+    viewer = User(
+        id="sync-viewer-id",
+        email="viewer@example.com",
+        password_hash=FAKE_HASH,
+        wb_api_key="wb-key",
+        is_active=True,
+    )
+    owner = User(
+        id="sync-owner-id",
+        email="owner@example.com",
+        password_hash=FAKE_HASH,
+        wb_api_key="wb-key",
+        is_active=True,
+    )
+
+    def _mock_get_db():
+        session = MagicMock()
+
+        def _query(model):
+            chain = MagicMock()
+            chain.filter.return_value = chain
+            chain.first.return_value = viewer
+            return chain
+
+        session.query.side_effect = _query
+        session.get.return_value = viewer
+        try:
+            yield session
+        finally:
+            pass
+
+    from fastapi import Request
+
+    def _fake_store_context(request: Request) -> StoreContext:
+        return StoreContext(viewer=viewer, store_owner=owner)
+
+    def _fake_verify(plain: str, hashed: str) -> bool:
+        return plain == "pass" and hashed == FAKE_HASH
+
+    with patch("app.core.security.pwd_context") as mock_pwd:
+        mock_pwd.verify.side_effect = _fake_verify
+        app.dependency_overrides[get_db] = _mock_get_db
+        app.dependency_overrides[get_store_context] = _fake_store_context
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_store_context, None)
+
+
 def _get_token(client_sync: TestClient) -> str:
     r = client_sync.post(
         "/auth/login",
@@ -113,6 +176,19 @@ def _get_token(client_sync: TestClient) -> str:
     )
     assert r.status_code == 200
     return r.json()["access_token"]
+
+
+@patch("app.routers.sync.sync_sales")
+def test_sync_sales_for_non_owner_returns_403(mock_sync_sales, client_sync_granted: TestClient):
+    mock_sync_sales.delay.return_value = MagicMock(id="task-sales-should-not-run")
+    token = _get_token(client_sync_granted)
+    r = client_sync_granted.post(
+        "/sync/sales",
+        json={"date_from": "2025-03-01", "date_to": "2025-03-05"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    mock_sync_sales.delay.assert_called_once()
 
 
 @patch("app.routers.sync.sync_sales")

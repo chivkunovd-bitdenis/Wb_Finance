@@ -1,5 +1,6 @@
 export default function Topbar({
   title,
+  activeStoreLabel,
   dateFromDraft,
   dateToDraft,
   setDateFromDraft,
@@ -12,7 +13,14 @@ export default function Topbar({
 }) {
   return (
     <div className="topbar">
-      <div className="topbar-title">{title}</div>
+      <div className="topbar-title">
+        {title}
+        {activeStoreLabel && (
+          <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Текущий магазин: <strong style={{ color: 'var(--text-secondary)' }}>{activeStoreLabel}</strong>
+          </span>
+        )}
+      </div>
       <div className="date-group">
         <input
           type="date"

@@ -6,6 +6,13 @@ from app.db import get_db
 from app.models.user import User
 from app.core.security import decode_access_token
 from app.services.billing_service import require_access, start_trial_if_needed
+from app.services.store_access_service import (
+    StoreAccessDeniedError,
+    StoreAccessNotFoundError,
+    StoreAccessInvalidInputError,
+    StoreContext,
+    get_store_context_from_header,
+)
 
 security = HTTPBearer(auto_error=False)
 
@@ -68,3 +75,25 @@ def get_current_user(
                 detail=str(exc),
             ) from exc
     return user
+
+
+def get_store_context(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StoreContext:
+    """
+    Resolve effective store context for the request.
+
+    Viewer is the authenticated user (JWT). Store owner can be switched via header:
+    `X-Store-Owner-Id: <uuid>`.
+    """
+    raw_owner_id = (request.headers.get("X-Store-Owner-Id") or "").strip()
+    try:
+        return get_store_context_from_header(db, viewer=current_user, store_owner_id=raw_owner_id or None)
+    except StoreAccessInvalidInputError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except StoreAccessNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except StoreAccessDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
