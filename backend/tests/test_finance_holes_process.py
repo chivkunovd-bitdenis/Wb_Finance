@@ -278,3 +278,61 @@ def test_sync_finance_missing_range_schedules_retry_on_429_uses_wb_headers(monke
     assert int(res["delay_sec"]) >= 1000
     assert captured["countdown"] == res["delay_sec"]
 
+
+def test_sync_finance_missing_range_does_not_block_on_ads_429(monkeypatch, real_db_session):
+    """
+    Регрессия: "финансы" не должны зависать из-за рекламного API.
+
+    Ожидаемое поведение:
+    - если sales синк прошёл, а ads вернул 429 и поставил retry — missing-range завершается успешно
+    - НЕ выставляет next_run_at и НЕ планирует retry самой missing-range задачи
+    - пересчёт P&L ставится в очередь
+    """
+    from datetime import date, timedelta
+
+    from app.models.user import User
+    from celery_app import tasks
+
+    u = User(email="ads429-nonblocking@example.com", password_hash="x", is_active=True, wb_api_key="k")
+    real_db_session.add(u)
+    real_db_session.commit()
+
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: real_db_session)
+
+    # sales ok
+    monkeypatch.setattr(tasks, "sync_sales", lambda *a, **k: {"ok": True, "count": 1})
+
+    # ads "schedules retry" but must not block missing-range
+    def _ads_retry_scheduled(*a, **k):
+        return {"ok": False, "error": "wb_retry_scheduled", "http_code": 429, "retry": 1, "delay_sec": 3000}
+
+    monkeypatch.setattr(tasks, "sync_ads", _ads_retry_scheduled)
+
+    # capture that missing-range does NOT schedule itself
+    called_apply_async: dict[str, object] = {}
+
+    def _apply_async(*, args, countdown):
+        called_apply_async["args"] = args
+        called_apply_async["countdown"] = countdown
+
+    monkeypatch.setattr(tasks.sync_finance_missing_range, "apply_async", _apply_async)
+
+    # capture that we enqueue recalc (but don't actually run celery)
+    recalc_calls: list[tuple[str, str, str]] = []
+
+    def _recalc_pnl_delay(user_id: str, df: str, dt: str):
+        recalc_calls.append(("pnl", user_id, f"{df}..{dt}"))
+
+    def _recalc_sku_delay(user_id: str, df: str, dt: str):
+        recalc_calls.append(("sku", user_id, f"{df}..{dt}"))
+
+    monkeypatch.setattr(tasks.recalculate_pnl, "delay", _recalc_pnl_delay)
+    monkeypatch.setattr(tasks.recalculate_sku_daily, "delay", _recalc_sku_delay)
+
+    d = (date.today() - timedelta(days=1)).isoformat()
+    res = tasks.sync_finance_missing_range(str(u.id), d, d)
+    assert res["ok"] is True
+    assert res["message"] == "complete"
+    assert called_apply_async == {}  # no retry for missing-range
+    assert any(x[0] == "pnl" for x in recalc_calls)
+

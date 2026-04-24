@@ -66,6 +66,14 @@ export default function Layout() {
   const financeMissingSync = dashboardState?.finance_missing_sync || null;
   const financeStatus2026 = financeBackfill2026?.status || 'idle';
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
+  const financeMissingMinutesLeft = useMemo(() => {
+    const nextRunAt = financeMissingSync?.next_run_at;
+    if (!nextRunAt) return null;
+    const ms = new Date(nextRunAt).getTime() - Date.now();
+    if (!Number.isFinite(ms)) return null;
+    const m = Math.ceil(ms / 60000);
+    return m > 0 ? m : 0;
+  }, [financeMissingSync?.next_run_at]);
   const loadBillingStatus = useCallback(async () => {
     try {
       const data = await api.getBillingStatus();
@@ -543,9 +551,11 @@ export default function Layout() {
                   <span className="loader-spinner-sm" aria-hidden />
                   <span>
                     🔄 Догружаем финансы по пропущенным дням ({financeMissingSync.date_from}–{financeMissingSync.date_to})
-                    {financeMissingSync.next_run_at
-                      ? `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
-                      : ''}
+                    {financeMissingSync.next_run_at ? (
+                      financeMissingMinutesLeft != null
+                        ? `; следующая попытка через ~${financeMissingMinutesLeft} мин (${new Date(financeMissingSync.next_run_at).toLocaleString('ru')})`
+                        : `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
+                    ) : ''}
                     {financeMissingSync.status === 'error' && financeMissingSync.error_message
                       ? `; ошибка: ${financeMissingSync.error_message}`
                       : ''}

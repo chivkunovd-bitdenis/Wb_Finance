@@ -48,7 +48,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   const [funnelRows, setFunnelRows] = useState(() =>
     cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : [],
   );
-  const [loadingFunnel, setLoadingFunnel] = useState(() => !(cache?.funnel?.length));
+  const [_, setLoadingFunnel] = useState(() => !(cache?.funnel?.length));
   const daysCount = useMemo(() => {
     if (!dateFrom || !dateTo) return 0;
     const a = new Date(dateFrom + 'T00:00:00');
@@ -148,7 +148,9 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
     });
   }, [pnl, dateFrom, dateTo]);
 
-  const showFullLoader = (loading && filtered.length === 0) || (loadingFunnel && funnelRows.length === 0);
+  // Воронка может догружаться в фоне (429/ретраи WB). Это не должно блокировать весь дашборд,
+  // если P&L уже доступен — иначе получаем «вечный лоадер».
+  const showFullLoader = loading && filtered.length === 0;
 
   const planFactByMonth = useMemo(() => {
     const map = new Map();

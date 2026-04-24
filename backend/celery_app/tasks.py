@@ -1238,13 +1238,25 @@ def sync_finance_missing_range(user_id: str, date_from: str, date_to: str) -> di
                 schedule_retry=False,
                 enqueue_recalc=False,
             )
-            sync_ads(
-                user_id,
-                date_from,
-                date_to,
-                schedule_retry=False,
-                enqueue_recalc=False,
-            )
+            # Реклама — опциональна для "финансов" (P&L может быть пересчитан по продажам).
+            # Поэтому не блокируем починку missing-range по 429/5xx рекламного API:
+            # - если WB ограничил рекламу, пусть sync_ads сам поставит retry и позже пересчитает витрину.
+            # - missing-range должен довести до консистентного состояния raw_sales + pnl_daily.
+            try:
+                sync_ads(
+                    user_id,
+                    date_from,
+                    date_to,
+                    schedule_retry=True,
+                    enqueue_recalc=False,
+                )
+            except requests.HTTPError as ads_exc:
+                ads_code = ads_exc.response.status_code if ads_exc.response is not None else None
+                if ads_code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                    # Best-effort: не валим весь missing-range из-за рекламы.
+                    pass
+                else:
+                    raise
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else None
             if code in FUNNEL_YTD_HTTP_RETRY_CODES:
