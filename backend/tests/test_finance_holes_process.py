@@ -384,3 +384,43 @@ def test_sync_sales_429_records_shared_retry_state(monkeypatch, real_db_session)
     assert state.last_http_code == 429
     assert state.next_run_at is not None
 
+
+def test_sync_sales_success_marks_running_state_complete(monkeypatch, real_db_session):
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+    from app.models.user import User
+    from celery_app import tasks
+
+    u = User(email="sales-success-state@example.com", password_hash="x", is_active=True, wb_api_key="k")
+    real_db_session.add(u)
+    real_db_session.commit()
+    user_id = str(u.id)
+    d = date.today() - timedelta(days=1)
+    real_db_session.add(
+        FinanceMissingSyncState(
+            user_id=user_id,
+            date_from=d,
+            date_to=d,
+            status="running",
+            last_http_code=429,
+            next_run_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            error_message="retry_scheduled http=429 delay=3600",
+        )
+    )
+    real_db_session.commit()
+
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: real_db_session)
+    monkeypatch.setattr(tasks, "fetch_sales", lambda *a, **k: [])
+
+    res = tasks.sync_sales(user_id, d.isoformat(), d.isoformat())
+    assert res == {"ok": True, "count": 0}
+
+    state = (
+        real_db_session.query(FinanceMissingSyncState)
+        .filter(FinanceMissingSyncState.user_id == user_id)
+        .one()
+    )
+    assert state.status == "complete"
+    assert state.next_run_at is None
+    assert state.error_message is None
+    assert state.last_http_code is None
+

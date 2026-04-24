@@ -304,6 +304,35 @@ def _record_finance_sales_retry_state(
         logger.exception("Failed to record sales retry state user_id=%s range=%s..%s", user_id, date_from, date_to)
 
 
+def _record_finance_sales_complete_state(db, *, user_id: str, date_from: str, date_to: str) -> None:
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+    except ValueError:
+        return
+
+    try:
+        state = (
+            db.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_from == df,
+                FinanceMissingSyncState.date_to == dt,
+            )
+            .first()
+        )
+        if state is None:
+            return
+        state.status = "complete"
+        state.next_run_at = None
+        state.error_message = None
+        state.last_http_code = None
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to record sales complete state user_id=%s range=%s..%s", user_id, date_from, date_to)
+
+
 def _build_desc_days_batch(cursor: date, year_start: date, limit: int) -> list[date]:
     """Собрать batch дат в обратном порядке: cursor, cursor-1, ..."""
     days_batch: list[date] = []
@@ -457,6 +486,7 @@ def sync_sales(
                 return {"ok": False, "error": "wb_retry_limit", "http_code": int(code)}
             raise
         if not rows:
+            _record_finance_sales_complete_state(db, user_id=user_id, date_from=date_from, date_to=date_to)
             return {"ok": True, "count": 0}
 
         subject_by_nm = {}
@@ -510,6 +540,7 @@ def sync_sales(
             inserted += 1
 
         db.commit()
+        _record_finance_sales_complete_state(db, user_id=user_id, date_from=date_from, date_to=date_to)
         # гарантируем, что articles заполнится для вкладки «Себестоимость» и sync_funnel
         try:
             created = _ensure_articles_from_raw(

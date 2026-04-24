@@ -168,6 +168,59 @@ def client_sync_sales_retry_scheduled():
 
 
 @pytest.fixture
+def client_sync_sales_running():
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+    from app.models.funnel_backfill_state import FunnelBackfillState
+    from app.models.user import User
+
+    user = User(
+        id="sync-user-id",
+        email="sync@example.com",
+        password_hash=FAKE_HASH,
+        wb_api_key="wb-key",
+        is_active=True,
+    )
+    running_row = MagicMock()
+    running_row.status = "running"
+    running_row.updated_at = datetime.now(timezone.utc)
+    running_row.next_run_at = None
+
+    def _mock_get_db():
+        session = MagicMock()
+
+        def _query(model):
+            chain = MagicMock()
+            chain.filter.return_value = chain
+            chain.order_by.return_value = chain
+            if model is FunnelBackfillState:
+                chain.first.return_value = None
+            elif model is FinanceMissingSyncState:
+                chain.first.return_value = running_row
+            else:
+                chain.first.return_value = user
+            return chain
+
+        session.query.side_effect = _query
+        session.get.return_value = user
+        try:
+            yield session
+        finally:
+            pass
+
+    def _fake_verify(plain: str, hashed: str) -> bool:
+        return plain == "pass" and hashed == FAKE_HASH
+
+    with patch("app.core.security.pwd_context") as mock_pwd:
+        mock_pwd.verify.side_effect = _fake_verify
+        app.dependency_overrides[get_db] = _mock_get_db
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
 def client_sync_granted():
     """
     Клиент, в котором пользователь авторизован как viewer, но store_ctx.is_owner == False.
@@ -496,6 +549,28 @@ def test_sync_recent_does_not_enqueue_sales_when_wb_retry_scheduled(
     data = r.json()
     assert data["task_id"] == "wb-sales-retry-scheduled"
     assert "WB sales" in data["message"]
+    mock_sync_sales.s.assert_not_called()
+    mock_sync_sales.delay.assert_not_called()
+    mock_chord.assert_not_called()
+
+
+@patch("app.routers.sync.chord")
+@patch("app.routers.sync.sync_sales")
+def test_sync_recent_does_not_enqueue_sales_when_recent_sync_running(
+    mock_sync_sales,
+    mock_chord,
+    client_sync_sales_running: TestClient,
+):
+    """Повторный быстрый вход не должен ставить второй sync_sales, пока первый ещё running."""
+    token = _get_token(client_sync_sales_running)
+    r = client_sync_sales_running.post(
+        "/sync/recent",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["task_id"] == "wb-sales-retry-scheduled"
+    assert "уже выполняется" in data["message"]
     mock_sync_sales.s.assert_not_called()
     mock_sync_sales.delay.assert_not_called()
     mock_chord.assert_not_called()

@@ -18,6 +18,7 @@ from app.schemas.sync import (
 )
 from app.services.folder_migration import run_folder_migration
 from app.db import get_db
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 # Импорт задачи Celery — по имени, чтобы воркер видел ту же задачу
@@ -41,6 +42,7 @@ _QUEUE_UNAVAILABLE = (
     "Синхронизация не запущена. Администратору: проверьте `docker compose ps` — должны быть "
     "запущены сервисы redis и celery_worker."
 )
+_SALES_SYNC_RUNNING_TTL = timedelta(minutes=10)
 
 
 def _chord_or_503(header: list, body, *, context: str):
@@ -97,11 +99,18 @@ def _sales_retry_block_message(db: Session, *, user_id: str, date_from: str, dat
             FinanceMissingSyncState.user_id == user_id,
             FinanceMissingSyncState.date_from <= dt,
             FinanceMissingSyncState.date_to >= df,
-            FinanceMissingSyncState.next_run_at.isnot(None),
         )
-        .order_by(FinanceMissingSyncState.next_run_at.desc())
+        .order_by(FinanceMissingSyncState.updated_at.desc())
         .first()
     )
+    status = getattr(row, "status", None)
+    updated_at = getattr(row, "updated_at", None)
+    if status == "running" and updated_at is not None:
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if now_dt - updated_at <= _SALES_SYNC_RUNNING_TTL:
+            return "WB sales sync уже выполняется; повторный запуск пропущен, чтобы не плодить запросы к WB."
+
     next_run_at = getattr(row, "next_run_at", None)
     if next_run_at is None:
         return None
@@ -111,6 +120,40 @@ def _sales_retry_block_message(db: Session, *, user_id: str, date_from: str, dat
         return None
     minutes = max(1, int((next_run_at - now_dt).total_seconds() // 60))
     return f"WB sales временно ограничил запросы; повторная попытка уже запланирована примерно через {minutes} мин."
+
+
+def _reserve_sales_sync_state(db: Session, *, user_id: str, date_from: str, date_to: str) -> None:
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+    except ValueError:
+        return
+
+    state = (
+        db.query(FinanceMissingSyncState)
+        .filter(
+            FinanceMissingSyncState.user_id == user_id,
+            FinanceMissingSyncState.date_from == df,
+            FinanceMissingSyncState.date_to == dt,
+        )
+        .first()
+    )
+    if state is None:
+        state = FinanceMissingSyncState(
+            user_id=user_id,
+            date_from=df,
+            date_to=dt,
+            status="running",
+        )
+        db.add(state)
+    else:
+        state.status = "running"
+        state.next_run_at = None
+        state.error_message = None
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
 
 
 def _month_end(d: date) -> date:
@@ -343,6 +386,7 @@ def trigger_recent_sync(
     blocked = _sales_retry_block_message(db, user_id=user_id, date_from=df, date_to=dt)
     if blocked is not None:
         return SyncTaskResponse(task_id="wb-sales-retry-scheduled", message=blocked)
+    _reserve_sales_sync_state(db, user_id=user_id, date_from=df, date_to=dt)
 
     async_result = _chord_or_503(
         [sync_sales.s(user_id, df, dt)],
