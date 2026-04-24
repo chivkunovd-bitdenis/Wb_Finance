@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Body, HTTPException, status
 from app.dependencies import get_current_user, get_store_context
 from app.models.user import User
 from app.models.funnel_backfill_state import FunnelBackfillState
+from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.schemas.sync import (
     SyncSalesRequest,
     SyncFunnelRequest,
@@ -76,6 +77,40 @@ def _require_wb_key(store_user: User):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="WB API ключ не задан. Добавь ключ при регистрации или в профиле.",
         )
+
+
+def _sales_retry_block_message(db: Session, *, user_id: str, date_from: str, date_to: str) -> str | None:
+    """
+    Если WB уже вернул retry-after по sales для пересекающегося диапазона,
+    не ставим новый sales sync при каждом входе/refresh.
+    """
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+    except ValueError:
+        return None
+
+    now_dt = datetime.now(timezone.utc)
+    row = (
+        db.query(FinanceMissingSyncState)
+        .filter(
+            FinanceMissingSyncState.user_id == user_id,
+            FinanceMissingSyncState.date_from <= dt,
+            FinanceMissingSyncState.date_to >= df,
+            FinanceMissingSyncState.next_run_at.isnot(None),
+        )
+        .order_by(FinanceMissingSyncState.next_run_at.desc())
+        .first()
+    )
+    next_run_at = getattr(row, "next_run_at", None)
+    if next_run_at is None:
+        return None
+    if next_run_at.tzinfo is None:
+        next_run_at = next_run_at.replace(tzinfo=timezone.utc)
+    if next_run_at <= now_dt:
+        return None
+    minutes = max(1, int((next_run_at - now_dt).total_seconds() // 60))
+    return f"WB sales временно ограничил запросы; повторная попытка уже запланирована примерно через {minutes} мин."
 
 
 def _month_end(d: date) -> date:
@@ -282,6 +317,7 @@ def trigger_initial_sync(
 
 @router.post("/recent", response_model=SyncTaskResponse)
 def trigger_recent_sync(
+    db: Session = Depends(get_db),
     store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
@@ -304,6 +340,10 @@ def trigger_recent_sync(
     dt = date_to.isoformat()
 
     user_id = str(store_user.id)
+    blocked = _sales_retry_block_message(db, user_id=user_id, date_from=df, date_to=dt)
+    if blocked is not None:
+        return SyncTaskResponse(task_id="wb-sales-retry-scheduled", message=blocked)
+
     async_result = _chord_or_503(
         [sync_sales.s(user_id, df, dt)],
         after_period_sync_enqueue_funnel.s(user_id, df, dt),

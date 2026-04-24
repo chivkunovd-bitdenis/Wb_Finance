@@ -336,3 +336,51 @@ def test_sync_finance_missing_range_does_not_block_on_ads_429(monkeypatch, real_
     assert called_apply_async == {}  # no retry for missing-range
     assert any(x[0] == "pnl" for x in recalc_calls)
 
+
+def test_sync_sales_429_records_shared_retry_state(monkeypatch, real_db_session):
+    """
+    Регрессия prod: обычный /sync/recent ставил sync_sales снова и снова.
+    При 429 сама sales-задача должна записать next_run_at в общий state, чтобы входы не спамили WB.
+    """
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+    from app.models.user import User
+    from celery_app import tasks
+
+    u = User(email="sales429-state@example.com", password_hash="x", is_active=True, wb_api_key="k")
+    real_db_session.add(u)
+    real_db_session.commit()
+    user_id = str(u.id)
+
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: real_db_session)
+    monkeypatch.setattr(
+        tasks,
+        "fetch_sales",
+        lambda *a, **k: (_ for _ in ()).throw(_http_error(429, headers={"X-RateLimit-Reset": "1000"})),
+    )
+
+    scheduled: dict[str, object] = {}
+
+    def _apply_async(*, kwargs, countdown):
+        scheduled["kwargs"] = kwargs
+        scheduled["countdown"] = countdown
+
+    monkeypatch.setattr(tasks.sync_sales, "apply_async", _apply_async)
+
+    d = (date.today() - timedelta(days=1)).isoformat()
+    res = tasks.sync_sales(user_id, d, d)
+
+    assert res["error"] == "wb_retry_scheduled"
+    assert int(res["delay_sec"]) >= 1000
+    assert scheduled["countdown"] == res["delay_sec"]
+
+    state = (
+        real_db_session.query(FinanceMissingSyncState)
+        .filter(FinanceMissingSyncState.user_id == user_id)
+        .one()
+    )
+    assert state.date_from.isoformat() == d
+    assert state.date_to.isoformat() == d
+    assert state.status == "error"
+    assert state.last_http_code == 429
+    assert state.next_run_at is not None
+

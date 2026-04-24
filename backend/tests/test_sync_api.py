@@ -4,7 +4,7 @@ Celery подменён: .delay() не ставит задачу в Redis, во�
 Витрины: pnl_daily (по дням), sku_daily (артикул×день) заполняются задачами recalculate_*.
 hash_password/verify_password мокаем, чтобы не дергать bcrypt в контейнере.
 """
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -22,6 +22,7 @@ def _mock_get_db_with_user():
     """Пользователь есть (для авторизации в /sync)."""
     from app.models.user import User
     from app.models.funnel_backfill_state import FunnelBackfillState
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
     session = MagicMock()
     user = User(
@@ -35,7 +36,10 @@ def _mock_get_db_with_user():
     def _query(model):
         chain = MagicMock()
         chain.filter.return_value = chain
+        chain.order_by.return_value = chain
         if model is FunnelBackfillState:
+            chain.first.return_value = None
+        elif model is FinanceMissingSyncState:
             chain.first.return_value = None
         else:
             chain.first.return_value = user
@@ -53,6 +57,7 @@ def _mock_get_db_with_user_no_key():
     """Пользователь есть, но WB API key не задан."""
     from app.models.user import User
     from app.models.funnel_backfill_state import FunnelBackfillState
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
     session = MagicMock()
     user = User(
@@ -66,7 +71,10 @@ def _mock_get_db_with_user_no_key():
     def _query(model):
         chain = MagicMock()
         chain.filter.return_value = chain
+        chain.order_by.return_value = chain
         if model is FunnelBackfillState:
+            chain.first.return_value = None
+        elif model is FinanceMissingSyncState:
             chain.first.return_value = None
         else:
             chain.first.return_value = user
@@ -101,6 +109,57 @@ def client_sync_no_key():
     with patch("app.core.security.pwd_context") as mock_pwd:
         mock_pwd.verify.side_effect = _fake_verify
         app.dependency_overrides[get_db] = _mock_get_db_with_user_no_key
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
+def client_sync_sales_retry_scheduled():
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+    from app.models.funnel_backfill_state import FunnelBackfillState
+    from app.models.user import User
+
+    user = User(
+        id="sync-user-id",
+        email="sync@example.com",
+        password_hash=FAKE_HASH,
+        wb_api_key="wb-key",
+        is_active=True,
+    )
+    retry_row = MagicMock()
+    retry_row.next_run_at = datetime.now(timezone.utc) + timedelta(hours=2)
+
+    def _mock_get_db():
+        session = MagicMock()
+
+        def _query(model):
+            chain = MagicMock()
+            chain.filter.return_value = chain
+            chain.order_by.return_value = chain
+            if model is FunnelBackfillState:
+                chain.first.return_value = None
+            elif model is FinanceMissingSyncState:
+                chain.first.return_value = retry_row
+            else:
+                chain.first.return_value = user
+            return chain
+
+        session.query.side_effect = _query
+        session.get.return_value = user
+        try:
+            yield session
+        finally:
+            pass
+
+    def _fake_verify(plain: str, hashed: str) -> bool:
+        return plain == "pass" and hashed == FAKE_HASH
+
+    with patch("app.core.security.pwd_context") as mock_pwd:
+        mock_pwd.verify.side_effect = _fake_verify
+        app.dependency_overrides[get_db] = _mock_get_db
         try:
             with TestClient(app) as c:
                 yield c
@@ -415,6 +474,31 @@ def test_sync_recent_updates_last_7_days(
     mock_sync_ads.s.assert_not_called()
     mock_after_period.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
     mock_chord.assert_called_once()
+
+
+@patch("app.routers.sync.chord")
+@patch("app.routers.sync.sync_sales")
+def test_sync_recent_does_not_enqueue_sales_when_wb_retry_scheduled(
+    mock_sync_sales,
+    mock_chord,
+    client_sync_sales_retry_scheduled: TestClient,
+):
+    """
+    Регрессия prod: если WB уже вернул retry-after по sales, повторный вход не должен
+    ставить новый sync_sales и продлевать блокировку продавца.
+    """
+    token = _get_token(client_sync_sales_retry_scheduled)
+    r = client_sync_sales_retry_scheduled.post(
+        "/sync/recent",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["task_id"] == "wb-sales-retry-scheduled"
+    assert "WB sales" in data["message"]
+    mock_sync_sales.s.assert_not_called()
+    mock_sync_sales.delay.assert_not_called()
+    mock_chord.assert_not_called()
 
 
 @patch("app.routers.sync.sync_funnel")

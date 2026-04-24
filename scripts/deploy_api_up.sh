@@ -12,9 +12,9 @@ docker compose up -d redis
 docker compose stop celery_worker celery_beat || true
 docker compose exec -T redis redis-cli FLUSHDB
 docker compose up -d postgres
-docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_missing_sync_state SET status = 'idle', next_run_at = NULL, error_message = NULL, updated_at = NOW() WHERE status IN ('running', 'error') OR next_run_at IS NOT NULL;"
-docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
-docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE funnel_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
+docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_missing_sync_state SET status = 'idle', next_run_at = NULL, error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status IN ('running', 'error') OR next_run_at IS NOT NULL;"
+docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
+docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE funnel_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
 
 echo "==> docker compose build api"
 docker compose build api

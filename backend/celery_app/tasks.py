@@ -252,6 +252,58 @@ def _retry_http_delay_with_headers(code: int, retry_n: int, resp: requests.Respo
     return int(max(fallback, capped + jitter))
 
 
+def _record_finance_sales_retry_state(
+    db,
+    *,
+    user_id: str,
+    date_from: str,
+    date_to: str,
+    http_code: int,
+    delay_sec: int,
+) -> None:
+    """
+    Зафиксировать WB sales throttle в общем state.
+
+    Это нужно не только для UI: /sync/recent должен видеть, что WB уже сказал "ждать",
+    и не ставить новые sales-задачи при каждом входе/refresh.
+    """
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+    except ValueError:
+        return
+
+    now_dt = datetime.now(timezone.utc)
+    next_run_at = now_dt + timedelta(seconds=delay_sec)
+    try:
+        state = (
+            db.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_from == df,
+                FinanceMissingSyncState.date_to == dt,
+            )
+            .first()
+        )
+        if state is None:
+            state = FinanceMissingSyncState(
+                user_id=user_id,
+                date_from=df,
+                date_to=dt,
+                status="error",
+            )
+            db.add(state)
+        state.status = "error"
+        state.retry_count = int(state.retry_count or 0) + 1
+        state.last_http_code = http_code
+        state.next_run_at = next_run_at
+        state.error_message = f"retry_scheduled http={http_code} delay={delay_sec}"
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to record sales retry state user_id=%s range=%s..%s", user_id, date_from, date_to)
+
+
 def _build_desc_days_batch(cursor: date, year_start: date, limit: int) -> list[date]:
     """Собрать batch дат в обратном порядке: cursor, cursor-1, ..."""
     days_batch: list[date] = []
@@ -378,6 +430,14 @@ def sync_sales(
                 retry_n = (prev_n + 1) if prev_code == code else 1
                 if retry_n <= FUNNEL_YTD_429_RETRY_LIMIT:
                     delay = _retry_http_delay_with_headers(int(code), retry_n, exc.response)
+                    _record_finance_sales_retry_state(
+                        db,
+                        user_id=user_id,
+                        date_from=date_from,
+                        date_to=date_to,
+                        http_code=int(code),
+                        delay_sec=delay,
+                    )
                     sync_sales.apply_async(
                         kwargs={
                             "user_id": user_id,
