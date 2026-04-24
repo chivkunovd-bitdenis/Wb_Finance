@@ -301,6 +301,18 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
             assert args[0] == user_id
             assert args[1] == yesterday.isoformat()
             assert args[2] == yesterday.isoformat()
+            from app.models.finance_missing_sync_state import FinanceMissingSyncState
+
+            state = (
+                session.query(FinanceMissingSyncState)
+                .filter(
+                    FinanceMissingSyncState.user_id == user_id,
+                    FinanceMissingSyncState.date_from == yesterday,
+                    FinanceMissingSyncState.date_to == yesterday,
+                )
+                .one()
+            )
+            assert state.status == "running"
 
 
 def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authenticated_client):
@@ -357,6 +369,18 @@ def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authent
             assert args[0] == user_id
             assert args[1] == day_before.isoformat()
             assert args[2] == yesterday.isoformat()
+            from app.models.finance_missing_sync_state import FinanceMissingSyncState
+
+            state = (
+                session.query(FinanceMissingSyncState)
+                .filter(
+                    FinanceMissingSyncState.user_id == user_id,
+                    FinanceMissingSyncState.date_from == day_before,
+                    FinanceMissingSyncState.date_to == yesterday,
+                )
+                .one()
+            )
+            assert state.status == "running"
 
 
 def test_dashboard_state_finance_missing_range_is_deduped_when_running(authenticated_client):

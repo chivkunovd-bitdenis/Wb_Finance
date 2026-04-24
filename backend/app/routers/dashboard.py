@@ -274,13 +274,16 @@ def _maybe_start_finance_backfill(
                 user_id=str(user.id),
                 date_from=miss.date_from,
                 date_to=miss.date_to,
-                status="idle",
+                status="running",
             )
             db.add(state)
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
+        state.status = "running"
+        state.next_run_at = None
+        state.error_message = None
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
 
         try:
             sync_finance_missing_range.delay(
@@ -341,14 +344,17 @@ def _maybe_start_finance_backfill(
                 user_id=str(user.id),
                 date_from=df,
                 date_to=dt,
-                status="idle",
+                status="running",
             )
             db.add(state)
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                continue
+        state.status = "running"
+        state.next_run_at = None
+        state.error_message = None
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
         try:
             sync_finance_missing_range.delay(str(user.id), df.isoformat(), dt.isoformat())
             queued += 1
