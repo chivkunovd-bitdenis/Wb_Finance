@@ -105,11 +105,11 @@ def _sales_retry_block_message(db: Session, *, user_id: str, date_from: str, dat
     )
     status = getattr(row, "status", None)
     updated_at = getattr(row, "updated_at", None)
-    if status == "running" and updated_at is not None:
+    if status in {"queued", "running"} and updated_at is not None:
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
         if now_dt - updated_at <= _SALES_SYNC_RUNNING_TTL:
-            return "WB sales sync уже выполняется; повторный запуск пропущен, чтобы не плодить запросы к WB."
+            return "WB sales sync уже поставлен или выполняется; повторный запуск пропущен, чтобы не плодить запросы к WB."
 
     next_run_at = getattr(row, "next_run_at", None)
     if next_run_at is None:

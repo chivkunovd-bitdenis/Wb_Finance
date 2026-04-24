@@ -181,7 +181,7 @@ def client_sync_sales_running():
         is_active=True,
     )
     running_row = MagicMock()
-    running_row.status = "running"
+    running_row.status = "queued"
     running_row.updated_at = datetime.now(timezone.utc)
     running_row.next_run_at = None
 
@@ -556,12 +556,12 @@ def test_sync_recent_does_not_enqueue_sales_when_wb_retry_scheduled(
 
 @patch("app.routers.sync.chord")
 @patch("app.routers.sync.sync_sales")
-def test_sync_recent_does_not_enqueue_sales_when_recent_sync_running(
+def test_sync_recent_does_not_enqueue_sales_when_recent_sync_queued(
     mock_sync_sales,
     mock_chord,
     client_sync_sales_running: TestClient,
 ):
-    """Повторный быстрый вход не должен ставить второй sync_sales, пока первый ещё running."""
+    """Повторный быстрый вход не должен ставить второй sync_sales, пока первый уже queued/running."""
     token = _get_token(client_sync_sales_running)
     r = client_sync_sales_running.post(
         "/sync/recent",
@@ -570,7 +570,7 @@ def test_sync_recent_does_not_enqueue_sales_when_recent_sync_running(
     assert r.status_code == 200
     data = r.json()
     assert data["task_id"] == "wb-sales-retry-scheduled"
-    assert "уже выполняется" in data["message"]
+    assert "уже поставлен или выполняется" in data["message"]
     mock_sync_sales.s.assert_not_called()
     mock_sync_sales.delay.assert_not_called()
     mock_chord.assert_not_called()

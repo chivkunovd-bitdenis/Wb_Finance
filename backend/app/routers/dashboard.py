@@ -274,10 +274,10 @@ def _maybe_start_finance_backfill(
                 user_id=str(user.id),
                 date_from=miss.date_from,
                 date_to=miss.date_to,
-                status="running",
+                status="queued",
             )
             db.add(state)
-        state.status = "running"
+        state.status = "queued"
         state.next_run_at = None
         state.error_message = None
         try:
@@ -344,10 +344,10 @@ def _maybe_start_finance_backfill(
                 user_id=str(user.id),
                 date_from=df,
                 date_to=dt,
-                status="running",
+                status="queued",
             )
             db.add(state)
-        state.status = "running"
+        state.status = "queued"
         state.next_run_at = None
         state.error_message = None
         try:

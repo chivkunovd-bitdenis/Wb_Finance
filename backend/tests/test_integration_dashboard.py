@@ -312,7 +312,7 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
                 )
                 .one()
             )
-            assert state.status == "running"
+            assert state.status == "queued"
 
 
 def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authenticated_client):
@@ -380,7 +380,7 @@ def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authent
                 )
                 .one()
             )
-            assert state.status == "running"
+            assert state.status == "queued"
 
 
 def test_dashboard_state_finance_missing_range_is_deduped_when_running(authenticated_client):
