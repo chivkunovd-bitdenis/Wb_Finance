@@ -169,23 +169,17 @@ def trigger_sync_period(
     store_ctx: StoreContext = Depends(get_store_context),
 ):
     """
-    Синхронизация продаж+рекламы+воронки за произвольный период, в правильном порядке:
-    sync_sales + sync_ads -> sync_funnel (чтобы articles успели заполниться).
+    Синхронизация финансов за произвольный период.
+
+    Воронку автоматически не запускаем для произвольных периодов: она ограничена rolling-window
+    последних 7 дней, чтобы не забивать WB и очередь.
     """
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
-    user_id = str(store_user.id)
-    async_result = _chord_or_503(
-        [
-            sync_sales.s(user_id, body.date_from, body.date_to),
-            sync_ads.s(user_id, body.date_from, body.date_to),
-        ],
-        after_period_sync_enqueue_funnel.s(user_id, body.date_from, body.date_to),
-        context="sync_period",
-    )
+    result = _delay_or_503(sync_sales, "sync_period_sales", str(store_user.id), body.date_from, body.date_to)
     return SyncTaskResponse(
-        task_id=async_result.id,
-        message="Синхронизация периода поставлена в очередь (sales+ads, затем funnel).",
+        task_id=result.id,
+        message="Синхронизация финансового периода поставлена в очередь (sales).",
     )
 
 
@@ -256,9 +250,9 @@ def trigger_initial_sync(
 
     Стратегия как в GAS:
     - берём последние 30 дней (от вчера назад);
-    - ставим в очередь sync_sales и sync_ads по этому периоду;
-    - после обеих задач ставим sync_funnel (nm_id берутся из articles, которые заполняются sales/ads);
-    - по завершении sync_sales/sync_ads Celery вызовет пересчёт витрин (pnl_daily, sku_daily).
+    - ставим в очередь sync_sales по этому периоду;
+    - после sales ставим sync_funnel только за последние 7 дней;
+    - по завершении sync_sales Celery вызовет пересчёт витрин (pnl_daily, sku_daily).
 
     Endpoint возвращает только факт постановки задач; фронт может опрашивать /dashboard/state,
     чтобы понять, когда has_data и has_funnel станут True.
@@ -273,9 +267,9 @@ def trigger_initial_sync(
     dt = date_to.isoformat()
 
     user_id = str(store_user.id)
-    # chord: нельзя.delay(sync_funnel) сразу — воронке нужны articles из sales/ads
+    # chord: нельзя .delay(sync_funnel) сразу — воронке нужны articles из sales.
     async_result = _chord_or_503(
-        [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
+        [sync_sales.s(user_id, df, dt)],
         after_initial_sync_enqueue_funnel.s(user_id),
         context="sync_initial",
     )
@@ -294,9 +288,9 @@ def trigger_recent_sync(
     Автосинк для сценария «не первый вход».
 
     Стратегия:
-    - каждый вход пользователя мы обновляем «хвост» последних 7 дней (включая вчера);
-    - ставим в очередь sync_sales, sync_ads и sync_funnel по этому окну;
-    - пересчёт витрин (pnl_daily, sku_daily) произойдёт из задач sync_sales/sync_ads.
+    - каждый вход пользователя сначала обновляет финансовый хвост последних 7 дней (включая вчера);
+    - только после успешного sales ставим sync_funnel по этому же 7-дневному окну;
+    - рекламу не трогаем в автосинке, чтобы не блокировать финансы и не сжигать лимиты WB.
 
     Окно 7 дней совпадает с дефолтным окном воронки и логикой GAS.
     """
@@ -311,7 +305,7 @@ def trigger_recent_sync(
 
     user_id = str(store_user.id)
     async_result = _chord_or_503(
-        [sync_sales.s(user_id, df, dt), sync_ads.s(user_id, df, dt)],
+        [sync_sales.s(user_id, df, dt)],
         after_period_sync_enqueue_funnel.s(user_id, df, dt),
         context="sync_recent",
     )
@@ -329,8 +323,8 @@ def trigger_backfill_2026(
     """
     Догрузка «основного диапазона» 2026 (как в GAS triggerLoad2026ThenMaybe2025):
     - период: 2026-01-01 .. вчера;
-    - продажи и реклама ставятся в очередь чанками по месяцам (чтобы задачи были стабильнее);
-    - воронка ставится отдельно на окно последних 7 дней (по умолчанию в задаче именно так).
+    - продажи ставятся в очередь чанками по месяцам (чтобы задачи были стабильнее);
+    - реклама и историческая воронка не запускаются автоматически.
     """
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
@@ -349,16 +343,11 @@ def trigger_backfill_2026(
     task_ids: list[str] = []
     for df, dt in chunks:
         r1 = _delay_or_503(sync_sales, "backfill_2026_sales", user_id, df, dt)
-        r2 = _delay_or_503(sync_ads, "backfill_2026_ads", user_id, df, dt)
-        task_ids.extend([r1.id, r2.id])
-
-    # Воронка — отдельной задачей (окно 7 дней), как в GAS
-    rf = _delay_or_503(sync_funnel, "backfill_2026_funnel", user_id, None, None)
-    task_ids.append(rf.id)
+        task_ids.append(r1.id)
 
     return SyncBatchResponse(
         task_ids=task_ids,
-        message=f"Догрузка 2026 поставлена в очередь ({len(chunks)} мес. + воронка): 2026-01-01 — {date_to.isoformat()}",
+        message=f"Догрузка финансов 2026 поставлена в очередь ({len(chunks)} мес.): 2026-01-01 — {date_to.isoformat()}",
     )
 
 
@@ -368,7 +357,7 @@ def trigger_backfill_2025(
 ):
     """
     Догрузка архива 2025 по месяцам (как в GAS loadNextArchiveChunk / apiLoadArchiveChunk).
-    Период: 2025-01-01 .. 2025-12-31. Задачи sync_sales и sync_ads по каждому месяцу.
+    Период: 2025-01-01 .. 2025-12-31. Автоматически грузим только sales.
     """
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
@@ -379,11 +368,10 @@ def trigger_backfill_2025(
     task_ids: list[str] = []
     for df, dt in chunks:
         r1 = _delay_or_503(sync_sales, "backfill_2025_sales", user_id, df, dt)
-        r2 = _delay_or_503(sync_ads, "backfill_2025_ads", user_id, df, dt)
-        task_ids.extend([r1.id, r2.id])
+        task_ids.append(r1.id)
     return SyncBatchResponse(
         task_ids=task_ids,
-        message=f"Догрузка архива 2025 поставлена в очередь ({len(chunks)} мес.): 2025-01-01 — 2025-12-31",
+        message=f"Догрузка финансового архива 2025 поставлена в очередь ({len(chunks)} мес.): 2025-01-01 — 2025-12-31",
     )
 
 

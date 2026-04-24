@@ -587,9 +587,11 @@ def _default_funnel_dates() -> tuple[str, str]:
 @celery_app.task(name="after_initial_sync_enqueue_funnel")
 def after_initial_sync_enqueue_funnel(_results: list[object], user_id: str) -> None:
     """
-    Колбэк chord после пары sync_sales + sync_ads из POST /sync/initial.
-    Воронка требует строк в articles; они появляются в этих задачах — нельзя ставить sync_funnel параллельно с ними.
+    Колбэк после sync_sales из POST /sync/initial.
+    Воронка требует строк в articles; они появляются после sales — нельзя ставить sync_funnel параллельно.
     """
+    if any(isinstance(r, dict) and r.get("ok") is False for r in (_results or [])):
+        return
     sync_funnel.delay(user_id, None, None)
 
 
@@ -601,9 +603,11 @@ def after_period_sync_enqueue_funnel(
     date_to: str,
 ) -> None:
     """
-    Колбэк chord для синка произвольного периода:
-    сначала sync_sales + sync_ads, затем sync_funnel за тот же период.
+    Колбэк после sales для короткого периода:
+    сначала закрываем финансы, затем запускаем воронку только на rolling-window.
     """
+    if any(isinstance(r, dict) and r.get("ok") is False for r in (_results or [])):
+        return
     sync_funnel.delay(user_id, date_from, date_to)
 
 

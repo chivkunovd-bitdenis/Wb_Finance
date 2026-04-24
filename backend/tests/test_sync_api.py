@@ -245,19 +245,14 @@ def test_sync_funnel_returns_200_and_task_id(mock_sync_funnel, client_sync: Test
     assert call_args[2] is None
 
 
-@patch("app.routers.sync.after_period_sync_enqueue_funnel")
-@patch("app.routers.sync.chord")
 @patch("app.routers.sync.sync_ads")
 @patch("app.routers.sync.sync_sales")
-def test_sync_period_enqueues_chord_sales_ads_then_funnel(
+def test_sync_period_enqueues_sales_only(
     mock_sync_sales,
     mock_sync_ads,
-    mock_chord,
-    mock_after_period,
     client_sync: TestClient,
 ):
-    mock_async_result = MagicMock(id="task-period-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_async_result)
+    mock_sync_sales.delay.return_value = MagicMock(id="task-period-sales")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -266,14 +261,10 @@ def test_sync_period_enqueues_chord_sales_ads_then_funnel(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
-    assert r.json()["task_id"] == "task-period-chord"
+    assert r.json()["task_id"] == "task-period-sales"
 
-    mock_sync_sales.delay.assert_not_called()
+    mock_sync_sales.delay.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-07")
     mock_sync_ads.delay.assert_not_called()
-    mock_sync_sales.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-07")
-    mock_sync_ads.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-07")
-    mock_after_period.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-07")
-    mock_chord.assert_called_once()
 
 
 @patch("app.routers.sync.sync_funnel_ytd_step")
@@ -339,7 +330,7 @@ def test_sync_initial_uses_last_30_days(
     mock_after_funnel,
     client_sync: TestClient,
 ):
-    """Проверяем, что /sync/initial ставит chord(sync_sales, sync_ads) на последние 30 дней и затем воронку."""
+    """Проверяем, что /sync/initial сначала ставит sales, а воронку — только после sales."""
     # today = 2025‑03‑31 -> date_to = 2025‑03‑30, date_from = 2025‑03‑01
     mock_date.today.return_value = date(2025, 3, 31)
 
@@ -363,10 +354,10 @@ def test_sync_initial_uses_last_30_days(
     mock_sync_sales.delay.assert_not_called()
     mock_sync_ads.delay.assert_not_called()
     mock_sync_sales.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-30")
-    mock_sync_ads.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-30")
+    mock_sync_ads.s.assert_not_called()
     mock_chord.assert_called_once()
     header = mock_chord.call_args[0][0]
-    assert len(header) == 2
+    assert len(header) == 1
     mock_after_funnel.s.assert_called_once_with("sync-user-id")
 
 
@@ -395,7 +386,7 @@ def test_sync_recent_updates_last_7_days(
 ):
     """
     /sync/recent — автосинк для «не первого входа»:
-    обновляет последние 7 дней (включая вчера) и ставит в очередь продажи, рекламу и воронку.
+    обновляет последние 7 дней (включая вчера), сначала sales, затем воронку.
     """
     # today = 2025‑04‑08 -> date_to = 2025‑04‑07, date_from = 2025‑04‑01
     mock_date.today.return_value = date(2025, 4, 8)
@@ -421,7 +412,7 @@ def test_sync_recent_updates_last_7_days(
     mock_sync_sales.delay.assert_not_called()
     mock_sync_ads.delay.assert_not_called()
     mock_sync_sales.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
-    mock_sync_ads.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
+    mock_sync_ads.s.assert_not_called()
     mock_after_period.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
     mock_chord.assert_called_once()
 
@@ -430,7 +421,7 @@ def test_sync_recent_updates_last_7_days(
 @patch("app.routers.sync.sync_ads")
 @patch("app.routers.sync.sync_sales")
 @patch("app.routers.sync.date")
-def test_sync_backfill_2026_enqueues_month_chunks_and_funnel(
+def test_sync_backfill_2026_enqueues_sales_month_chunks_only(
     mock_date,
     mock_sync_sales,
     mock_sync_ads,
@@ -439,8 +430,8 @@ def test_sync_backfill_2026_enqueues_month_chunks_and_funnel(
 ):
     """
     /sync/backfill/2026:
-    - продажи и реклама по месяцам с 2026-01-01 до вчера
-    - воронка отдельно (None, None)
+    - продажи по месяцам с 2026-01-01 до вчера
+    - рекламу и историческую воронку не стартуем автоматически
     """
     # today = 2026‑03‑05 -> date_to = 2026‑03‑04
     mock_date.today.return_value = date(2026, 3, 5)
@@ -456,12 +447,6 @@ def test_sync_backfill_2026_enqueues_month_chunks_and_funnel(
         MagicMock(id="sales-feb"),
         MagicMock(id="sales-mar"),
     ]
-    mock_sync_ads.delay.side_effect = [
-        MagicMock(id="ads-jan"),
-        MagicMock(id="ads-feb"),
-        MagicMock(id="ads-mar"),
-    ]
-    mock_sync_funnel.delay.return_value = MagicMock(id="funnel-7d")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -481,15 +466,14 @@ def test_sync_backfill_2026_enqueues_month_chunks_and_funnel(
         ("sync-user-id", "2026-03-01", "2026-03-04"),
     ]
     assert [c.args for c in mock_sync_sales.delay.call_args_list] == expected_calls
-    assert [c.args for c in mock_sync_ads.delay.call_args_list] == expected_calls
-    mock_sync_funnel.delay.assert_called_once_with("sync-user-id", None, None)
+    mock_sync_ads.delay.assert_not_called()
+    mock_sync_funnel.delay.assert_not_called()
 
-    # Возвращаемый список task_ids содержит все id (sales+ads по чанкам + funnel)
+    # Возвращаемый список task_ids содержит только sales chunks.
     assert data["task_ids"] == [
-        "sales-jan", "ads-jan",
-        "sales-feb", "ads-feb",
-        "sales-mar", "ads-mar",
-        "funnel-7d",
+        "sales-jan",
+        "sales-feb",
+        "sales-mar",
     ]
 
 
@@ -500,9 +484,8 @@ def test_sync_backfill_2025_enqueues_twelve_months(
     mock_sync_ads,
     client_sync: TestClient,
 ):
-    """POST /sync/backfill/2025 ставит в очередь продажи и рекламу по каждому месяцу 2025."""
+    """POST /sync/backfill/2025 ставит в очередь только продажи по каждому месяцу 2025."""
     mock_sync_sales.delay.return_value = MagicMock(id="s1")
-    mock_sync_ads.delay.return_value = MagicMock(id="a1")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -512,13 +495,13 @@ def test_sync_backfill_2025_enqueues_twelve_months(
     assert r.status_code == 200
     data = r.json()
     assert "task_ids" in data and isinstance(data["task_ids"], list)
-    # 12 месяцев × 2 (sales + ads) = 24 вызова
+    # 12 месяцев × sales = 12 вызовов
     assert mock_sync_sales.delay.call_count == 12
-    assert mock_sync_ads.delay.call_count == 12
+    assert mock_sync_ads.delay.call_count == 0
     sales_calls = [c.args for c in mock_sync_sales.delay.call_args_list]
     assert sales_calls[0] == ("sync-user-id", "2025-01-01", "2025-01-31")
     assert sales_calls[11] == ("sync-user-id", "2025-12-01", "2025-12-31")
-    assert len(data["task_ids"]) == 24
+    assert len(data["task_ids"]) == 12
 
 
 def test_sync_backfill_2025_without_wb_key_returns_400(client_sync_no_key: TestClient):

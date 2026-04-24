@@ -7,6 +7,11 @@ cd "$ROOT"
 echo "==> git pull"
 git pull
 
+echo "==> поднимаем redis и очищаем Celery очередь (FLUSHDB)"
+docker compose up -d redis
+docker compose stop celery_worker celery_beat || true
+docker compose exec -T redis redis-cli FLUSHDB
+
 echo "==> docker compose build api"
 docker compose build api
 

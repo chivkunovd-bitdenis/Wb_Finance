@@ -161,10 +161,10 @@ def test_dashboard_state_structure_and_has_data_true(authenticated_client):
     assert set(data["finance_backfill_2025"].keys()) == FINANCE_BACKFILL_KEYS
 
 
-def test_dashboard_state_autostarts_funnel_backfill_when_yesterday_missing(authenticated_client):
+def test_dashboard_state_does_not_autostart_funnel_ytd_when_yesterday_missing(authenticated_client):
     """
-    Регрессия: при входе в приложение, если за вчера нет строк funnel_daily,
-    /dashboard/state должен автостартовать backfill (weekly→daily), не блокируя пользователя.
+    При входе не стартуем историческую YTD-воронку: воронка ограничена rolling 7 дней
+    и запускается только после финансового sales-синка.
     """
     client, session, user_id, token = authenticated_client
 
@@ -192,18 +192,15 @@ def test_dashboard_state_autostarts_funnel_backfill_when_yesterday_missing(authe
     with patch("app.routers.dashboard.sync_funnel_ytd_step.delay") as mock_delay:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        mock_delay.assert_called_once()
-        args, _kwargs = mock_delay.call_args
-        assert args[0] == user_id
-        assert args[1] == 2026
+        mock_delay.assert_not_called()
 
 
-def test_dashboard_state_resets_stuck_running_funnel_backfill_and_autostarts(authenticated_client):
+def test_dashboard_state_resets_stuck_running_funnel_backfill_without_autostart(authenticated_client):
     """
     Регрессия: если funnel_backfill_state застрял в status=running (например, воркер умер),
     баннер может висеть сутками и задача не будет перезапущена.
 
-    /dashboard/state должен сбросить running→idle при старом updated_at и автостартовать задачу.
+    /dashboard/state должен сбросить running→idle при старом updated_at, но не автостартовать YTD.
     """
     client, session, user_id, token = authenticated_client
 
@@ -241,7 +238,9 @@ def test_dashboard_state_resets_stuck_running_funnel_backfill_and_autostarts(aut
     with patch("app.routers.dashboard.sync_funnel_ytd_step.delay") as mock_delay:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        mock_delay.assert_called_once()
+        mock_delay.assert_not_called()
+        session.refresh(stuck)
+        assert stuck.status == "idle"
 
 
 def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_missing(authenticated_client):
@@ -249,7 +248,7 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
     Как должно работать (финансы):
     - данные в pnl_daily за последние дни есть,
     - но ровно за вчера отсутствуют,
-    => /dashboard/state должен поставить в очередь sync_sales + sync_ads только за вчера,
+    => /dashboard/state должен поставить в очередь sales-догрузку только за вчера,
        а не запускать годовой finance backfill.
     """
     client, session, user_id, token = authenticated_client
@@ -301,6 +300,62 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
             args, _kwargs = mock_missing.call_args
             assert args[0] == user_id
             assert args[1] == yesterday.isoformat()
+            assert args[2] == yesterday.isoformat()
+
+
+def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authenticated_client):
+    """
+    Регрессия: если хвостом отсутствуют вчера и позавчера, /dashboard/state должен поставить
+    одну точечную догрузку ровно на этот диапазон.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    day_before = today - timedelta(days=2)
+    last_complete = today - timedelta(days=3)
+
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=last_complete,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=last_complete,
+            revenue=100,
+            commission=10,
+            logistics=1,
+            penalties=0,
+            storage=0,
+            ads_spend=0,
+            cogs=10,
+            tax=6,
+            margin=73,
+        )
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
+            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 200
+            mock_backfill.assert_not_called()
+            mock_missing.assert_called_once()
+            args, _kwargs = mock_missing.call_args
+            assert args[0] == user_id
+            assert args[1] == day_before.isoformat()
             assert args[2] == yesterday.isoformat()
 
 

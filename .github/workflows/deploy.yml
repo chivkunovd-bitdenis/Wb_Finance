@@ -77,6 +77,12 @@ jobs:
             # Подтянуть последний код
             git pull origin main
 
+            # Критично: перед запуском нового релиза очищаем очередь Celery.
+            # Иначе старые отложенные задачи (в т.ч. ретраи) продолжат выполняться уже с новым WB-ключом.
+            docker compose up -d redis
+            docker compose stop celery_worker celery_beat || true
+            docker compose exec -T redis redis-cli FLUSHDB
+
             # Пересобрать и поднять все контейнеры (миграции — в entrypoint api,
             # см. backend/docker_entrypoint_api.py; повторный alembic здесь ломал
             # деплой при «overlaps», т.к. без логики skip из entrypoint)

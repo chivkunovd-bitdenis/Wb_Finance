@@ -173,7 +173,7 @@ export default function Layout() {
         if (!state.has_data && !initialTriggered) {
           // Новый пользователь — запускаем первую синхронизацию за последние 30 дней
           setInitialTriggered(true);
-          setWaitForFunnelAfterInitial(true);
+          setWaitForFunnelAfterInitial(false);
           try {
             await api.triggerInitialSync();
           } catch (e) {
@@ -188,20 +188,16 @@ export default function Layout() {
           // продолжаем опрашивать состояние ниже
         }
 
-        const hasRequiredInitialData = state.has_data && (!waitForFunnelAfterInitial || state.has_funnel);
+        const hasRequiredInitialData = state.has_data;
         if (hasRequiredInitialData) {
           setInitialLoading(false);
           setRefreshTrigger((t) => t + 1);
         } else {
           // Защита от вечного лоадера: ~3 минуты ожидания (36 попыток по 5 секунд)
           if (attempts >= 36) {
-            if (state.has_data && waitForFunnelAfterInitial && !state.has_funnel) {
-              setInitialError('Базовые данные загружены, но воронка еще не готова. Проверь задачу sync_funnel в воркере.');
-            } else {
-              setInitialError(
+            setInitialError(
               'Синхронизация не завершилась за 3 минуты. Проверь WB API ключ и логи celery_worker (очередь Redis).',
             );
-            }
             setInitialLoading(false);
             return;
           }
@@ -288,26 +284,6 @@ export default function Layout() {
           .finally(() => setRefreshTrigger((t) => t + 1));
       });
   }, [initialLoading, dashboardState, backfill2026TriggeredOnce]);
-
-  // Воронка YTD: после появления данных — догружаем суммы заказов / метрики с 1 янв. (WB products API по дням)
-  useEffect(() => {
-    if (initialLoading) return;
-    if (!dashboardState?.has_data) return;
-    const fb = dashboardState.funnel_ytd_backfill;
-    if (!fb || !fb.through_date) return;
-    if (fb.status === 'complete' || fb.status === 'running') return;
-    if (funnelYtdBootstrappedRef.current) return;
-    funnelYtdBootstrappedRef.current = true;
-    setFunnelYtdLaunchPending(true);
-    api
-      .triggerFunnelBackfillYtd()
-      .then(() => api.getDashboardState().then((s) => setDashboardState(s)).catch(() => {}))
-      .catch((e) => {
-        console.warn('Ошибка запуска догрузки воронки YTD', e);
-        funnelYtdBootstrappedRef.current = false;
-        setFunnelYtdLaunchPending(false);
-      });
-  }, [initialLoading, dashboardState?.has_data, dashboardState?.funnel_ytd_backfill]);
 
   useEffect(() => {
     if (funnelYtdStatus !== 'running' && !funnelYtdLaunchPending) return;

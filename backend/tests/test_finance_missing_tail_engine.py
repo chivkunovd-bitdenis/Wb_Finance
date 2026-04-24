@@ -29,6 +29,35 @@ def test_compute_missing_tail_range_returns_yesterday_when_only_yesterday_missin
     assert rng.date_to == through
 
 
+def test_compute_missing_tail_range_returns_yesterday_and_day_before_when_both_missing(real_db_session):
+    from app.models.raw_sales import RawSale
+    from app.models.user import User
+    from app.services.finance_missing_tail import compute_missing_tail_range
+
+    u = User(email="miss-two-days@example.com", password_hash="x", is_active=True, wb_api_key="k")
+    real_db_session.add(u)
+    real_db_session.commit()
+    user_id = str(u.id)
+    through = date.today() - timedelta(days=1)
+    day_before = through - timedelta(days=1)
+    last_complete = through - timedelta(days=2)
+
+    real_db_session.add(
+        RawSale(
+            user_id=user_id,
+            date=last_complete,
+            nm_id=123,
+            doc_type="Продажа",
+        )
+    )
+    real_db_session.commit()
+
+    rng = compute_missing_tail_range(real_db_session, user_id=user_id, through=through, lookback_days=10)
+    assert rng is not None
+    assert rng.date_from == day_before
+    assert rng.date_to == through
+
+
 def test_compute_missing_tail_range_none_when_through_present(real_db_session):
     from app.models.user import User
     from app.models.raw_sales import RawSale
@@ -47,6 +76,31 @@ def test_compute_missing_tail_range_none_when_through_present(real_db_session):
             nm_id=123,
             doc_type="Продажа",
         )
+    )
+    real_db_session.commit()
+
+    assert compute_missing_tail_range(real_db_session, user_id=user_id, through=through, lookback_days=10) is None
+
+
+def test_compute_missing_tail_range_ignores_missing_ads_when_sales_present(real_db_session):
+    from app.models.raw_ads import RawAd
+    from app.models.raw_sales import RawSale
+    from app.models.user import User
+    from app.services.finance_missing_tail import compute_missing_tail_range
+
+    u = User(email="miss-ads-optional@example.com", password_hash="x", is_active=True, wb_api_key="k")
+    real_db_session.add(u)
+    real_db_session.commit()
+    user_id = str(u.id)
+    through = date.today() - timedelta(days=1)
+    day_before = through - timedelta(days=1)
+
+    real_db_session.add_all(
+        [
+            RawSale(user_id=user_id, date=through, nm_id=123, doc_type="Продажа"),
+            RawSale(user_id=user_id, date=day_before, nm_id=123, doc_type="Продажа"),
+            RawAd(user_id=user_id, date=day_before, nm_id=123, campaign_id=1, spend=10),
+        ]
     )
     real_db_session.commit()
 

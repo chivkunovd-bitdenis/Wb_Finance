@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from app.models.raw_sales import RawSale
-from app.models.raw_ads import RawAd
 
 
 @dataclass(frozen=True)
@@ -23,10 +22,10 @@ def compute_missing_tail_range(
     lookback_days: int = 45,
 ) -> DateRange | None:
     """
-    Найти "хвостовую" дыру в сырье (raw_sales/raw_ads), которая заканчивается на `through` (обычно вчера).
+    Найти "хвостовую" дыру в сырье продаж (raw_sales), которая заканчивается на `through` (обычно вчера).
 
     Возвращает диапазон [date_from..date_to], где date_to == through.
-    Если `through` уже присутствует в сырье (с учётом того, что реклама опциональна) — возвращает None.
+    Если `through` уже присутствует в raw_sales — возвращает None.
 
     Важно: мы намеренно НЕ пытаемся чинить "дыры в середине" при входе пользователя.
     """
@@ -46,26 +45,8 @@ def compute_missing_tail_range(
     )
     present_sales = {r[0] for r in sales_rows if r and r[0] is not None}
 
-    # Реклама опциональна: если у пользователя в окне нет ни одной raw_ads — не считаем отсутствие ads "дырой".
-    ads_rows = (
-        db.query(RawAd.date)
-        .filter(
-            RawAd.user_id == user_id,
-            RawAd.date >= window_from,
-            RawAd.date <= through,
-        )
-        .distinct()
-        .all()
-    )
-    present_ads = {r[0] for r in ads_rows if r and r[0] is not None}
-    has_ads_data = bool(present_ads)
-
     def _is_complete(d: date) -> bool:
-        if d not in present_sales:
-            return False
-        if has_ads_data and d not in present_ads:
-            return False
-        return True
+        return d in present_sales
 
     if _is_complete(through):
         return None
@@ -94,7 +75,7 @@ def compute_missing_ranges_in_window(
     date_to: date,
 ) -> list[DateRange]:
     """
-    Найти все "дыры" в сырье (raw_sales/raw_ads) на отрезке [date_from..date_to] (включительно).
+    Найти все "дыры" в сырье продаж (raw_sales) на отрезке [date_from..date_to] (включительно).
 
     Возвращает список диапазонов отсутствующих дней, отсортированный от более новых к более старым.
     """
@@ -119,25 +100,8 @@ def compute_missing_ranges_in_window(
     if len(present_sales) < 2:
         return []
 
-    ads_rows = (
-        db.query(RawAd.date)
-        .filter(
-            RawAd.user_id == user_id,
-            RawAd.date >= date_from,
-            RawAd.date <= date_to,
-        )
-        .distinct()
-        .all()
-    )
-    present_ads = {r[0] for r in ads_rows if r and r[0] is not None}
-    has_ads_data = bool(present_ads)
-
     def _is_complete(d: date) -> bool:
-        if d not in present_sales:
-            return False
-        if has_ads_data and d not in present_ads:
-            return False
-        return True
+        return d in present_sales
 
     missing: list[DateRange] = []
     cur = date_to

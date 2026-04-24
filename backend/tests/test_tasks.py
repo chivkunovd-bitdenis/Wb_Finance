@@ -7,7 +7,14 @@ from types import SimpleNamespace
 from datetime import date
 
 
-from celery_app.tasks import _build_desc_days_batch, _build_desc_month_chunk, recalculate_pnl, recalculate_sku_daily
+from celery_app.tasks import (
+    _build_desc_days_batch,
+    _build_desc_month_chunk,
+    after_initial_sync_enqueue_funnel,
+    after_period_sync_enqueue_funnel,
+    recalculate_pnl,
+    recalculate_sku_daily,
+)
 
 
 def _make_mock_db_empty():
@@ -25,6 +32,18 @@ def _make_mock_db_empty():
     db.rollback.return_value = None
     db.close.return_value = None
     return db
+
+
+def test_after_initial_sync_does_not_start_funnel_when_sales_retry_scheduled():
+    with patch("celery_app.tasks.sync_funnel.delay") as mock_delay:
+        after_initial_sync_enqueue_funnel([{"ok": False, "error": "wb_retry_scheduled"}], "user-1")
+    mock_delay.assert_not_called()
+
+
+def test_after_period_sync_starts_rolling_funnel_only_after_successful_sales():
+    with patch("celery_app.tasks.sync_funnel.delay") as mock_delay:
+        after_period_sync_enqueue_funnel([{"ok": True, "count": 3}], "user-1", "2026-04-01", "2026-04-07")
+    mock_delay.assert_called_once_with("user-1", "2026-04-01", "2026-04-07")
 
 
 @patch("celery_app.tasks.SessionLocal")

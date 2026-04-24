@@ -552,7 +552,8 @@ def get_dashboard_state(
 
     _repair_stuck_funnel_ytd_running(db, str(store_user.id), y)
     _repair_hollow_funnel_ytd(db, str(store_user.id), y, y_start, through_cap)
-    _maybe_start_funnel_ytd_backfill(db, store_user, y, y_start, through_cap)
+    # Историческую YTD-догрузку воронки больше не автозапускаем при входе:
+    # воронка теперь rolling 7 дней, а приоритет у финансового контура.
     _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
 
     fb_row = (

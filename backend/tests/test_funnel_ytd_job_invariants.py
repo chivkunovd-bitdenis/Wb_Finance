@@ -55,7 +55,7 @@ def authenticated_client_with_session(real_db_session):
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_state_autostart_executes_funnel_ytd_and_fills_yesterday(authenticated_client_with_session):
+def test_manual_funnel_ytd_job_fills_yesterday(authenticated_client_with_session):
     """
     Сценарий "пользователь вошёл → /dashboard/state увидел дырку → запустил backfill":
     - delay действительно ставится
@@ -111,10 +111,7 @@ def test_state_autostart_executes_funnel_ytd_and_fills_yesterday(authenticated_c
     ):
         r = client.get("/dashboard/state", headers=headers)
         assert r.status_code == 200
-        mock_delay.assert_called_once()
-        args, _kwargs = mock_delay.call_args
-        assert args[0] == user_id
-        assert args[1] == 2026
+        mock_delay.assert_not_called()
 
     # Выполняем саму джобу вне контекста HTTP-запроса, чтобы не ломать ORM-объект current_user
     # (внутри /dashboard/state он используется дальше по коду).
