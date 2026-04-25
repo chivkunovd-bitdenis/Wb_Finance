@@ -56,7 +56,6 @@ export default function Layout() {
   const [backfill2025TriggeredOnce, setBackfill2025TriggeredOnce] = useState(false);
   const [funnelYtdLaunchPending, setFunnelYtdLaunchPending] = useState(false);
   const funnelYtdBootstrappedRef = useRef(false);
-  const lastSyncedPeriodRef = useRef({ dateFrom: null, dateTo: null });
   const [billingStatus, setBillingStatus] = useState(null);
 
   const range = useMemo(() => ({ dateFrom, dateTo }), [dateFrom, dateTo]);
@@ -101,7 +100,6 @@ export default function Layout() {
     setBackfill2025TriggeredOnce(false);
     setFunnelYtdLaunchPending(false);
     funnelYtdBootstrappedRef.current = false;
-    lastSyncedPeriodRef.current = { dateFrom: null, dateTo: null };
     setRefreshTrigger((t) => t + 1);
   }, [activeStoreOwnerId]);
 
@@ -380,26 +378,6 @@ export default function Layout() {
             setDateFrom(df);
             setDateTo(dt);
             setRefreshTrigger((t) => t + 1);
-
-            // Если пользователь выбрал новый период — сразу ставим синхронизацию этого окна,
-            // чтобы дашборд не показывал только "последнюю неделю" из автосинка.
-            const alreadySynced =
-              lastSyncedPeriodRef.current.dateFrom === df &&
-              lastSyncedPeriodRef.current.dateTo === dt;
-            if (alreadySynced) return;
-
-            lastSyncedPeriodRef.current = { dateFrom: df, dateTo: dt };
-            setUpdateSyncing(true);
-            api
-              .triggerSyncPeriod(df, dt)
-              .catch(() => {
-                // Если постановка не удалась — позволим повторить.
-                lastSyncedPeriodRef.current = { dateFrom: null, dateTo: null };
-              })
-              .finally(() => {
-                setUpdateSyncing(false);
-                setRefreshTrigger((t) => t + 1);
-              });
           }}
           onUpdateWb={onUpdateWb}
           onOpenBilling={() => navigate('/billing')}
