@@ -1142,6 +1142,12 @@ def test_plan_fact_save_and_month_metrics_contract(authenticated_client):
     assert by_key["commission_pct"]["pct_of_plan"] is None
     assert by_key["commission_pct"]["forecast"] is None
 
+    # Derived percent metric: WB expenses share = (storage+commission+ads+logistics+penalties)/revenue * 100
+    # (2+4) + (10+20) + (3+6) + (5+10) + (1+0) = 61; revenue = 300 => 20.333...
+    assert by_key["wb_expenses_share"]["is_percent"] is True
+    assert by_key["wb_expenses_share"]["fact"] == pytest.approx((61.0 / 300.0) * 100.0, rel=1e-9)
+    assert by_key["wb_expenses_share"]["forecast"] is None
+
 
 def test_real_wb_sales_response_structure():
     """

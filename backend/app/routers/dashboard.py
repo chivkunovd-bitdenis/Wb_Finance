@@ -448,6 +448,7 @@ PLAN_FACT_METRICS: list[tuple[str, bool]] = [
     ("ads_pct", True),
     ("storage", False),
     ("storage_pct", True),
+    ("wb_expenses_share", True),
     ("operation_expenses", False),
     ("margin", False),
     ("margin_pct", True),
@@ -1179,6 +1180,20 @@ def get_plan_fact_months(
             "margin_pct": _avg(margin_pcts),
             "roi": _avg(roi_pcts),
         }
+        wb_expenses_share: float | None = None
+        total_revenue = float(sums.revenue or 0.0)
+        if total_revenue > 0:
+            wb_expenses_share = (
+                (
+                    float(sums.storage or 0.0)
+                    + float(sums.commission or 0.0)
+                    + float(sums.ads_spend or 0.0)
+                    + float(sums.logistics or 0.0)
+                    + float(sums.penalties or 0.0)
+                )
+                / total_revenue
+            ) * 100.0
+        percent_facts["wb_expenses_share"] = wb_expenses_share
 
         facts: dict[str, float | None] = {
             "revenue": float(sums.revenue),

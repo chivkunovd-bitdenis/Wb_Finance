@@ -189,6 +189,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
     { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
     { label: 'Хран', key: 'storage', isPercent: false, editable: false }, // derived from % хранения
     { label: '% хран', key: 'storage_pct', isPercent: true, editable: true },
+    { label: 'Доля расходов ВБ', key: 'wb_expenses_share', isPercent: true, editable: false },
     { label: 'Опер. расходы', key: 'operation_expenses', isPercent: false, editable: true },
     { label: 'Маржа', key: 'margin', isPercent: false, editable: true },
     { label: '% маржи', key: 'margin_pct', isPercent: true, editable: true },
@@ -405,6 +406,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                 <th>% рекл</th>
                 <th>Хран</th>
                 <th>% хран</th>
+                <th>Доля расходов ВБ</th>
                 <th>Опер. расходы</th>
                 <th>Маржа</th>
                 <th>% маржи</th>
@@ -414,7 +416,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={18} style={{ textAlign: 'center', padding: 16 }}>
+                  <td colSpan={19} style={{ textAlign: 'center', padding: 16 }}>
                     Нет данных
                   </td>
                 </tr>
@@ -425,7 +427,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   if (planFactEnabled && section.month) {
                     out.push(
                       <tr key={`sep-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
-                        <td className="left" colSpan={18} style={{ fontWeight: 700 }}>
+                        <td className="left" colSpan={19} style={{ fontWeight: 700 }}>
                           {monthTitle(section.month)}
                         </td>
                       </tr>
@@ -469,6 +471,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                         <td>{revenue > 0 ? reklPct.toFixed(1) : '0'}%</td>
                         <td>{formatNum(storage)}</td>
                         <td>{revenue > 0 ? storPct.toFixed(1) : '0'}%</td>
+                        <td>{revenue > 0 ? (((storage + commission + ads + logistics + penalties) / revenue) * 100).toFixed(1) : '0'}%</td>
                         <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(opExp)}</td>
                         <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
                           {formatNum(margin)}
@@ -592,6 +595,11 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   <td>{totals.revenue > 0 ? ((totals.ads / totals.revenue) * 100).toFixed(1) : '0'}%</td>
                   <td>{formatNum(totals.storage)}</td>
                   <td>{totals.revenue > 0 ? ((totals.storage / totals.revenue) * 100).toFixed(1) : '0'}%</td>
+                  <td>
+                    {totals.revenue > 0
+                      ? (((totals.storage + totals.commission + totals.ads + totals.logistics + totals.penalties) / totals.revenue) * 100).toFixed(1)
+                      : '0'}%
+                  </td>
                   <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(totals.operation_expenses)}</td>
                   <td style={{ fontWeight: 500, color: 'var(--green)' }}>{formatNum(totals.margin)}</td>
                   <td style={{ fontWeight: 500, color: 'var(--green)' }}>
