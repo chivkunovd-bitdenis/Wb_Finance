@@ -5,6 +5,13 @@ import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
 import DailyBriefBlock from '../components/DailyBriefBlock';
 
+function computeCogsFromShare(revenue, sharePct) {
+  const rev = Number(revenue);
+  const pct = Number(sharePct);
+  if (!Number.isFinite(rev) || !Number.isFinite(pct)) return null;
+  return rev * (pct / 100);
+}
+
 function buildDateRange(fromIso, toIso) {
   if (!fromIso || !toIso) return [];
   const toLocalIsoDate = (d) => {
@@ -99,6 +106,13 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
             if (!row || !row.metric_key) continue;
             if (row.plan !== null && row.plan !== undefined) monthInputs[row.metric_key] = Number(row.plan);
           }
+
+          // Ensure derived plan metric is available in inputs:
+          // cogs = revenue * (cogs_share / 100)
+          if (monthInputs.cogs == null) {
+            const derived = computeCogsFromShare(monthInputs.revenue, monthInputs.cogs_share);
+            if (derived != null) monthInputs.cogs = derived;
+          }
           next[monthIso] = monthInputs;
         }
         setPlanInputsByMonth(next);
@@ -188,8 +202,9 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       { label: 'Лог', key: 'logistics', isPercent: false, editable: false }, // derived from % логистики
       { label: '% лог', key: 'logistics_pct', isPercent: true, editable: true },
       { label: 'Штрафы', key: 'penalties', isPercent: false, editable: true },
-      { label: 'Себес', key: 'cogs', isPercent: false, editable: true },
-      { label: 'Доля себес', key: 'cogs_share', isPercent: true, editable: true },
+      // "Себес" считается от "Доля себеса" и выручки плана (read-only).
+      { label: 'Себес', key: 'cogs', isPercent: false, editable: false },
+      { label: 'Доля себеса', key: 'cogs_share', isPercent: true, editable: true },
       { label: 'Налог', key: 'tax', isPercent: false, editable: true },
       { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
       { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
@@ -309,6 +324,15 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       } else {
         m[metricKey] = nextRaw;
       }
+
+      // Автовычисление "Себес" из "Выручка" и "Доля себеса" в плане:
+      // cogs = revenue * (cogs_share / 100)
+      if (metricKey === 'revenue' || metricKey === 'cogs_share') {
+        const derived = computeCogsFromShare(m.revenue, m.cogs_share);
+        if (derived != null) m.cogs = derived;
+        else delete m.cogs;
+      }
+
       next[monthIso] = m;
       return next;
     });
@@ -338,6 +362,10 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       for (const row of metricRows) {
         if (!row || !row.metric_key) continue;
         if (row.plan !== null && row.plan !== undefined) monthInputs[row.metric_key] = Number(row.plan);
+      }
+      if (monthInputs.cogs == null) {
+        const derived = computeCogsFromShare(monthInputs.revenue, monthInputs.cogs_share);
+        if (derived != null) monthInputs.cogs = derived;
       }
       next[monthIso] = monthInputs;
     }

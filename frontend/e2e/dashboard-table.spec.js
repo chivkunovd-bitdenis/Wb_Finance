@@ -113,5 +113,53 @@ test.describe('Dashboard UX', () => {
     await expect(input).toBeVisible();
     await expect(input).toBeEnabled();
   });
+
+  test('plan-fact: cogs plan is read-only and derived from cogs share', async ({ page }) => {
+    await loginIfNeeded(page);
+    await page.goto('/dashboard');
+    await expect(page.getByText('Детализация по дням').first()).toBeVisible({ timeout: 120_000 });
+
+    // Enable Plan-Fact mode via gear menu and switch to editing.
+    await page.getByRole('button', { name: 'Настройки таблицы' }).click();
+    await page.getByRole('menu', { name: 'Настройки таблицы' }).getByText('План-факт').first().click();
+    await page.getByRole('button', { name: 'Изменить план' }).click();
+
+    const wrap = page.locator('.table-wrap').first();
+    const headerCells = wrap.locator('thead th');
+    const headerTexts = await headerCells.allTextContents();
+    const idxRevenue = headerTexts.findIndex((t) => (t || '').trim() === 'Выручка');
+    const idxShare = headerTexts.findIndex((t) => (t || '').trim() === 'Доля себеса');
+    const idxCogs = headerTexts.findIndex((t) => (t || '').trim() === 'Себес');
+    expect(idxRevenue).toBeGreaterThan(0);
+    expect(idxShare).toBeGreaterThan(0);
+    expect(idxCogs).toBeGreaterThan(0);
+
+    const planRow = wrap
+      .locator('tbody tr')
+      .filter({ has: wrap.locator('td.left', { hasText: 'План' }) })
+      .first();
+    await expect(planRow).toBeVisible({ timeout: 60_000 });
+
+    const revenueInput = planRow.locator('td').nth(idxRevenue).locator('input[type="number"]');
+    const shareInput = planRow.locator('td').nth(idxShare).locator('input[type="number"]');
+    const cogsInput = planRow.locator('td').nth(idxCogs).locator('input[type="number"]');
+
+    await expect(revenueInput).toBeVisible();
+    await expect(shareInput).toBeVisible();
+    await expect(cogsInput).toBeVisible();
+
+    await expect(revenueInput).toBeEnabled();
+    await expect(shareInput).toBeEnabled();
+    await expect(cogsInput).toBeDisabled();
+
+    // revenue=1000, cogs_share=20 -> cogs=200
+    await revenueInput.fill('1000');
+    await shareInput.fill('20');
+
+    await expect.poll(async () => {
+      const v = await cogsInput.inputValue();
+      return String(v || '').trim();
+    }, { timeout: 10_000 }).toBe('200');
+  });
 });
 
