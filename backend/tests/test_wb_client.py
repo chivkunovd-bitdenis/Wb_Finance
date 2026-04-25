@@ -164,6 +164,21 @@ def test_fetch_funnel_products_for_day_parses(mock_post):
     call_kw = mock_post.call_args[1]["json"]
     assert call_kw["selectedPeriod"]["start"] == "2024-03-01"
     assert "pastPeriod" not in call_kw
+    assert call_kw["nmIds"] == [268913787]
+
+
+@patch("app.services.wb_client.requests.post")
+def test_fetch_funnel_products_for_day_all_products_when_nm_ids_empty(mock_post):
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"data": {"products": []}}
+
+    out = fetch_funnel_products_for_day("2024-03-01", [], "fake-token")
+    assert out == []
+
+    payload = mock_post.call_args[1]["json"]
+    assert payload["selectedPeriod"]["start"] == "2024-03-01"
+    assert payload["selectedPeriod"]["end"] == "2024-03-01"
+    assert "nmIds" not in payload
 
 
 @patch("app.services.wb_client.requests.post")

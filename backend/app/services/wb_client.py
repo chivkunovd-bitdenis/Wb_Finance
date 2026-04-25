@@ -282,19 +282,20 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
     Воронка за один календарный день через POST /sales-funnel/products (агрегаты за день на товар).
     selectedPeriod и pastPeriod — один и тот же день, как допускает WB для «по дню».
     """
-    if not nm_ids:
-        return []
+    # Важно: WB допускает запрос без nmIds (агрегаты по всем товарам аккаунта).
+    # Это критично для стратегии "repair по дням": 1 запрос на день, без чанков по товарам.
     headers = {
         "Authorization": wb_api_key,
         "Content-Type": "application/json",
     }
     payload: dict = {
         "selectedPeriod": {"start": day, "end": day},
-        "nmIds": nm_ids,
         "skipDeletedNm": True,
-        "limit": max(100, len(nm_ids) * 4),
+        "limit": 1000 if not nm_ids else max(100, len(nm_ids) * 4),
         "offset": 0,
     }
+    if nm_ids:
+        payload["nmIds"] = nm_ids
     resp = requests.post(FUNNEL_PRODUCTS_URL, json=payload, headers=headers, timeout=120)
     if resp.status_code != 200:
         _log_wb_http_error(

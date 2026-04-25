@@ -21,6 +21,7 @@ from app.models.raw_sales import RawSale
 from app.models.raw_ads import RawAd
 from app.models.funnel_daily import FunnelDaily
 from app.models.funnel_backfill_state import FunnelBackfillState
+from app.models.funnel_rolling_sync_state import FunnelRollingSyncState
 from app.models.finance_backfill_state import FinanceBackfillState
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.models.pnl_daily import PnlDaily
@@ -31,6 +32,7 @@ from app.services.wb_client import (
     FUNNEL_SLEEP_SEC,
     fetch_ads,
     fetch_funnel,
+    fetch_funnel_products_for_day,
     fetch_funnel_products_for_day_with_retry,
     fetch_sales,
 )
@@ -47,6 +49,10 @@ FUNNEL_YTD_429_RETRY_BASE_SEC = 90
 FUNNEL_YTD_429_RETRY_MAX_SEC = 1800
 FUNNEL_YTD_429_RETRY_LIMIT = 12
 FUNNEL_YTD_HTTP_RETRY_CODES = {429, 500, 502, 503, 504}
+
+# Tail-repair: строго 1 запрос/день, шаг не чаще лимита WB (20 сек).
+FUNNEL_TAIL_STEP_DELAY_SEC = 25
+FUNNEL_TAIL_SINGLE_FLIGHT_SEC = 120
 
 # WB иногда возвращает реальное окно "когда можно снова" через заголовки.
 # В логах это видно как reset_sec=... (X-RateLimit-Reset). Значение может быть часами.
@@ -675,6 +681,13 @@ def _default_funnel_dates() -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _funnel_rolling_window_dates() -> tuple[date, date]:
+    """Rolling окно строго 7 дней: вчера − 6 дней .. вчера."""
+    end_d = date.today() - timedelta(days=1)
+    start_d = end_d - timedelta(days=6)
+    return start_d, end_d
+
+
 @celery_app.task(name="after_initial_sync_enqueue_funnel")
 def after_initial_sync_enqueue_funnel(_results: list[object], user_id: str) -> None:
     """
@@ -699,7 +712,9 @@ def after_period_sync_enqueue_funnel(
     """
     if any(isinstance(r, dict) and r.get("ok") is False for r in (_results or [])):
         return
-    sync_funnel.delay(user_id, date_from, date_to)
+    # Повторный сценарий: history лишний и дорогой.
+    # Чиним только хвостовые "дыры" за последние 7 дней по одному дню.
+    sync_funnel_tail_repair.delay(user_id)
 
 
 @celery_app.task(name="sync_funnel")
@@ -729,6 +744,13 @@ def sync_funnel(
 
         start_d = date.fromisoformat(start_s)
         end_d = date.fromisoformat(end_s)
+        if start_d > end_d:
+            return {"ok": False, "error": "invalid_period"}
+        # Контракт: history WB максимум 7 дней. Всё шире — ужимаем к tail-окну.
+        if (end_d - start_d).days >= 7:
+            start_d = end_d - timedelta(days=6)
+            start_s = start_d.isoformat()
+            end_s = end_d.isoformat()
         nm_ids = _funnel_nm_ids(db, user_id=user_id, date_from=start_d, date_to=end_d)
         if not nm_ids:
             return {"ok": True, "count": 0}
@@ -830,6 +852,116 @@ def sync_funnel(
             p1,
             type(e).__name__,
         )
+        return {"ok": False, "error": str(e)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="sync_funnel_tail_repair")
+def sync_funnel_tail_repair(user_id: str, retry_raw: str | None = None) -> dict:
+    """
+    Повторные входы: чинит только пропуски в rolling окне 7 дней.
+    Гарантия: максимум 1 WB-запрос за запуск (1 день), дальше следующий шаг через countdown.
+    """
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            return {"ok": False, "error": "user_not_found"}
+        if not user.wb_api_key or not user.wb_api_key.strip():
+            return {"ok": False, "error": "no_wb_api_key"}
+
+        state = db.query(FunnelRollingSyncState).filter(FunnelRollingSyncState.user_id == user_id).first()
+        if not state:
+            state = FunnelRollingSyncState(user_id=user_id, status="idle")
+            db.add(state)
+            db.commit()
+            db.refresh(state)
+
+        # single-flight per user: если недавно запускалось — выходим
+        if state.status == "running" and state.updated_at is not None:
+            updated = state.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - updated
+            if age.total_seconds() < FUNNEL_TAIL_SINGLE_FLIGHT_SEC:
+                return {"ok": True, "status": "running"}
+
+        start_d, end_d = _funnel_rolling_window_dates()
+        present_dates = {
+            d
+            for (d,) in (
+                db.query(FunnelDaily.date)
+                .filter(FunnelDaily.user_id == user_id, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
+                .distinct()
+                .all()
+            )
+        }
+        window_days = [start_d + timedelta(days=i) for i in range((end_d - start_d).days + 1)]
+        missing = [d for d in window_days if d not in present_dates]
+        if not missing:
+            state.status = "idle"
+            state.error_message = None
+            db.commit()
+            return {"ok": True, "status": "complete", "window": f"{start_d}..{end_d}"}
+
+        # Приоритет свежих дат: вчера, позавчера, ...
+        day_d = max(missing)
+        day = day_d.isoformat()
+
+        state.status = "running"
+        state.error_message = None
+        db.commit()
+
+        key = user.wb_api_key.strip()
+        try:
+            # 1 запрос на день: nmIds не задаём (WB возвращает по всем товарам аккаунта).
+            rows = fetch_funnel_products_for_day(day, [], key)
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                prev_code, prev_n = _retry_http_parse(retry_raw)
+                retry_n = (prev_n + 1) if prev_code == code else 1
+                delay = _retry_http_delay_with_headers(int(code or 429), retry_n, exc.response)
+                sync_funnel_tail_repair.apply_async(
+                    kwargs={
+                        "user_id": user_id,
+                        "retry_raw": _retry_http_marker(int(code or 429), retry_n),
+                    },
+                    countdown=delay,
+                )
+                # оставляем status=running; TTL прикроет конкурентные старты
+                return {
+                    "ok": False,
+                    "error": "wb_retry_scheduled",
+                    "http_code": int(code or 429),
+                    "retry": retry_n,
+                    "delay_sec": delay,
+                    "day": day,
+                }
+            raise
+
+        inserted = _funnel_insert_only(db, rows, user_id=user_id)
+        state.last_completed_date = day_d
+        state.status = "idle"
+        db.commit()
+
+        # Если остались пропуски — следующий день через 25 сек (лимит WB 20 сек).
+        if len(missing) > 1:
+            sync_funnel_tail_repair.apply_async(kwargs={"user_id": user_id}, countdown=FUNNEL_TAIL_STEP_DELAY_SEC)
+            return {"ok": True, "status": "step_ok_next_scheduled", "day": day, "inserted": inserted}
+        return {"ok": True, "status": "step_ok_done", "day": day, "inserted": inserted}
+    except Exception as e:
+        db.rollback()
+        try:
+            st = db.query(FunnelRollingSyncState).filter(FunnelRollingSyncState.user_id == user_id).first()
+            if st:
+                st.status = "error"
+                st.error_message = str(e)[:1900]
+                db.commit()
+        except Exception:
+            db.rollback()
+        logger.exception("funnel_sync op=sync_funnel_tail_repair user_id=%s result=error err=%s", user_id, type(e).__name__)
         return {"ok": False, "error": str(e)}
     finally:
         db.close()

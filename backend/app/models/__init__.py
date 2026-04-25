@@ -6,6 +6,7 @@ from app.models.raw_ads import RawAd
 from app.models.pnl_daily import PnlDaily
 from app.models.funnel_daily import FunnelDaily
 from app.models.funnel_backfill_state import FunnelBackfillState
+from app.models.funnel_rolling_sync_state import FunnelRollingSyncState
 from app.models.finance_backfill_state import FinanceBackfillState
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.models.sku_daily import SkuDaily
@@ -30,6 +31,7 @@ __all__ = [
     "PnlDaily",
     "FunnelDaily",
     "FunnelBackfillState",
+    "FunnelRollingSyncState",
     "FinanceBackfillState",
     "FinanceMissingSyncState",
     "SkuDaily",

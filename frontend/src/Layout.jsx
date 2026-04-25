@@ -131,7 +131,8 @@ export default function Layout() {
 
       await api.triggerSyncSales(dateFrom, dateTo);
       await api.triggerSyncAds(dateFrom, dateTo);
-      await api.triggerSyncFunnel(dateFrom, dateTo);
+      // Контракт: воронка синкается только в rolling окне 7 дней (сервер сам выбирает окно).
+      await api.triggerSyncFunnel();
 
       // sync_sales/sync_ads уже ставят recalculate_* после записи raw данных,
       // но это асинхронно. Поэтому ждём появления изменений на витрине.

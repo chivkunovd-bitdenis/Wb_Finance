@@ -41,9 +41,9 @@ def test_after_initial_sync_does_not_start_funnel_when_sales_retry_scheduled():
 
 
 def test_after_period_sync_starts_rolling_funnel_only_after_successful_sales():
-    with patch("celery_app.tasks.sync_funnel.delay") as mock_delay:
+    with patch("celery_app.tasks.sync_funnel_tail_repair.delay") as mock_delay:
         after_period_sync_enqueue_funnel([{"ok": True, "count": 3}], "user-1", "2026-04-01", "2026-04-07")
-    mock_delay.assert_called_once_with("user-1", "2026-04-01", "2026-04-07")
+    mock_delay.assert_called_once_with("user-1")
 
 
 @patch("celery_app.tasks.SessionLocal")
