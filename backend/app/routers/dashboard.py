@@ -443,6 +443,7 @@ PLAN_FACT_METRICS: list[tuple[str, bool]] = [
     ("logistics_pct", True),
     ("penalties", False),
     ("cogs", False),
+    ("cogs_share", True),
     ("tax", False),
     ("ads_spend", False),
     ("ads_pct", True),
@@ -1180,8 +1181,11 @@ def get_plan_fact_months(
             "margin_pct": _avg(margin_pcts),
             "roi": _avg(roi_pcts),
         }
-        wb_expenses_share: float | None = None
         total_revenue = float(sums.revenue or 0.0)
+        cogs_share: float | None = (float(sums.cogs or 0.0) / total_revenue) * 100.0 if total_revenue > 0 else 0.0
+        percent_facts["cogs_share"] = cogs_share
+
+        wb_expenses_share: float | None = None
         if total_revenue > 0:
             wb_expenses_share = (
                 (
