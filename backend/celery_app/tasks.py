@@ -804,19 +804,27 @@ def sync_funnel(
 
         # Если Wildberries вернул subject_name в ответе funnel — сохраним его в articles.
         subject_by_nm = {}
+        title_by_nm: dict[int, str] = {}
         for r in rows:
             nm = r.get("nm_id")
             subject = r.get("subject_name")
+            title = r.get("title")
             if nm is None or subject is None:
-                continue
+                # subject может быть None; title обрабатываем ниже
+                pass
             try:
                 nm_i = int(nm)
             except Exception:
                 continue
-            if nm_i > 0 and subject:
-                # Берём первое непустое значение.
-                if nm_i not in subject_by_nm:
-                    subject_by_nm[nm_i] = subject
+            if nm_i > 0:
+                if subject:
+                    # Берём первое непустое значение.
+                    if nm_i not in subject_by_nm:
+                        subject_by_nm[nm_i] = subject
+                if title:
+                    t = str(title).strip()
+                    if t and nm_i not in title_by_nm:
+                        title_by_nm[nm_i] = t[:1000]
 
         inserted = _funnel_insert_only(db, rows, user_id=user_id)
         logger.info(
@@ -839,6 +847,17 @@ def sync_funnel(
                 )
                 if art and not art.subject_name:
                     art.subject_name = subject
+        if title_by_nm:
+            for nm, title in title_by_nm.items():
+                if not title:
+                    continue
+                art = (
+                    db.query(Article)
+                    .filter(Article.user_id == user_id, Article.nm_id == nm)
+                    .first()
+                )
+                if art and not (art.name or "").strip():
+                    art.name = title
         db.commit()
         return {"ok": True, "count": inserted}
     except Exception as e:

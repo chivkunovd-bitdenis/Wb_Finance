@@ -85,6 +85,7 @@ def test_fetch_funnel_parses_response(mock_post):
         {
             "nmId": 100500,
             "vendorCode": "ART-001",
+            "title": "Тестовый товар",
             "history": [
                 {
                     "date": "2025-03-01",
@@ -104,6 +105,7 @@ def test_fetch_funnel_parses_response(mock_post):
     assert result[0]["date"] == "2025-03-01"
     assert result[0]["nm_id"] == 100500
     assert result[0]["vendor_code"] == "ART-001"
+    assert result[0]["title"] == "Тестовый товар"
     assert result[0]["open_count"] == 100
     assert result[0]["cart_count"] == 20
     assert result[0]["order_count"] == 5
@@ -128,6 +130,7 @@ def test_fetch_funnel_products_for_day_parses(mock_post):
                     "product": {
                         "nmId": 268913787,
                         "vendorCode": "vc-1",
+                        "title": "Кроссовки для бега",
                         "subjectName": "Кроссовки",
                     },
                     "statistic": {
@@ -154,6 +157,7 @@ def test_fetch_funnel_products_for_day_parses(mock_post):
     assert row["date"] == "2024-03-01"
     assert row["nm_id"] == 268913787
     assert row["vendor_code"] == "vc-1"
+    assert row["title"] == "Кроссовки для бега"
     assert row["open_count"] == 45
     assert row["cart_count"] == 34
     assert row["order_count"] == 19

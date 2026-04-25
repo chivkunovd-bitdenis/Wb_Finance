@@ -326,6 +326,9 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
         vendor_code = product.get("vendorCode") or product.get("vendor_code")
         vendor_code = str(vendor_code)[:255] if vendor_code else None
 
+        title = product.get("title") or product.get("name")
+        title = str(title)[:1000] if title else None
+
         subject_name = (
             product.get("subjectName")
             or product.get("subject_name")
@@ -352,6 +355,7 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
             "date": day,
             "nm_id": nm_id,
             "vendor_code": vendor_code,
+            "title": title,
             "open_count": int(sel.get("openCount") or 0),
             "cart_count": int(sel.get("cartCount") or 0),
             "order_count": int(sel.get("orderCount") or 0),
@@ -453,21 +457,24 @@ def _parse_funnel_history_response(data: object, _date_from: str, _date_to: str)
         items = []
 
     for item in items:
-        nm_raw = item.get("nmId") or (item.get("product") or {}).get("nmId")
+        product = item.get("product") or {}
+        nm_raw = item.get("nmId") or product.get("nmId")
         nm_parsed = _int_nm(nm_raw)
         if nm_parsed is None:
             continue
+        title = item.get("title") or product.get("title") or item.get("name") or product.get("name")
+        title = str(title)[:1000] if title else None
         subject_name = (
             item.get("subjectName")
             or item.get("subject_name")
-            or (item.get("product") or {}).get("subjectName")
-            or (item.get("product") or {}).get("subject_name")
-            or (item.get("product") or {}).get("subject")
+            or product.get("subjectName")
+            or product.get("subject_name")
+            or product.get("subject")
             or item.get("subject")
         )
         vendor_code = (
             item.get("vendorCode")
-            or (item.get("product") or {}).get("vendorCode")
+            or product.get("vendorCode")
             or ""
         )
         vendor_code = str(vendor_code)[:255] if vendor_code else None
@@ -480,6 +487,7 @@ def _parse_funnel_history_response(data: object, _date_from: str, _date_to: str)
                 "date": d,
                 "nm_id": nm_parsed,
                 "vendor_code": vendor_code,
+                "title": title,
                 "open_count": int(h.get("openCount") or 0),
                 "cart_count": int(h.get("cartCount") or 0),
                 "order_count": int(h.get("orderCount") or 0),
