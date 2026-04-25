@@ -1,0 +1,20 @@
+services:
+  # Local dev override: avoid port collisions on host.
+  postgres:
+    ports:
+      - "5433:5432"
+
+  redis:
+    ports:
+      - "6380:6379"
+
+  api:
+    ports:
+      - "8001:8000"
+
+  caddy:
+    ports:
+      - "8081:80"
+      - "8444:443"
+      - "8444:443/udp"
+
