@@ -17,4 +17,6 @@ services:
       - "8081:80"
       - "8444:443"
       - "8444:443/udp"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
 

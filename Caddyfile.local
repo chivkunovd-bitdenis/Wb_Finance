@@ -1,12 +1,8 @@
-sellerfocus.pro, www.sellerfocus.pro {
+localhost, 127.0.0.1 {
 	encode zstd gzip
 
-	root * /var/www/landing
-	file_server
-}
-
-app.sellerfocus.pro {
-	encode zstd gzip
+	# Local dev: issue a local certificate so https://localhost works.
+	tls internal
 
 	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /health /openapi.json /docs* /redoc*
 
@@ -25,3 +21,4 @@ app.sellerfocus.pro {
 		file_server
 	}
 }
+
