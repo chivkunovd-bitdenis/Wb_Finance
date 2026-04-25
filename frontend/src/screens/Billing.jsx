@@ -36,7 +36,7 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const [loading, setLoading] = useState(false);
   const [wbApiKey, setWbApiKey] = useState('');
   const [wbApiKeyLoaded, setWbApiKeyLoaded] = useState(false);
-  const [showWbKey, setShowWbKey] = useState(false);
+  const [showWbKey] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('error');
 
@@ -360,15 +360,6 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
               placeholder="Вставьте новый WB API ключ"
               autoComplete="off"
             />
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setShowWbKey((v) => !v)}
-              disabled={!wbApiKeyLoaded || !String(wbApiKey || '').trim()}
-              style={{ whiteSpace: 'nowrap' }}
-            >
-              {showWbKey ? 'Скрыть' : 'Показать'}
-            </button>
             <button
               type="button"
               className="btn-primary"

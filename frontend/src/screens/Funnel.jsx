@@ -83,6 +83,14 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
     return map;
   }, [articles]);
 
+  const nmIdToTitle = useMemo(() => {
+    const map = {};
+    for (const a of articles || []) {
+      map[a.nm_id] = a.name || null;
+    }
+    return map;
+  }, [articles]);
+
   const revenueByNmDate = useMemo(() => {
     const map = new Map();
     for (const r of skuRows || []) {
@@ -102,6 +110,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
         byArticle.set(nmId, {
           nm_id: nmId,
           vendor_code: r.vendor_code || null,
+          title: nmIdToTitle[nmId] || null,
           subject: nmIdToSubject[nmId] || null,
           days: [],
         });
@@ -161,6 +170,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
       activeArticles.push({
         nm_id: a.nm_id,
         vendor_code: a.vendor_code,
+        title: a.title || null,
         subject: a.subject || null,
         buyoutAvg,
         days: computedDays,
@@ -194,7 +204,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
       .sort((a, b) => b.maxOrders - a.maxOrders);
 
     return result;
-  }, [rows, revenueByNmDate, nmIdToSubject]);
+  }, [rows, revenueByNmDate, nmIdToSubject, nmIdToTitle]);
 
   const categoryPreview = useMemo(() => {
     if (!categories?.length) return '';
@@ -293,6 +303,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
           <thead>
             <tr>
               <th className="left">Артикул</th>
+              <th className="left">Товар</th>
               <th>Переходы</th>
               <th>В корзину</th>
               <th>Заказы</th>
@@ -307,7 +318,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
           <tbody>
             {categories.length === 0 ? (
               <tr>
-                <td colSpan={10} style={{ textAlign: 'center', padding: 16 }}>
+                <td colSpan={11} style={{ textAlign: 'center', padding: 16 }}>
                   <div style={{ marginBottom: 8 }}>Данные воронки еще не готовы для выбранного периода</div>
                   <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
                     Попробуйте обновить данные WB и подождать завершения фоновой синхронизации.
@@ -320,7 +331,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
                 return (
                   <Fragment key={`cat-${cat.key}`}>
                     <tr className="category-row" onClick={() => toggleCategory(cat.key)}>
-                      <td colSpan={10} style={{ textAlign: 'left' }}>
+                      <td colSpan={11} style={{ textAlign: 'left' }}>
                         <span className="category-title">{cat.key}</span>
                         <span className="expand-icon">{openCat ? '▲' : '▼'}</span>
                       </td>
@@ -336,6 +347,9 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
                                 <span style={{ color: 'var(--accent)', fontWeight: 500 }}>{art}</span>
                                 <span className="expand-icon">{open ? '▲' : '▼'}</span>
                                 <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 400 }}>{a.nm_id}</div>
+                              </td>
+                              <td className="left" style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
+                                {a.title ? <span title={a.title}>{a.title}</span> : '—'}
                               </td>
                               <td>{formatNum(a.views)}</td>
                               <td>{formatNum(a.basket)}</td>
@@ -354,6 +368,7 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
                                   <td className="left" style={{ paddingLeft: 32, color: 'var(--text-tertiary)', fontSize: 11 }}>
                                     {d.dLabel}
                                   </td>
+                                  <td style={{ background: 'var(--bg-secondary)' }} />
                                   <td style={{ fontSize: 11 }}>{d.views}</td>
                                   <td style={{ fontSize: 11 }}>{d.basket}</td>
                                   <td style={{ fontSize: 11 }}>{d.orders}</td>

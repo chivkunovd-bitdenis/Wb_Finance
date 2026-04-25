@@ -84,5 +84,34 @@ test.describe('Dashboard UX', () => {
       .poll(() => syncHits.filter((h) => h.status === 200 || h.status === 202).map((h) => h.url), { timeout: 60_000 })
       .toEqual(expect.arrayContaining([expect.stringContaining('/sync/period')]));
   });
+
+  test('plan-fact: WB expenses share plan is editable', async ({ page }) => {
+    await loginIfNeeded(page);
+    await page.goto('/dashboard');
+    await expect(page.getByText('Детализация по дням').first()).toBeVisible({ timeout: 120_000 });
+
+    // Enable Plan-Fact mode via gear menu and switch to editing.
+    await page.getByRole('button', { name: 'Настройки таблицы' }).click();
+    await page.getByRole('menu', { name: 'Настройки таблицы' }).getByText('План-факт').first().click();
+    await page.getByRole('button', { name: 'Изменить план' }).click();
+
+    const wrap = page.locator('.table-wrap').first();
+    const headerCells = wrap.locator('thead th');
+    const headerTexts = await headerCells.allTextContents();
+    const idx = headerTexts.findIndex((t) => (t || '').trim() === 'Доля расходов ВБ');
+    expect(idx).toBeGreaterThan(0);
+
+    // Find first "План" row (monthly block) and verify the input in that column is enabled.
+    const planRow = wrap
+      .locator('tbody tr')
+      .filter({ has: wrap.locator('td.left', { hasText: 'План' }) })
+      .first();
+    await expect(planRow).toBeVisible({ timeout: 60_000 });
+
+    const cell = planRow.locator('td').nth(idx);
+    const input = cell.locator('input[type="number"]');
+    await expect(input).toBeVisible();
+    await expect(input).toBeEnabled();
+  });
 });
 

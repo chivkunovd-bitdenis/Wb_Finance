@@ -1,5 +1,5 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
 import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
@@ -175,26 +175,116 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       .map(([month, rows]) => ({ month, rows }));
   }, [filtered, planFactEnabled]);
 
-  const cols = useMemo(() => ([
-    { label: 'Выручка', key: 'revenue', isPercent: false, editable: true },
-    { label: 'Заказы ₽', key: 'orders_sum', isPercent: false, editable: true },
-    { label: 'Ком', key: 'commission', isPercent: false, editable: false }, // derived from % комиссии
-    { label: '% ком', key: 'commission_pct', isPercent: true, editable: true },
-    { label: 'Лог', key: 'logistics', isPercent: false, editable: false }, // derived from % логистики
-    { label: '% лог', key: 'logistics_pct', isPercent: true, editable: true },
-    { label: 'Штрафы', key: 'penalties', isPercent: false, editable: true },
-    { label: 'Себес', key: 'cogs', isPercent: false, editable: true },
-    { label: 'Налог', key: 'tax', isPercent: false, editable: true },
-    { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
-    { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
-    { label: 'Хран', key: 'storage', isPercent: false, editable: false }, // derived from % хранения
-    { label: '% хран', key: 'storage_pct', isPercent: true, editable: true },
-    { label: 'Доля расходов ВБ', key: 'wb_expenses_share', isPercent: true, editable: false },
-    { label: 'Опер. расходы', key: 'operation_expenses', isPercent: false, editable: true },
-    { label: 'Маржа', key: 'margin', isPercent: false, editable: true },
-    { label: '% маржи', key: 'margin_pct', isPercent: true, editable: true },
-    { label: 'ROI', key: 'roi', isPercent: true, editable: true },
-  ]), []);
+  const STORAGE_KEY = 'wb_finance_dashboard_columns_v1';
+
+  const mandatoryKeys = useMemo(() => (['revenue', 'margin', 'margin_pct']), []);
+
+  const allColumns = useMemo(
+    () => ([
+      { label: 'Выручка', key: 'revenue', isPercent: false, editable: true },
+      { label: 'Заказы ₽', key: 'orders_sum', isPercent: false, editable: true },
+      { label: 'Ком', key: 'commission', isPercent: false, editable: false }, // derived from % комиссии
+      { label: '% ком', key: 'commission_pct', isPercent: true, editable: true },
+      { label: 'Лог', key: 'logistics', isPercent: false, editable: false }, // derived from % логистики
+      { label: '% лог', key: 'logistics_pct', isPercent: true, editable: true },
+      { label: 'Штрафы', key: 'penalties', isPercent: false, editable: true },
+      { label: 'Себес', key: 'cogs', isPercent: false, editable: true },
+      { label: 'Доля себес', key: 'cogs_share', isPercent: true, editable: true },
+      { label: 'Налог', key: 'tax', isPercent: false, editable: true },
+      { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
+      { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
+      { label: 'Хран', key: 'storage', isPercent: false, editable: false }, // derived from % хранения
+      { label: '% хран', key: 'storage_pct', isPercent: true, editable: true },
+      { label: 'Доля расходов ВБ', key: 'wb_expenses_share', isPercent: true, editable: true },
+      { label: 'Опер. расходы', key: 'operation_expenses', isPercent: false, editable: true },
+      { label: 'Маржа', key: 'margin', isPercent: false, editable: true },
+      { label: '% маржи', key: 'margin_pct', isPercent: true, editable: true },
+      { label: 'ROI', key: 'roi', isPercent: true, editable: true },
+    ]),
+    [],
+  );
+
+  const optionalColumns = useMemo(() => {
+    const mandatory = new Set(mandatoryKeys);
+    return allColumns.filter((c) => !mandatory.has(c.key));
+  }, [allColumns, mandatoryKeys]);
+
+  const [visibleColumnKeys, setVisibleColumnKeys] = useState(() => allColumns.map((c) => c.key));
+
+  // Dropdown state for columns settings (gear).
+  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const columnsMenuRef = useRef(null);
+
+  // Hydrate persisted settings.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const keys = Array.isArray(parsed?.visibleColumnKeys) ? parsed.visibleColumnKeys : null;
+      const pf = typeof parsed?.planFactEnabled === 'boolean' ? parsed.planFactEnabled : null;
+
+      const allowed = new Set(allColumns.map((c) => c.key));
+      const nextKeys = Array.isArray(keys) ? keys.filter((k) => allowed.has(k)) : null;
+
+      if (nextKeys && nextKeys.length) setVisibleColumnKeys(nextKeys);
+      if (pf !== null) setPlanFactEnabled(pf);
+    } catch {
+      // ignore malformed storage
+    }
+  }, [allColumns]);
+
+  // Persist settings whenever they change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          visibleColumnKeys,
+          planFactEnabled,
+        }),
+      );
+    } catch {
+      // ignore storage quota / private mode
+    }
+  }, [visibleColumnKeys, planFactEnabled]);
+
+  // Close menu on outside click / ESC.
+  useEffect(() => {
+    if (!columnsMenuOpen) return;
+    const onDown = (e) => {
+      if (e.key === 'Escape') setColumnsMenuOpen(false);
+    };
+    const onClick = (e) => {
+      const root = columnsMenuRef.current;
+      if (!root) return;
+      if (root.contains(e.target)) return;
+      setColumnsMenuOpen(false);
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('mousedown', onClick);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('mousedown', onClick);
+    };
+  }, [columnsMenuOpen]);
+
+  const effectiveVisibleKeys = useMemo(() => {
+    const mandatory = new Set(mandatoryKeys);
+    const selected = new Set(visibleColumnKeys || []);
+    const ordered = [];
+    for (const c of allColumns) {
+      if (mandatory.has(c.key) || selected.has(c.key)) ordered.push(c.key);
+    }
+    return ordered;
+  }, [allColumns, mandatoryKeys, visibleColumnKeys]);
+
+  const visibleColumns = useMemo(() => {
+    const set = new Set(effectiveVisibleKeys);
+    return allColumns.filter((c) => set.has(c.key));
+  }, [allColumns, effectiveVisibleKeys]);
+
+  const cols = visibleColumns; // keep existing name used by plan-fact block
 
   function monthTitle(monthIso) {
     if (!monthIso) return '';
@@ -287,8 +377,6 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
   const labels = filtered.map((r) => formatDate(r.date));
   const revenueSeries = filtered.map((r) => Number(r.revenue) || 0);
-  const ordersSeries = filtered.map((r) => ordersByDate[r.date] || 0);
-  const marginSeries = filtered.map((r) => Number(r.margin) || 0);
 
   const marginPercentOfRevenue = totals.revenue > 0 ? (totals.margin / totals.revenue) * 100 : 0;
   const marginIsPositive = totals.margin >= 0;
@@ -345,26 +433,65 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
         />
       </div>
 
-      <ChartCard title="Заказы, ₽" badge="сумма за день" labels={labels} data={ordersSeries} borderColor="#7c6ff7" />
       <ChartCard title="Продажи, ₽" badge="сумма за день" labels={labels} data={revenueSeries} borderColor="#14b8a6" />
-      <ChartCard title="Маржа, ₽" badge="сумма за день" labels={labels} data={marginSeries} borderColor="#16a34a" />
 
       <div className="table-card">
         <div className="table-head-row">
           <h3>Детализация по дням</h3>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-              <input
-                type="checkbox"
-                checked={planFactEnabled}
-                onChange={(e) => {
-                  const checked = Boolean(e.target.checked);
-                  setPlanFactEnabled(checked);
-                  setPlanFactEdit(false);
-                }}
-              />
-              План-факт
-            </label>
+            <div className="columns-menu" ref={columnsMenuRef}>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Настройки таблицы"
+                aria-haspopup="menu"
+                aria-expanded={columnsMenuOpen ? 'true' : 'false'}
+                onClick={() => setColumnsMenuOpen((v) => !v)}
+              >
+                ⚙︎
+              </button>
+              {columnsMenuOpen && (
+                <div className="columns-menu-pop" role="menu" aria-label="Настройки таблицы">
+                  <div className="columns-menu-section">
+                    <div className="columns-menu-title">План-факт</div>
+                    <label className="columns-menu-item">
+                      <input
+                        type="checkbox"
+                        checked={planFactEnabled}
+                        onChange={(e) => {
+                          const checked = Boolean(e.target.checked);
+                          setPlanFactEnabled(checked);
+                          setPlanFactEdit(false);
+                        }}
+                      />
+                      <span>План-факт</span>
+                    </label>
+                  </div>
+                  <div className="columns-menu-divider" />
+                  <div className="columns-menu-section">
+                    <div className="columns-menu-title">Столбцы</div>
+                    {optionalColumns.map((c) => (
+                      <label key={c.key} className="columns-menu-item">
+                        <input
+                          type="checkbox"
+                          checked={new Set(effectiveVisibleKeys).has(c.key)}
+                          onChange={(e) => {
+                            const checked = Boolean(e.target.checked);
+                            setVisibleColumnKeys((prev) => {
+                              const cur = new Set(prev || []);
+                              if (checked) cur.add(c.key);
+                              else cur.delete(c.key);
+                              return Array.from(cur);
+                            });
+                          }}
+                        />
+                        <span>{c.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             {planFactEnabled && (
               <button
                 className="btn btn-sm btn-outline-primary"
@@ -393,221 +520,328 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
             <thead>
               <tr>
                 <th className="left">Дата</th>
-                <th>Выручка</th>
-                <th>Заказы ₽</th>
-                <th>Ком</th>
-                <th>% ком</th>
-                <th>Лог</th>
-                <th>% лог</th>
-                <th>Штрафы</th>
-                <th>Себес</th>
-                <th>Налог</th>
-                <th>Реклама</th>
-                <th>% рекл</th>
-                <th>Хран</th>
-                <th>% хран</th>
-                <th>Доля расходов ВБ</th>
-                <th>Опер. расходы</th>
-                <th>Маржа</th>
-                <th>% маржи</th>
-                <th>ROI</th>
+                {cols.map((c) => (
+                  <th key={c.key}>{c.label}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={19} style={{ textAlign: 'center', padding: 16 }}>
+                  <td colSpan={1 + cols.length} style={{ textAlign: 'center', padding: 16 }}>
                     Нет данных
                   </td>
                 </tr>
               ) : (
-                monthSections.flatMap((section) => {
-                  const rows = section.rows || [];
-                  const out = [];
-                  if (planFactEnabled && section.month) {
-                    out.push(
-                      <tr key={`sep-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
-                        <td className="left" colSpan={19} style={{ fontWeight: 700 }}>
-                          {monthTitle(section.month)}
-                        </td>
-                      </tr>
-                    );
+                (() => {
+                  // Требование: суммарная строка "ИТОГО" должна быть над блоком план-факт.
+                  // Поэтому при включённом план-факте рисуем:
+                  // 1) дневные строки (с разделителями по месяцам),
+                  // 2) ИТОГО,
+                  // 3) план-факт блоки по месяцам.
+                  const dayRows = [];
+                  const planRows = [];
+
+                  function showDashForZero(v) {
+                    if (v == null) return true;
+                    const n = Number(v);
+                    if (!Number.isFinite(n)) return false;
+                    return n === 0;
                   }
 
-                  for (const r of rows) {
-                    const revenue = Number(r.revenue) || 0;
-                    const orders = ordersByDate[r.date] || 0;
-                    const commission = Number(r.commission) || 0;
-                    const logistics = Number(r.logistics) || 0;
-                    const penalties = Number(r.penalties) || 0;
-                    const ads = Number(r.ads_spend) || 0;
-                    const storage = Number(r.storage) || 0;
-                    const opExp = Number(r.operation_expenses) || 0;
-                    const cogs = Number(r.cogs) || 0;
-                    const tax = Number(r.tax) || 0;
-                    const margin = Number(r.margin) || 0;
+                  for (const section of monthSections) {
+                    const rows = section.rows || [];
 
-                    const neg = margin < 0;
-                    const comPct = revenue > 0 ? ((commission / revenue) * 100) : 0;
-                    const logPct = revenue > 0 ? ((logistics / revenue) * 100) : 0;
-                    const reklPct = revenue > 0 ? ((ads / revenue) * 100) : 0;
-                    const storPct = revenue > 0 ? ((storage / revenue) * 100) : 0;
-                    const marginPct = revenue > 0 ? ((margin / revenue) * 100) : 0;
-                    const roi = cogs > 0 ? (margin / cogs) * 100 : 0;
-
-                    out.push(
-                      <tr key={r.date}>
-                        <td className="left">{formatDate(r.date)}</td>
-                        <td>{formatNum(r.revenue)}</td>
-                        <td>{formatNum(orders)}</td>
-                        <td>{formatNum(commission)}</td>
-                        <td>{revenue > 0 ? comPct.toFixed(1) : '0'}%</td>
-                        <td>{formatNum(logistics)}</td>
-                        <td>{revenue > 0 ? logPct.toFixed(1) : '0'}%</td>
-                        <td>{formatNum(penalties)}</td>
-                        <td>{formatNum(cogs)}</td>
-                        <td style={{ color: 'var(--text-secondary)' }}>{formatNum(tax)}</td>
-                        <td>{formatNum(ads)}</td>
-                        <td>{revenue > 0 ? reklPct.toFixed(1) : '0'}%</td>
-                        <td>{formatNum(storage)}</td>
-                        <td>{revenue > 0 ? storPct.toFixed(1) : '0'}%</td>
-                        <td>{revenue > 0 ? (((storage + commission + ads + logistics + penalties) / revenue) * 100).toFixed(1) : '0'}%</td>
-                        <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(opExp)}</td>
-                        <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
-                          {formatNum(margin)}
-                        </td>
-                        <td style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
-                          {revenue > 0 ? marginPct.toFixed(1) : '0'}%
-                        </td>
-                        <td>{cogs > 0 ? `${Math.round(roi)}%` : '0%'}</td>
-                      </tr>
-                    );
-                  }
-
-                  if (planFactEnabled && section.month) {
-                    const monthData = planFactByMonth.get(section.month);
-                    const metrics = Array.isArray(monthData?.metrics) ? monthData.metrics : [];
-                    const byKey = new Map(metrics.map((x) => [x.metric_key, x]));
-
-                    const rowDefs = [
-                      { label: 'План', kind: 'plan' },
-                      { label: 'Факт', kind: 'fact' },
-                      { label: '% выполнения', kind: 'pct_of_plan' },
-                      { label: 'Прогноз выполнения', kind: 'forecast' },
-                      { label: 'Прогноз выполнения плана', kind: 'forecast_pct_of_plan' },
-                    ];
-
-                    for (const def of rowDefs) {
-                      const isFirst = def.kind === 'plan';
-                      const isLast = def.kind === 'forecast_pct_of_plan';
-                      const blockBg = 'rgba(124, 111, 247, 0.06)'; // brand-ish, subtle
-                      const blockBorder = 'rgba(124, 111, 247, 0.22)';
-                      out.push(
-                        <tr
-                          key={`${section.month}-${def.kind}`}
-                          style={{
-                            background: blockBg,
-                            boxShadow: isFirst ? `inset 0 2px 0 0 ${blockBorder}` : undefined,
-                            borderBottom: isLast ? `2px solid ${blockBorder}` : undefined,
-                          }}
-                        >
-                          <td
-                            className="left"
-                            style={{
-                              fontWeight: 800,
-                              color: 'var(--text-primary)',
-                              borderLeft: `3px solid ${blockBorder}`,
-                            }}
-                          >
-                            {def.label}
+                    if (planFactEnabled && section.month) {
+                      dayRows.push(
+                        <tr key={`sep-days-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
+                          <td className="left" colSpan={1 + cols.length} style={{ fontWeight: 700 }}>
+                            {monthTitle(section.month)}
                           </td>
+                        </tr>
+                      );
+                    }
+
+                    for (const r of rows) {
+                      const revenue = Number(r.revenue) || 0;
+                      const orders = ordersByDate[r.date] || 0;
+                      const commission = Number(r.commission) || 0;
+                      const logistics = Number(r.logistics) || 0;
+                      const penalties = Number(r.penalties) || 0;
+                      const ads = Number(r.ads_spend) || 0;
+                      const storage = Number(r.storage) || 0;
+                      const opExp = Number(r.operation_expenses) || 0;
+                      const cogs = Number(r.cogs) || 0;
+                      const tax = Number(r.tax) || 0;
+                      const margin = Number(r.margin) || 0;
+
+                      const neg = margin < 0;
+                      const comPct = revenue > 0 ? ((commission / revenue) * 100) : 0;
+                      const logPct = revenue > 0 ? ((logistics / revenue) * 100) : 0;
+                      const reklPct = revenue > 0 ? ((ads / revenue) * 100) : 0;
+                      const storPct = revenue > 0 ? ((storage / revenue) * 100) : 0;
+                      const marginPct = revenue > 0 ? ((margin / revenue) * 100) : 0;
+                      const roi = cogs > 0 ? (margin / cogs) * 100 : 0;
+
+                      const valueByKey = {
+                        revenue,
+                        orders_sum: orders,
+                        commission,
+                        commission_pct: comPct,
+                        logistics,
+                        logistics_pct: logPct,
+                        penalties,
+                        cogs,
+                        cogs_share: revenue > 0 ? (cogs / revenue) * 100 : 0,
+                        tax,
+                        ads_spend: ads,
+                        ads_pct: reklPct,
+                        storage,
+                        storage_pct: storPct,
+                        wb_expenses_share: revenue > 0 ? ((storage + commission + ads + logistics + penalties) / revenue) * 100 : 0,
+                        operation_expenses: opExp,
+                        margin,
+                        margin_pct: marginPct,
+                        roi,
+                      };
+
+                      dayRows.push(
+                        <tr key={r.date}>
+                          <td className="left">{formatDate(r.date)}</td>
                           {cols.map((c) => {
-                            const m = byKey.get(c.key);
-                            const isPercent = Boolean(m?.is_percent);
-                            const v = m ? m[def.kind] : null;
-
-                            const hideForPercent =
-                              isPercent &&
-                              (def.kind === 'pct_of_plan' ||
-                                def.kind === 'forecast' ||
-                                def.kind === 'forecast_pct_of_plan');
-
-                            if (def.kind === 'plan' && planFactEdit) {
-                              const editable = Boolean(c.editable);
-                              const cur = planInputsByMonth?.[section.month]?.[c.key];
+                            const v = valueByKey[c.key];
+                            if (c.key === 'operation_expenses') {
+                              return (
+                                <td key={c.key} style={{ color: 'var(--red)', fontWeight: 600 }}>
+                                  {formatNum(v)}
+                                </td>
+                              );
+                            }
+                            if (c.key === 'tax') {
+                              return (
+                                <td key={c.key} style={{ color: 'var(--text-secondary)' }}>
+                                  {formatNum(v)}
+                                </td>
+                              );
+                            }
+                            if (c.key === 'margin' || c.key === 'margin_pct') {
+                              return (
+                                <td key={c.key} style={{ fontWeight: 500, color: neg ? 'var(--red)' : 'var(--green)' }}>
+                                  {c.isPercent ? `${(Number(v) || 0).toFixed(1)}%` : formatNum(v)}
+                                </td>
+                              );
+                            }
+                            if (c.isPercent) {
                               return (
                                 <td key={c.key}>
-                                  <input
-                                    type="number"
-                                    inputMode="numeric"
-                                    value={cur ?? ''}
-                                    onChange={(e) => onPlanInputChange(section.month, c.key, e.target.value)}
-                                    disabled={!editable}
-                                    style={{
-                                      width: '100%',
-                                      padding: '6px 8px',
-                                      borderRadius: 8,
-                                      border: '1px solid rgba(0,0,0,0.12)',
-                                      background: editable ? 'white' : 'rgba(0,0,0,0.04)',
-                                    }}
-                                  />
+                                  {(Number.isFinite(Number(v)) ? Number(v) : 0).toFixed(1)}%
                                 </td>
                               );
                             }
-
-                            if (hideForPercent) {
-                              return (
-                                <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>
-                                  —
-                                </td>
-                              );
-                            }
-
-                            if (def.kind === 'pct_of_plan' || def.kind === 'forecast_pct_of_plan') {
-                              if (v == null) return <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>—</td>;
-                              return <td key={c.key} style={{ fontWeight: 700 }}>{`${Math.round(Number(v) * 100)}%`}</td>;
-                            }
-
-                            return <td key={c.key}>{formatCellValue(c.key, v)}</td>;
+                            return <td key={c.key}>{formatNum(v)}</td>;
                           })}
                         </tr>
                       );
                     }
+
+                    if (planFactEnabled && section.month) {
+                      const monthData = planFactByMonth.get(section.month);
+                      const metrics = Array.isArray(monthData?.metrics) ? monthData.metrics : [];
+                      const byKey = new Map(metrics.map((x) => [x.metric_key, x]));
+
+                      // Header for plan-fact block per month (below totals)
+                      planRows.push(
+                        <tr key={`sep-plan-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
+                          <td className="left" colSpan={1 + cols.length} style={{ fontWeight: 700 }}>
+                            {monthTitle(section.month)}
+                          </td>
+                        </tr>
+                      );
+
+                      const rowDefs = [
+                        { label: 'План', kind: 'plan' },
+                        { label: 'Факт', kind: 'fact' },
+                        { label: '% выполнения', kind: 'pct_of_plan' },
+                        { label: 'Прогноз выполнения', kind: 'forecast' },
+                        {
+                          label: (
+                            <span style={{ display: 'inline-block', lineHeight: 1.1 }}>
+                              Прогноз
+                              <br />
+                              % выполнения
+                            </span>
+                          ),
+                          kind: 'forecast_pct_of_plan',
+                        },
+                      ];
+
+                      for (const def of rowDefs) {
+                        const isFirst = def.kind === 'plan';
+                        const isLast = def.kind === 'forecast_pct_of_plan';
+                        const blockBg = 'rgba(124, 111, 247, 0.06)'; // brand-ish, subtle
+                        const blockBorder = 'rgba(124, 111, 247, 0.22)';
+                        planRows.push(
+                          <tr
+                            key={`${section.month}-${def.kind}`}
+                            style={{
+                              background: blockBg,
+                              boxShadow: isFirst ? `inset 0 2px 0 0 ${blockBorder}` : undefined,
+                              borderBottom: isLast ? `2px solid ${blockBorder}` : undefined,
+                            }}
+                          >
+                            <td
+                              className="left"
+                              style={{
+                                fontWeight: 800,
+                                color: 'var(--text-primary)',
+                                borderLeft: `3px solid ${blockBorder}`,
+                              }}
+                            >
+                              {def.label}
+                            </td>
+                            {cols.map((c) => {
+                              const m = byKey.get(c.key);
+                              const isPercent = Boolean(m?.is_percent);
+                              const v = m ? m[def.kind] : null;
+
+                              const hideForPercent =
+                                isPercent &&
+                                (def.kind === 'pct_of_plan' ||
+                                  def.kind === 'forecast' ||
+                                  def.kind === 'forecast_pct_of_plan');
+
+                              if (def.kind === 'plan' && planFactEdit) {
+                                const editable = Boolean(c.editable);
+                                const cur = planInputsByMonth?.[section.month]?.[c.key];
+                                return (
+                                  <td key={c.key}>
+                                    <input
+                                      type="number"
+                                      inputMode="numeric"
+                                      value={cur ?? ''}
+                                      onChange={(e) => onPlanInputChange(section.month, c.key, e.target.value)}
+                                      disabled={!editable}
+                                      style={{
+                                        width: '100%',
+                                        padding: '6px 8px',
+                                        borderRadius: 8,
+                                        border: '1px solid rgba(0,0,0,0.12)',
+                                        background: editable ? 'white' : 'rgba(0,0,0,0.04)',
+                                      }}
+                                    />
+                                  </td>
+                                );
+                              }
+
+                              if (hideForPercent) {
+                                return (
+                                  <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>
+                                    —
+                                  </td>
+                                );
+                              }
+
+                              if (def.kind === 'pct_of_plan' || def.kind === 'forecast_pct_of_plan') {
+                                if (showDashForZero(v)) {
+                                  return <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>—</td>;
+                                }
+                                return <td key={c.key} style={{ fontWeight: 700 }}>{`${Math.round(Number(v) * 100)}%`}</td>;
+                              }
+
+                              if (showDashForZero(v)) {
+                                return <td key={c.key} style={{ color: 'var(--text-tertiary)' }}>—</td>;
+                              }
+                              return <td key={c.key}>{formatCellValue(c.key, v)}</td>;
+                            })}
+                          </tr>
+                        );
+                      }
+                    }
                   }
 
-                  return out;
-                })
+                  const totalsRow = (
+                    <tr key="totals" style={{ fontWeight: 500, background: 'var(--bg-secondary)' }}>
+                      <td className="left">ИТОГО</td>
+                      {cols.map((c) => {
+                        const totalOrders = Object.values(ordersByDate).reduce((a, b) => a + (Number(b) || 0), 0);
+                        const revenue = totals.revenue || 0;
+                        const vByKey = {
+                          revenue: totals.revenue,
+                          orders_sum: totalOrders,
+                          commission: totals.commission,
+                          commission_pct: revenue > 0 ? (totals.commission / revenue) * 100 : 0,
+                          logistics: totals.logistics,
+                          logistics_pct: revenue > 0 ? (totals.logistics / revenue) * 100 : 0,
+                          penalties: totals.penalties,
+                          cogs: totals.cogs,
+                          cogs_share: revenue > 0 ? (totals.cogs / revenue) * 100 : 0,
+                          tax: totals.tax,
+                          ads_spend: totals.ads,
+                          ads_pct: revenue > 0 ? (totals.ads / revenue) * 100 : 0,
+                          storage: totals.storage,
+                          storage_pct: revenue > 0 ? (totals.storage / revenue) * 100 : 0,
+                          wb_expenses_share:
+                            revenue > 0
+                              ? ((totals.storage + totals.commission + totals.ads + totals.logistics + totals.penalties) / revenue) * 100
+                              : 0,
+                          operation_expenses: totals.operation_expenses,
+                          margin: totals.margin,
+                          margin_pct: revenue > 0 ? (totals.margin / revenue) * 100 : 0,
+                          roi: totals.cogs > 0 ? (totals.margin / totals.cogs) * 100 : 0,
+                        };
+                        const v = vByKey[c.key];
+                        if (c.key === 'operation_expenses') {
+                          return (
+                            <td key={c.key} style={{ color: 'var(--red)', fontWeight: 600 }}>
+                              {formatNum(v)}
+                            </td>
+                          );
+                        }
+                        if (c.key === 'tax') {
+                          return (
+                            <td key={c.key} style={{ color: 'var(--text-secondary)' }}>
+                              {formatNum(v)}
+                            </td>
+                          );
+                        }
+                        if (c.key === 'margin' || c.key === 'margin_pct') {
+                          return (
+                            <td key={c.key} style={{ fontWeight: 500, color: 'var(--green)' }}>
+                              {c.isPercent ? `${(Number(v) || 0).toFixed(1)}%` : formatNum(v)}
+                            </td>
+                          );
+                        }
+                        if (c.key === 'roi') {
+                          return <td key={c.key}>{totals.cogs > 0 ? `${Math.round(roiPercent)}%` : '0%'}</td>;
+                        }
+                        if (c.isPercent) {
+                          return <td key={c.key}>{(Number(v) || 0).toFixed(1)}%</td>;
+                        }
+                        return <td key={c.key}>{formatNum(v)}</td>;
+                      })}
+                    </tr>
+                  );
+
+                  if (!planFactEnabled) {
+                    // Old behavior: day rows already include everything; planRows is empty.
+                    return (
+                      <>
+                        {dayRows}
+                        {totalsRow}
+                      </>
+                    );
+                  }
+
+                  return (
+                    <>
+                      {dayRows}
+                      {totalsRow}
+                      {planRows}
+                    </>
+                  );
+                })()
               )}
 
-              {filtered.length > 0 && (
-                <tr style={{ fontWeight: 500, background: 'var(--bg-secondary)' }}>
-                  <td className="left">ИТОГО</td>
-                  <td>{formatNum(totals.revenue)}</td>
-                  <td>{formatNum(Object.values(ordersByDate).reduce((a, b) => a + (Number(b) || 0), 0))}</td>
-                  <td>{formatNum(totals.commission)}</td>
-                  <td>{totals.revenue > 0 ? ((totals.commission / totals.revenue) * 100).toFixed(1) : '0'}%</td>
-                  <td>{formatNum(totals.logistics)}</td>
-                  <td>{totals.revenue > 0 ? ((totals.logistics / totals.revenue) * 100).toFixed(1) : '0'}%</td>
-                  <td>{formatNum(totals.penalties)}</td>
-                  <td>{formatNum(totals.cogs)}</td>
-                  <td style={{ color: 'var(--text-secondary)' }}>{formatNum(totals.tax)}</td>
-                  <td>{formatNum(totals.ads)}</td>
-                  <td>{totals.revenue > 0 ? ((totals.ads / totals.revenue) * 100).toFixed(1) : '0'}%</td>
-                  <td>{formatNum(totals.storage)}</td>
-                  <td>{totals.revenue > 0 ? ((totals.storage / totals.revenue) * 100).toFixed(1) : '0'}%</td>
-                  <td>
-                    {totals.revenue > 0
-                      ? (((totals.storage + totals.commission + totals.ads + totals.logistics + totals.penalties) / totals.revenue) * 100).toFixed(1)
-                      : '0'}%
-                  </td>
-                  <td style={{ color: 'var(--red)', fontWeight: 600 }}>{formatNum(totals.operation_expenses)}</td>
-                  <td style={{ fontWeight: 500, color: 'var(--green)' }}>{formatNum(totals.margin)}</td>
-                  <td style={{ fontWeight: 500, color: 'var(--green)' }}>
-                    {totals.revenue > 0 ? ((totals.margin / totals.revenue) * 100).toFixed(1) : '0'}%
-                  </td>
-                  <td>{totals.cogs > 0 ? `${Math.round(roiPercent)}%` : '0%'}</td>
-                </tr>
-              )}
             </tbody>
           </table>
           {planFactEnabled && planFactLoading && (

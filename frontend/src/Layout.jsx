@@ -25,21 +25,35 @@ export default function Layout() {
 
   const location = useLocation();
   const navigate = useNavigate();
+
+  function toLocalIsoDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function getDefaultRange() {
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    // Если сегодня 1-е, "вчера" ещё в прошлом месяце — чтобы не получить пустой диапазон, зажимаем dateTo к monthStart.
+    const to = yesterday < monthStart ? monthStart : yesterday;
+    return { dateFrom: toLocalIsoDate(monthStart), dateTo: toLocalIsoDate(to) };
+  }
+
   // Применённые даты: именно они используются для запросов к API (табами)
   const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().split('T')[0];
+    return getDefaultRange().dateFrom;
   });
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0]);
+  const [dateTo, setDateTo] = useState(() => getDefaultRange().dateTo);
 
   // Черновые даты для инпутов: меняем их сколько угодно, но запросы обновятся только после нажатия "Показать"
   const [dateFromDraft, setDateFromDraft] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().split('T')[0];
+    return getDefaultRange().dateFrom;
   });
-  const [dateToDraft, setDateToDraft] = useState(() => new Date().toISOString().split('T')[0]);
+  const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [updating, setUpdating] = useState(false);
   const [updateSyncing, setUpdateSyncing] = useState(false);
@@ -47,8 +61,6 @@ export default function Layout() {
   const [initialTriggered, setInitialTriggered] = useState(false);
   const [waitForFunnelAfterInitial, setWaitForFunnelAfterInitial] = useState(false);
   const [initialError, setInitialError] = useState('');
-  const [recentSyncing, setRecentSyncing] = useState(false);
-  const [recentTriggeredOnce, setRecentTriggeredOnce] = useState(false);
   const [dashboardState, setDashboardState] = useState(null);
   const [backfill2026Syncing, setBackfill2026Syncing] = useState(false);
   const [backfill2026TriggeredOnce, setBackfill2026TriggeredOnce] = useState(false);
@@ -92,8 +104,6 @@ export default function Layout() {
     setInitialTriggered(false);
     setWaitForFunnelAfterInitial(false);
     setInitialError('');
-    setRecentSyncing(false);
-    setRecentTriggeredOnce(false);
     setBackfill2026Syncing(false);
     setBackfill2026TriggeredOnce(false);
     setBackfill2025Syncing(false);
@@ -243,23 +253,6 @@ export default function Layout() {
       cancelled = true;
     };
   }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId]);
-
-  // Как только экран перешёл из «первая загрузка» в «дашборд» — один раз запускаем автосинк последних 7 дней
-  useEffect(() => {
-    if (initialLoading) return;
-    if (recentTriggeredOnce) return;
-    setRecentTriggeredOnce(true);
-    setRecentSyncing(true);
-    console.log('[WB FINANCE] Автосинк последних 7 дней /sync/recent');
-    api.triggerRecentSync()
-      .catch((e) => {
-        console.warn('Ошибка автосинхронизации последних 7 дней', e);
-      })
-      .finally(() => {
-        setRecentSyncing(false);
-        setRefreshTrigger((t) => t + 1);
-      });
-  }, [initialLoading, recentTriggeredOnce]);
 
   // Если данных 2026 ещё нет — запускаем фоновую догрузку 2026 (как в GAS loader-2026)
   useEffect(() => {
@@ -426,24 +419,6 @@ export default function Layout() {
                   <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
                     Оплата и раздел «Подписка» ниже работают. Дашборд станет доступен после успешной синхронизации.
                   </div>
-                </div>
-              )}
-              {recentSyncing && (
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    background: '#e7f3ff',
-                    color: '#004085',
-                    padding: '10px 15px',
-                    borderRadius: 8,
-                    border: '1px solid #b8daff',
-                    width: 'fit-content',
-                  }}
-                >
-                  🔄 Обновляем последние 7 дней…
-                  <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
                 </div>
               )}
               {backfill2026Syncing && (

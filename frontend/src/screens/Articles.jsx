@@ -209,6 +209,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
         <thead>
           <tr>
             <th className="left">Артикул ВБ</th>
+            <th className="left">Артикул</th>
             <th className="left">Товар</th>
             <th>Выручка</th>
             <th>Заказы ₽</th>
@@ -231,7 +232,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
         <tbody>
           {aggregated.length === 0 ? (
             <tr>
-              <td colSpan={18} style={{ textAlign: 'center', padding: 16 }}>
+              <td colSpan={19} style={{ textAlign: 'center', padding: 16 }}>
                 Нет данных
               </td>
             </tr>
@@ -245,12 +246,12 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
                   <td className="left" style={{ color: 'var(--text-secondary)' }}>
                     {(() => {
                       const vc = i.vendor_code;
-                      const nm = i.name && i.name !== '—' ? i.name : null;
-                      if (vc && nm) return <span title={`${vc} - ${nm}`}>{`${vc} - ${nm}`}</span>;
-                      if (vc && !nm) return <span title={vc}>{vc}</span>;
-                      if (!vc && nm) return <span title={nm}>{nm}</span>;
+                      if (vc) return <span title={vc}>{vc}</span>;
                       return <span title="—">—</span>;
                     })()}
+                  </td>
+                  <td className="left" style={{ color: 'var(--text-secondary)' }}>
+                    {i.name && i.name !== '—' ? <span title={i.name}>{i.name}</span> : <span title="—">—</span>}
                   </td>
                   <td>{formatNum(i.revenue)}</td>
                   <td>{formatNum(i.order_sum)}</td>
@@ -290,6 +291,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
                         <td className="left" style={{ paddingLeft: 28, color: 'var(--text-tertiary)', fontSize: 11 }}>
                           {formatDate(dd.date)}
                         </td>
+                        <td style={{ background: 'var(--bg-secondary)' }} />
                         <td style={{ background: 'var(--bg-secondary)' }} />
                         <td style={{ fontSize: 11 }}>{formatNum(dd.revenue)}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.order_sum)}</td>
