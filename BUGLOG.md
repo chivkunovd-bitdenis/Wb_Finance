@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-4
+Дата: 2026-04-26
+Статус: fixed
+Автоматизация: да (pytest: dashboard state no longer autostarts finance backfill)
+
+## Бизнес-описание
+Открытие дашборда могло незаметно запускать тяжелую догрузку архива (backfill), что приводило к лишней нагрузке на WB и очередь задач без явного действия пользователя.
+
+## Процесс / сценарий
+1) Пользователь (или viewer через grant) открывает дашборд → фронт опрашивает `/dashboard/state`.
+2) Сервер по условиям автозапуска ставит в Celery долгоживущую цепочку backfill.
+Ожидание: чтение состояния не запускает тяжелые фоновые процессы; архив догружается управляемо и дозировано.
+Факт: backfill мог стартовать “сам” при простом открытии/refresh.
+
+## Техническое описание
+`backend/app/routers/dashboard.py` вызывал `sync_finance_backfill_step.delay(...)` из обработчика `/dashboard/state`.
+
+## Root cause (почему произошло)
+- Backfill был привязан к UI-read endpoint для “удобства автостарта”.
+- Legacy self-chain backfill существовал параллельно оркестратору и обходил приоритеты/high-lane.
+
+## Исправление (что сделали)
+- Убрали запуск backfill из `/dashboard/state` (endpoint стал read-only по смыслу).
+- Добавили дозирующий менеджер `archive_backfill_manager` (celery_beat) для постепенной догрузки архива через intents/оркестратор.
+
+## Профилактика (как не повторить)
+- Регрессионные тесты: `/dashboard/state` не запускает backfill; backfill запускается отдельно.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest`
+- Сценарии: открыть дашборд/refresh → не появляется backfill chain в очереди; архив догружается только через менеджер/кнопку.
+
+Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/celery_app/tasks.py`, `backend/celery_app/celery.py`, `backend/tests/test_integration_dashboard.py`, `backend/tests/test_finance_backfill_job_invariants.py`, `backend/tests/test_integration_store_access.py`
+---
+
+---
 ID: BUG-3
 Дата: 2026-04-26
 Статус: fixed

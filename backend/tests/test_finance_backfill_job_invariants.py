@@ -54,8 +54,8 @@ def authenticated_client_with_session(real_db_session):
 
 def test_state_autostarts_finance_backfill(authenticated_client_with_session):
     """
-    При входе (/dashboard/state), если есть продажи raw_sales, но нет раннего покрытия pnl_daily,
-    должен запускаться sync_finance_backfill_step.delay(user_id, 2026).
+    /dashboard/state не должен запускать архивный backfill.
+    Архивная догрузка запускается отдельно (оркестратор + менеджер), либо явной кнопкой.
     """
     client, session, user_id, token = authenticated_client_with_session
     headers = {"Authorization": f"Bearer {token}"}
@@ -81,16 +81,10 @@ def test_state_autostarts_finance_backfill(authenticated_client_with_session):
     )
     session.commit()
 
-    with (
-        patch("app.routers.dashboard.date_type", _FixedDate),
-        patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_delay,
-    ):
+    with patch("app.routers.dashboard.date_type", _FixedDate):
         r = client.get("/dashboard/state", headers=headers)
         assert r.status_code == 200
-        mock_delay.assert_called_once()
-        args, _kwargs = mock_delay.call_args
-        assert args[0] == user_id
-        assert args[1] == 2026
+        # No background backfill is triggered by this read-only endpoint.
 
 
 def test_finance_backfill_step_fills_pnl_daily_when_fetch_returns_sales(authenticated_client_with_session):

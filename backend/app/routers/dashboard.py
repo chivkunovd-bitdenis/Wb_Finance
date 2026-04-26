@@ -27,7 +27,7 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import sync_funnel_ytd_step, sync_finance_backfill_step, sync_finance_missing_range
+from celery_app.tasks import sync_funnel_ytd_step, sync_finance_missing_range
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
 from sqlalchemy.exc import IntegrityError
@@ -361,47 +361,9 @@ def _maybe_start_finance_backfill(
         except Exception as exc:
             logger.exception("Celery delay failed (sync_finance_missing_range): %s", exc)
 
-    if queued:
-        return
-
-    # Если уже есть ранние дни года в pnl_daily — значит финансовый backfill хотя бы частично начат.
-    first_pnl = (
-        db.query(PnlDaily.date)
-        .filter(
-            PnlDaily.user_id == user.id,
-            PnlDaily.date >= year_start,
-            PnlDaily.date <= through,
-        )
-        .order_by(PnlDaily.date.asc())
-        .first()
-    )
-    if first_pnl and first_pnl[0] <= year_start + timedelta(days=6):
-        return
-
-    row = (
-        db.query(FinanceBackfillState)
-        .filter(
-            FinanceBackfillState.user_id == user.id,
-            FinanceBackfillState.calendar_year == calendar_year,
-        )
-        .first()
-    )
-    if row and row.status in {"running", "complete"}:
-        return
-    if row and row.error_message == "__autostart_scheduled__":
-        return
-    if row is None:
-        row = FinanceBackfillState(
-            user_id=user.id,
-            calendar_year=calendar_year,
-            status="idle",
-            error_message="__autostart_scheduled__",
-        )
-    else:
-        row.error_message = "__autostart_scheduled__"
-    db.add(row)
-    db.commit()
-    sync_finance_backfill_step.delay(str(user.id), calendar_year)
+    # Важно: /dashboard/state — read-only по смыслу. Он НЕ должен запускать тяжелые фоновые процессы backfill.
+    # Архивная догрузка управляется оркестратором + дозирующим менеджером (celery_beat), либо явной кнопкой.
+    return
 
 def _num(v):
     if v is None:

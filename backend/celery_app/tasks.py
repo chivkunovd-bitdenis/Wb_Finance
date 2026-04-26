@@ -427,6 +427,67 @@ def _ensure_orch_state(db, *, user_id: str) -> WbOrchestratorState:
     return st
 
 
+@celery_app.task(name="archive_backfill_manager")
+def archive_backfill_manager() -> dict:
+    """
+    Dosed archive backfill coordinator.
+
+    Purpose:
+    - gradually finish archive backfill for users over time
+    - without triggering backfill from UI reads (e.g. GET /dashboard/state)
+    - without fanning out tasks
+
+    Strategy (minimal & safe):
+    - pick a small batch of users where 2026 is not complete yet
+    - kick orchestrator low-lane for 2026
+    """
+    import os
+
+    enabled = (os.getenv("ARCHIVE_BACKFILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return {"ok": True, "enabled": False, "kicked": 0}
+
+    try:
+        batch = int((os.getenv("ARCHIVE_BACKFILL_BATCH_SIZE") or "1").strip())
+    except ValueError:
+        batch = 1
+    batch = max(0, min(10, batch))
+    if batch == 0:
+        return {"ok": True, "enabled": True, "kicked": 0}
+
+    db = SessionLocal()
+    try:
+        # Users with WB key and not complete for 2026.
+        # NOTE: we intentionally do not start 2025 until 2026 is complete.
+        q = (
+            db.query(User.id)
+            .outerjoin(
+                FinanceBackfillState,
+                (FinanceBackfillState.user_id == User.id) & (FinanceBackfillState.calendar_year == 2026),
+            )
+            .filter(
+                User.is_active.is_(True),
+                User.wb_api_key.isnot(None),
+                func.length(func.btrim(User.wb_api_key)) > 0,
+                func.coalesce(FinanceBackfillState.status, "idle") != "complete",
+            )
+            .order_by(User.created_at.asc())
+            .limit(batch)
+        )
+        ids = [str(x[0]) for x in q.all()]
+        kicked = 0
+        for uid in ids:
+            try:
+                wb_orchestrator_kick.delay(uid, {"low": {"finance_backfill_year": 2026}})
+                kicked += 1
+            except Exception:
+                # Do not fail the whole manager batch.
+                logger.exception("archive_backfill_manager: failed to kick user_id=%s", uid)
+        return {"ok": True, "enabled": True, "kicked": kicked}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="wb_orchestrator_kick")
 def wb_orchestrator_kick(user_id: str, intents_patch: dict | None = None) -> dict:
     """

@@ -18,6 +18,7 @@ celery_app.conf.timezone = "Europe/Moscow"
 celery_app.conf.enable_utc = True
 
 _DAILY_BRIEF_ENABLED = (os.getenv("DAILY_BRIEF_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+_ARCHIVE_BACKFILL_ENABLED = (os.getenv("ARCHIVE_BACKFILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 beat_schedule: dict = {
     # Ежедневные напоминания о платёжке.
@@ -40,6 +41,17 @@ if _DAILY_BRIEF_ENABLED:
             "generate-daily-briefs-09-msk": {
                 "task": "generate_all_daily_briefs",
                 "schedule": crontab(hour=6, minute=0),  # 06:00 UTC = 09:00 МСК
+            },
+        }
+    )
+
+if _ARCHIVE_BACKFILL_ENABLED:
+    beat_schedule.update(
+        {
+            # Dosed archive backfill manager: only kicks intents (no WB calls).
+            "archive-backfill-manager-every-10-min": {
+                "task": "archive_backfill_manager",
+                "schedule": crontab(minute="*/10"),
             },
         }
     )

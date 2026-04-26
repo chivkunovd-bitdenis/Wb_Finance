@@ -292,27 +292,25 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
     session.commit()
 
     with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
-        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
-            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
-            assert r.status_code == 200
-            mock_backfill.assert_not_called()
-            mock_missing.assert_called_once()
-            args, _kwargs = mock_missing.call_args
-            assert args[0] == user_id
-            assert args[1] == yesterday.isoformat()
-            assert args[2] == yesterday.isoformat()
-            from app.models.finance_missing_sync_state import FinanceMissingSyncState
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_missing.assert_called_once()
+        args, _kwargs = mock_missing.call_args
+        assert args[0] == user_id
+        assert args[1] == yesterday.isoformat()
+        assert args[2] == yesterday.isoformat()
+        from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
-            state = (
-                session.query(FinanceMissingSyncState)
-                .filter(
-                    FinanceMissingSyncState.user_id == user_id,
-                    FinanceMissingSyncState.date_from == yesterday,
-                    FinanceMissingSyncState.date_to == yesterday,
-                )
-                .one()
+        state = (
+            session.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_from == yesterday,
+                FinanceMissingSyncState.date_to == yesterday,
             )
-            assert state.status == "queued"
+            .one()
+        )
+        assert state.status == "queued"
 
 
 def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authenticated_client):
@@ -360,27 +358,25 @@ def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authent
     session.commit()
 
     with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
-        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
-            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
-            assert r.status_code == 200
-            mock_backfill.assert_not_called()
-            mock_missing.assert_called_once()
-            args, _kwargs = mock_missing.call_args
-            assert args[0] == user_id
-            assert args[1] == day_before.isoformat()
-            assert args[2] == yesterday.isoformat()
-            from app.models.finance_missing_sync_state import FinanceMissingSyncState
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_missing.assert_called_once()
+        args, _kwargs = mock_missing.call_args
+        assert args[0] == user_id
+        assert args[1] == day_before.isoformat()
+        assert args[2] == yesterday.isoformat()
+        from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
-            state = (
-                session.query(FinanceMissingSyncState)
-                .filter(
-                    FinanceMissingSyncState.user_id == user_id,
-                    FinanceMissingSyncState.date_from == day_before,
-                    FinanceMissingSyncState.date_to == yesterday,
-                )
-                .one()
+        state = (
+            session.query(FinanceMissingSyncState)
+            .filter(
+                FinanceMissingSyncState.user_id == user_id,
+                FinanceMissingSyncState.date_from == day_before,
+                FinanceMissingSyncState.date_to == yesterday,
             )
-            assert state.status == "queued"
+            .one()
+        )
+        assert state.status == "queued"
 
 
 def test_dashboard_state_finance_missing_range_is_deduped_when_running(authenticated_client):
@@ -510,17 +506,15 @@ def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_p
     session.commit()
 
     with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
-        with patch("app.routers.dashboard.sync_finance_backfill_step.delay") as mock_backfill:
-            r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
-            assert r.status_code == 200
-            mock_backfill.assert_not_called()
-            assert mock_missing.called
-            # at least one call should cover the hole_end..hole_start region (order doesn't matter)
-            calls = [c.args for c in mock_missing.call_args_list]
-            assert any(args[1] == hole_start.isoformat() and args[2] == hole_end.isoformat() for args in calls) or any(
-                hole_start.isoformat() <= args[1] <= hole_end.isoformat() or hole_start.isoformat() <= args[2] <= hole_end.isoformat()
-                for args in calls
-            )
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert mock_missing.called
+        # at least one call should cover the hole_end..hole_start region (order doesn't matter)
+        calls = [c.args for c in mock_missing.call_args_list]
+        assert any(args[1] == hole_start.isoformat() and args[2] == hole_end.isoformat() for args in calls) or any(
+            hole_start.isoformat() <= args[1] <= hole_end.isoformat() or hole_start.isoformat() <= args[2] <= hole_end.isoformat()
+            for args in calls
+        )
 
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):
     """Данные из pnl_daily возвращаются через GET /dashboard/pnl без искажений."""
