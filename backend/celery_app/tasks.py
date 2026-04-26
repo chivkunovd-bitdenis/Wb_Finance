@@ -13,6 +13,7 @@ from celery_app.celery import celery_app
 from sqlalchemy import delete, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.core.feature_flags import is_daily_brief_enabled
@@ -724,10 +725,13 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 state.status = "running"
                 db.add(state)
                 db.commit()
-                sync_sales(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
-                sync_ads(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
-                recalculate_pnl.delay(user_id, df, dt)
-                recalculate_sku_daily.delay(user_id, df, dt)
+                # Архив: грузим только если данных за период нет.
+                # Проверяем coverage по pnl_daily (после успешного прохода он есть на каждый день).
+                if not _pnl_daily_covers_range(db, user_id=user_id, start=df_d, end=dt_d):
+                    sync_sales(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                    sync_ads(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                    recalculate_pnl.delay(user_id, df, dt)
+                    recalculate_sku_daily.delay(user_id, df, dt)
                 state.last_completed_date = dt_d
                 state.error_message = None
                 db.add(state)
@@ -1085,6 +1089,29 @@ def _funnel_rolling_window_dates() -> tuple[date, date]:
     end_d = date.today() - timedelta(days=1)
     start_d = end_d - timedelta(days=6)
     return start_d, end_d
+
+
+def _pnl_daily_covers_range(db: Session, *, user_id: str, start: date, end: date) -> bool:
+    """
+    True если pnl_daily уже содержит по одной строке на каждый день в [start, end].
+
+    Для архивного backfill это сигнал "данные уже загружены": повторный запрос в WB за тот же период
+    не даёт пользы и только тратит лимиты.
+    """
+    if start > end:
+        return True
+    expected_days = (end - start).days + 1
+    present_days = (
+        db.query(func.count(func.distinct(PnlDaily.date)))
+        .filter(
+            PnlDaily.user_id == user_id,
+            PnlDaily.date >= start,
+            PnlDaily.date <= end,
+        )
+        .scalar()
+        or 0
+    )
+    return int(present_days) >= int(expected_days)
 
 
 @celery_app.task(name="after_initial_sync_enqueue_funnel")
