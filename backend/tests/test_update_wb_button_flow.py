@@ -138,13 +138,13 @@ def test_update_wb_polling_waits_until_pnl_changes(authenticated_client_with_ses
         patch("celery_app.tasks.fetch_sales", return_value=sales_rows),
         patch("celery_app.tasks.fetch_ads", return_value=ads_rows),
         patch("celery_app.tasks.SessionLocal", return_value=session),
-        patch.object(sync_sales, "delay", return_value=MagicMock(id="sync-sales-queued")),
-        patch.object(sync_ads, "delay", return_value=MagicMock(id="sync-ads-queued")),
+        patch("app.routers.sync.wb_orchestrator_kick", autospec=True) as mock_kick,
         # recalculate.delay выполняем синхронно (чтобы, когда sync_sales/sync_ads закончатся,
         # витрина обновилась сразу внутри теста).
         patch.object(recalculate_pnl, "delay", side_effect=lambda *args, **kwargs: recalculate_pnl(*args, **kwargs)),
         patch.object(recalculate_sku_daily, "delay", side_effect=lambda *args, **kwargs: recalculate_sku_daily(*args, **kwargs)),
     ):
+        mock_kick.delay.return_value = MagicMock(id="orch-kick-queued")
         # "Кнопка": ставим async задачи, но sync ещё не выполнен
         r1 = client.post(
             "/sync/sales",
@@ -192,11 +192,11 @@ def test_update_wb_old_sequence_single_refresh_is_wrong(authenticated_client_wit
         patch("celery_app.tasks.fetch_sales", return_value=sales_rows),
         patch("celery_app.tasks.fetch_ads", return_value=ads_rows),
         patch("celery_app.tasks.SessionLocal", return_value=session),
-        patch.object(sync_sales, "delay", return_value=MagicMock(id="sync-sales-queued")),
-        patch.object(sync_ads, "delay", return_value=MagicMock(id="sync-ads-queued")),
+        patch("app.routers.sync.wb_orchestrator_kick", autospec=True) as mock_kick,
         patch.object(recalculate_pnl, "delay", side_effect=lambda *args, **kwargs: recalculate_pnl(*args, **kwargs)),
         patch.object(recalculate_sku_daily, "delay", side_effect=lambda *args, **kwargs: recalculate_sku_daily(*args, **kwargs)),
     ):
+        mock_kick.delay.return_value = MagicMock(id="orch-kick-queued")
         # async sync задачи не выполняются
         r1 = client.post(
             "/sync/sales",

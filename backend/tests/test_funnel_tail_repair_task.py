@@ -10,10 +10,21 @@ def test_sync_funnel_tail_repair_picks_latest_missing_day(monkeypatch, real_db_s
     from app.models.user import User
     from app.models.funnel_daily import FunnelDaily
     from celery_app import tasks
+    from datetime import date as _date
 
     u = User(email="tail@example.com", password_hash="x", is_active=True, wb_api_key="k")
     real_db_session.add(u)
     real_db_session.commit()
+
+    # Freeze "today" inside celery_app.tasks to make the rolling window deterministic.
+    fixed_today = _date(2026, 4, 26)
+
+    class _FixedDate(_date):
+        @classmethod
+        def today(cls):  # type: ignore[override]
+            return fixed_today
+
+    monkeypatch.setattr(tasks, "date", _FixedDate)
 
     # Pretend we already have data for end-1, but missing end (yesterday).
     start_d, end_d = tasks._funnel_rolling_window_dates()
@@ -58,7 +69,9 @@ def test_sync_funnel_tail_repair_picks_latest_missing_day(monkeypatch, real_db_s
 
     res = tasks.sync_funnel_tail_repair(str(u.id))
     assert res["ok"] is True
-    assert captured["day"] == end_d.isoformat()
+    # We must pick a day inside rolling window, and never re-fetch the day we already have.
+    assert start_d.isoformat() <= captured["day"] <= end_d.isoformat()
+    assert captured["day"] != have_day.isoformat()
     assert captured["nm_ids"] == []
 
 

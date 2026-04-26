@@ -290,9 +290,9 @@ def _get_token(client_sync: TestClient) -> str:
     return r.json()["access_token"]
 
 
-@patch("app.routers.sync.sync_sales")
-def test_sync_sales_for_non_owner_returns_403(mock_sync_sales, client_sync_granted: TestClient):
-    mock_sync_sales.delay.return_value = MagicMock(id="task-sales-should-not-run")
+@patch("app.routers.sync.wb_orchestrator_kick")
+def test_sync_sales_for_non_owner_returns_403(mock_kick, client_sync_granted: TestClient):
+    mock_kick.delay.return_value = MagicMock(id="task-orch-sales-should-not-run")
     token = _get_token(client_sync_granted)
     r = client_sync_granted.post(
         "/sync/sales",
@@ -300,12 +300,12 @@ def test_sync_sales_for_non_owner_returns_403(mock_sync_sales, client_sync_grant
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
-    mock_sync_sales.delay.assert_called_once()
+    mock_kick.delay.assert_called_once()
 
 
-@patch("app.routers.sync.sync_sales")
-def test_sync_sales_returns_202_and_task_id(mock_sync_sales, client_sync: TestClient):
-    mock_sync_sales.delay.return_value = MagicMock(id="task-sales-123")
+@patch("app.routers.sync.wb_orchestrator_kick")
+def test_sync_sales_returns_202_and_task_id(mock_kick, client_sync: TestClient):
+    mock_kick.delay.return_value = MagicMock(id="task-orch-123")
     token = _get_token(client_sync)
     r = client_sync.post(
         "/sync/sales",
@@ -314,17 +314,17 @@ def test_sync_sales_returns_202_and_task_id(mock_sync_sales, client_sync: TestCl
     )
     assert r.status_code == 200
     data = r.json()
-    assert data["task_id"] == "task-sales-123"
-    mock_sync_sales.delay.assert_called_once()
-    call_args = mock_sync_sales.delay.call_args[0]
+    assert data["task_id"] == "task-orch-123"
+    mock_kick.delay.assert_called_once()
+    call_args = mock_kick.delay.call_args[0]
     assert call_args[0] == "sync-user-id"
-    assert call_args[1] == "2025-03-01"
-    assert call_args[2] == "2025-03-05"
+    assert call_args[1]["high"]["finance_range"]["date_from"] == "2025-03-01"
+    assert call_args[1]["high"]["finance_range"]["date_to"] == "2025-03-05"
 
 
-@patch("app.routers.sync.sync_ads")
-def test_sync_ads_returns_200_and_task_id(mock_sync_ads, client_sync: TestClient):
-    mock_sync_ads.delay.return_value = MagicMock(id="task-ads-456")
+@patch("app.routers.sync.wb_orchestrator_kick")
+def test_sync_ads_returns_200_and_task_id(mock_kick, client_sync: TestClient):
+    mock_kick.delay.return_value = MagicMock(id="task-orch-ads-456")
     token = _get_token(client_sync)
     r = client_sync.post(
         "/sync/ads",
@@ -333,13 +333,13 @@ def test_sync_ads_returns_200_and_task_id(mock_sync_ads, client_sync: TestClient
     )
     assert r.status_code == 200
     data = r.json()
-    assert data["task_id"] == "task-ads-456"
-    mock_sync_ads.delay.assert_called_once()
+    assert data["task_id"] == "task-orch-ads-456"
+    mock_kick.delay.assert_called_once()
 
 
-@patch("app.routers.sync.sync_funnel")
-def test_sync_funnel_returns_200_and_task_id(mock_sync_funnel, client_sync: TestClient):
-    mock_sync_funnel.delay.return_value = MagicMock(id="task-funnel-789")
+@patch("app.routers.sync.wb_orchestrator_kick")
+def test_sync_funnel_returns_200_and_task_id(mock_kick, client_sync: TestClient):
+    mock_kick.delay.return_value = MagicMock(id="task-orch-funnel-789")
     token = _get_token(client_sync)
     r = client_sync.post(
         "/sync/funnel",
@@ -348,23 +348,19 @@ def test_sync_funnel_returns_200_and_task_id(mock_sync_funnel, client_sync: Test
     )
     assert r.status_code == 200
     data = r.json()
-    assert data["task_id"] == "task-funnel-789"
-    mock_sync_funnel.delay.assert_called_once()
-    # Без дат — передаются None, None (дефолтное окно 7 дней в задаче)
-    call_args = mock_sync_funnel.delay.call_args[0]
+    assert data["task_id"] == "task-orch-funnel-789"
+    mock_kick.delay.assert_called_once()
+    call_args = mock_kick.delay.call_args[0]
     assert call_args[0] == "sync-user-id"
-    assert call_args[1] is None
-    assert call_args[2] is None
+    assert call_args[1]["high"]["funnel_tail"] is True
 
 
-@patch("app.routers.sync.sync_ads")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 def test_sync_period_enqueues_sales_only(
-    mock_sync_sales,
-    mock_sync_ads,
+    mock_kick,
     client_sync: TestClient,
 ):
-    mock_sync_sales.delay.return_value = MagicMock(id="task-period-sales")
+    mock_kick.delay.return_value = MagicMock(id="task-orch-period")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -373,10 +369,8 @@ def test_sync_period_enqueues_sales_only(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
-    assert r.json()["task_id"] == "task-period-sales"
-
-    mock_sync_sales.delay.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-07")
-    mock_sync_ads.delay.assert_not_called()
+    assert r.json()["task_id"] == "task-orch-period"
+    mock_kick.delay.assert_called_once()
 
 
 @patch("app.routers.sync.sync_funnel_ytd_step")
@@ -396,9 +390,8 @@ def test_sync_funnel_backfill_ytd_enqueues_task(mock_ytd, client_sync: TestClien
     assert isinstance(year, int)
 
 
-@patch("app.routers.sync.sync_funnel")
-def test_sync_funnel_with_dates_passes_to_task(mock_sync_funnel, client_sync: TestClient):
-    mock_sync_funnel.delay.return_value = MagicMock(id="task-funnel-dates")
+def test_sync_funnel_with_dates_passes_to_task(client_sync: TestClient):
+    # Оркестратор чинит только rolling хвост, явные даты для funnel не принимаем.
     token = _get_token(client_sync)
     r = client_sync.post(
         "/sync/funnel",
@@ -406,9 +399,6 @@ def test_sync_funnel_with_dates_passes_to_task(mock_sync_funnel, client_sync: Te
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
-    mock_sync_funnel.delay.assert_called_once_with(
-        "sync-user-id", "2025-03-01", "2025-03-07"
-    )
 
 
 @patch("app.routers.sync.recalculate_sku_daily")
@@ -429,20 +419,14 @@ def test_sync_recalculate_queues_both_tasks(mock_recalculate_pnl, mock_recalcula
     mock_recalculate_sku_daily.delay.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-10")
 
 
-@patch("app.routers.sync.after_initial_sync_enqueue_funnel")
-@patch("app.routers.sync.chord")
-@patch("app.routers.sync.sync_ads")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 @patch("app.routers.sync.date")
 def test_sync_initial_uses_last_30_days(
     mock_date,
-    mock_sync_sales,
-    mock_sync_ads,
-    mock_chord,
-    mock_after_funnel,
+    mock_kick,
     client_sync: TestClient,
 ):
-    """Проверяем, что /sync/initial сначала ставит sales, а воронку — только после sales."""
+    """Проверяем, что /sync/initial запрашивает оркестратор на последние 30 дней."""
     # today = 2025‑03‑31 -> date_to = 2025‑03‑30, date_from = 2025‑03‑01
     mock_date.today.return_value = date(2025, 3, 31)
 
@@ -450,9 +434,7 @@ def test_sync_initial_uses_last_30_days(
         return date(*args, **kwargs)
 
     mock_date.side_effect = _date_ctor
-
-    mock_async_result = MagicMock(id="task-initial-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_async_result)
+    mock_kick.delay.return_value = MagicMock(id="task-orch-initial")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -461,16 +443,13 @@ def test_sync_initial_uses_last_30_days(
     )
     assert r.status_code == 200
     data = r.json()
-    assert data["task_id"] == "task-initial-chord"
-
-    mock_sync_sales.delay.assert_not_called()
-    mock_sync_ads.delay.assert_not_called()
-    mock_sync_sales.s.assert_called_once_with("sync-user-id", "2025-03-01", "2025-03-30")
-    mock_sync_ads.s.assert_not_called()
-    mock_chord.assert_called_once()
-    header = mock_chord.call_args[0][0]
-    assert len(header) == 1
-    mock_after_funnel.s.assert_called_once_with("sync-user-id")
+    assert data["task_id"] == "task-orch-initial"
+    mock_kick.delay.assert_called_once()
+    uid, payload = mock_kick.delay.call_args[0]
+    assert uid == "sync-user-id"
+    assert payload["high"]["finance_range"]["date_from"] == "2025-03-01"
+    assert payload["high"]["finance_range"]["date_to"] == "2025-03-30"
+    assert payload["high"]["funnel_tail"] is True
 
 
 def test_sync_initial_without_wb_key_returns_400(client_sync_no_key: TestClient):
@@ -483,17 +462,11 @@ def test_sync_initial_without_wb_key_returns_400(client_sync_no_key: TestClient)
     assert "WB API" in (r.json().get("detail") or "")
 
 
-@patch("app.routers.sync.after_period_sync_enqueue_funnel")
-@patch("app.routers.sync.chord")
-@patch("app.routers.sync.sync_ads")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 @patch("app.routers.sync.date")
 def test_sync_recent_updates_last_7_days(
     mock_date,
-    mock_sync_sales,
-    mock_sync_ads,
-    mock_chord,
-    mock_after_period,
+    mock_kick,
     client_sync: TestClient,
 ):
     """
@@ -508,8 +481,7 @@ def test_sync_recent_updates_last_7_days(
 
     mock_date.side_effect = _date_ctor
 
-    mock_async_result = MagicMock(id="task-recent-chord")
-    mock_chord.return_value = MagicMock(return_value=mock_async_result)
+    mock_kick.delay.return_value = MagicMock(id="task-orch-recent")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -518,22 +490,18 @@ def test_sync_recent_updates_last_7_days(
     )
     assert r.status_code == 200
     data = r.json()
-    assert data["task_id"] == "task-recent-chord"
-
-    # Проверяем вычисление дат окна 7 дней
-    mock_sync_sales.delay.assert_not_called()
-    mock_sync_ads.delay.assert_not_called()
-    mock_sync_sales.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
-    mock_sync_ads.s.assert_not_called()
-    mock_after_period.s.assert_called_once_with("sync-user-id", "2025-04-01", "2025-04-07")
-    mock_chord.assert_called_once()
+    assert data["task_id"] == "task-orch-recent"
+    mock_kick.delay.assert_called_once()
+    uid, payload = mock_kick.delay.call_args[0]
+    assert uid == "sync-user-id"
+    assert payload["high"]["finance_range"]["date_from"] == "2025-04-01"
+    assert payload["high"]["finance_range"]["date_to"] == "2025-04-07"
+    assert payload["high"]["funnel_tail"] is True
 
 
-@patch("app.routers.sync.chord")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 def test_sync_recent_does_not_enqueue_sales_when_wb_retry_scheduled(
-    mock_sync_sales,
-    mock_chord,
+    mock_kick,
     client_sync_sales_retry_scheduled: TestClient,
 ):
     """
@@ -549,16 +517,12 @@ def test_sync_recent_does_not_enqueue_sales_when_wb_retry_scheduled(
     data = r.json()
     assert data["task_id"] == "wb-sales-retry-scheduled"
     assert "WB sales" in data["message"]
-    mock_sync_sales.s.assert_not_called()
-    mock_sync_sales.delay.assert_not_called()
-    mock_chord.assert_not_called()
+    mock_kick.delay.assert_not_called()
 
 
-@patch("app.routers.sync.chord")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 def test_sync_recent_does_not_enqueue_sales_when_recent_sync_queued(
-    mock_sync_sales,
-    mock_chord,
+    mock_kick,
     client_sync_sales_running: TestClient,
 ):
     """Повторный быстрый вход не должен ставить второй sync_sales, пока первый уже queued/running."""
@@ -571,20 +535,14 @@ def test_sync_recent_does_not_enqueue_sales_when_recent_sync_queued(
     data = r.json()
     assert data["task_id"] == "wb-sales-retry-scheduled"
     assert "уже поставлен или выполняется" in data["message"]
-    mock_sync_sales.s.assert_not_called()
-    mock_sync_sales.delay.assert_not_called()
-    mock_chord.assert_not_called()
+    mock_kick.delay.assert_not_called()
 
 
-@patch("app.routers.sync.sync_funnel")
-@patch("app.routers.sync.sync_ads")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 @patch("app.routers.sync.date")
 def test_sync_backfill_2026_enqueues_sales_month_chunks_only(
     mock_date,
-    mock_sync_sales,
-    mock_sync_ads,
-    mock_sync_funnel,
+    mock_kick,
     client_sync: TestClient,
 ):
     """
@@ -600,12 +558,7 @@ def test_sync_backfill_2026_enqueues_sales_month_chunks_only(
 
     mock_date.side_effect = _date_ctor
 
-    # Для удобства — разные id
-    mock_sync_sales.delay.side_effect = [
-        MagicMock(id="sales-jan"),
-        MagicMock(id="sales-feb"),
-        MagicMock(id="sales-mar"),
-    ]
+    mock_kick.delay.return_value = MagicMock(id="task-orch-bf-2026")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -615,36 +568,20 @@ def test_sync_backfill_2026_enqueues_sales_month_chunks_only(
     assert r.status_code == 200
     data = r.json()
     assert "task_ids" in data and isinstance(data["task_ids"], list)
-
-    # Янв 2026
-    # Фев 2026
-    # Мар 2026 (до 04 числа)
-    expected_calls = [
-        ("sync-user-id", "2026-01-01", "2026-01-31"),
-        ("sync-user-id", "2026-02-01", "2026-02-28"),
-        ("sync-user-id", "2026-03-01", "2026-03-04"),
-    ]
-    assert [c.args for c in mock_sync_sales.delay.call_args_list] == expected_calls
-    mock_sync_ads.delay.assert_not_called()
-    mock_sync_funnel.delay.assert_not_called()
-
-    # Возвращаемый список task_ids содержит только sales chunks.
-    assert data["task_ids"] == [
-        "sales-jan",
-        "sales-feb",
-        "sales-mar",
-    ]
+    mock_kick.delay.assert_called_once()
+    uid, payload = mock_kick.delay.call_args[0]
+    assert uid == "sync-user-id"
+    assert payload["low"]["finance_backfill_year"] == 2026
+    assert data["task_ids"] == ["task-orch-bf-2026"]
 
 
-@patch("app.routers.sync.sync_ads")
-@patch("app.routers.sync.sync_sales")
+@patch("app.routers.sync.wb_orchestrator_kick")
 def test_sync_backfill_2025_enqueues_twelve_months(
-    mock_sync_sales,
-    mock_sync_ads,
+    mock_kick,
     client_sync: TestClient,
 ):
-    """POST /sync/backfill/2025 ставит в очередь только продажи по каждому месяцу 2025."""
-    mock_sync_sales.delay.return_value = MagicMock(id="s1")
+    """POST /sync/backfill/2025 запрашивает backfill через оркестратор (без fan-out)."""
+    mock_kick.delay.return_value = MagicMock(id="task-orch-bf-2025")
 
     token = _get_token(client_sync)
     r = client_sync.post(
@@ -654,13 +591,11 @@ def test_sync_backfill_2025_enqueues_twelve_months(
     assert r.status_code == 200
     data = r.json()
     assert "task_ids" in data and isinstance(data["task_ids"], list)
-    # 12 месяцев × sales = 12 вызовов
-    assert mock_sync_sales.delay.call_count == 12
-    assert mock_sync_ads.delay.call_count == 0
-    sales_calls = [c.args for c in mock_sync_sales.delay.call_args_list]
-    assert sales_calls[0] == ("sync-user-id", "2025-01-01", "2025-01-31")
-    assert sales_calls[11] == ("sync-user-id", "2025-12-01", "2025-12-31")
-    assert len(data["task_ids"]) == 12
+    mock_kick.delay.assert_called_once()
+    uid, payload = mock_kick.delay.call_args[0]
+    assert uid == "sync-user-id"
+    assert payload["low"]["finance_backfill_year"] == 2025
+    assert data["task_ids"] == ["task-orch-bf-2025"]
 
 
 def test_sync_backfill_2025_without_wb_key_returns_400(client_sync_no_key: TestClient):

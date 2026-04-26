@@ -4,6 +4,7 @@ Celery-задачи: синк с WB и пересчёт P&L.
 import logging
 import random
 import time
+import uuid
 from datetime import date, timedelta, datetime, timezone
 from typing import cast
 
@@ -24,6 +25,7 @@ from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.funnel_rolling_sync_state import FunnelRollingSyncState
 from app.models.finance_backfill_state import FinanceBackfillState
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
+from app.models.wb_orchestrator_state import WbOrchestratorState
 from app.models.pnl_daily import PnlDaily
 from app.models.operational_expense import OperationalExpense
 from app.models.sku_daily import SkuDaily
@@ -53,6 +55,9 @@ FUNNEL_YTD_HTTP_RETRY_CODES = {429, 500, 502, 503, 504}
 # Tail-repair: строго 1 запрос/день, шаг не чаще лимита WB (20 сек).
 FUNNEL_TAIL_STEP_DELAY_SEC = 25
 FUNNEL_TAIL_SINGLE_FLIGHT_SEC = 120
+
+# Orchestrator pacing: keep WB requests spaced even after cooldown.
+ORCH_STEP_DELAY_SEC = 20
 
 # WB иногда возвращает реальное окно "когда можно снова" через заголовки.
 # В логах это видно как reset_sec=... (X-RateLimit-Reset). Значение может быть часами.
@@ -362,6 +367,339 @@ def _build_desc_month_chunk(cursor: date, year_start: date) -> tuple[date, date]
     if start < year_start:
         start = year_start
     return start, cursor
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _parse_iso_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _intents_merge(intents: dict, patch: dict) -> dict:
+    """
+    Shallow merge for orchestrator intents.
+    - dict keys are merged recursively
+    - lists are unioned (unique, stable order)
+    - scalars are overwritten
+    """
+    out = dict(intents or {})
+    for k, v in (patch or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _intents_merge(out[k], v)
+        elif isinstance(v, list) and isinstance(out.get(k), list):
+            seen = set()
+            merged = []
+            for x in out[k] + v:
+                key = str(x)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(x)
+            out[k] = merged
+        else:
+            out[k] = v
+    return out
+
+
+def _ensure_orch_state(db, *, user_id: str) -> WbOrchestratorState:
+    st = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
+    if st is None:
+        st = WbOrchestratorState(user_id=user_id, status="idle", intents={})
+        db.add(st)
+        db.commit()
+        db.refresh(st)
+    return st
+
+
+@celery_app.task(name="wb_orchestrator_kick")
+def wb_orchestrator_kick(user_id: str, intents_patch: dict | None = None) -> dict:
+    """
+    External triggers call this task instead of fanning out WB calls.
+    It only updates intents and schedules a single orchestrator tick.
+    """
+    db = SessionLocal()
+    try:
+        st = _ensure_orch_state(db, user_id=user_id)
+        st.intents = _intents_merge(cast(dict, st.intents or {}), cast(dict, intents_patch or {}))
+        # schedule tick if idle; if running, it will pick up intents on next loop
+        if st.status == "idle":
+            st.status = "scheduled"
+            db.add(st)
+            db.commit()
+            wb_orchestrator_tick.delay(user_id)
+        else:
+            db.add(st)
+            db.commit()
+        return {"ok": True, "status": st.status}
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def _orch_set_cooldown(db, st: WbOrchestratorState, *, until: datetime, reason: str) -> None:
+    st.cooldown_until = _iso_utc(until)
+    st.status = "cooldown"
+    st.last_step = reason[:300]
+    db.add(st)
+    db.commit()
+
+
+def _orch_finance_missing_step(db, *, user_id: str, date_from: str, date_to: str) -> dict:
+    # Reuse existing state table for UI messaging and to keep /dashboard/state stable.
+    df_d = date.fromisoformat(date_from)
+    dt_d = date.fromisoformat(date_to)
+    row = (
+        db.query(FinanceMissingSyncState)
+        .filter(
+            FinanceMissingSyncState.user_id == user_id,
+            FinanceMissingSyncState.date_from == df_d,
+            FinanceMissingSyncState.date_to == dt_d,
+        )
+        .first()
+    )
+    if row is None:
+        row = FinanceMissingSyncState(user_id=user_id, date_from=df_d, date_to=dt_d, status="running")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    else:
+        row.status = "running"
+        row.next_run_at = None
+        row.error_message = None
+        db.add(row)
+        db.commit()
+
+    # single WB call (sales) for the range
+    sync_sales(user_id, date_from, date_to, schedule_retry=False, enqueue_recalc=False)
+    # best-effort ads: do not block finance tail on ads 429
+    try:
+        sync_ads(user_id, date_from, date_to, schedule_retry=False, enqueue_recalc=False)
+    except requests.HTTPError:
+        pass
+
+    recalculate_pnl.delay(user_id, date_from, date_to)
+    recalculate_sku_daily.delay(user_id, date_from, date_to)
+
+    row.status = "complete"
+    row.next_run_at = None
+    row.error_message = None
+    row.last_http_code = None
+    db.add(row)
+    db.commit()
+    return {"ok": True, "message": "complete", "range": f"{date_from}..{date_to}"}
+
+
+def _orch_funnel_tail_step(db, *, user_id: str) -> dict:
+    """
+    Repair funnel only for rolling 7 days, one WB request per tick (one day).
+    """
+    start_d, end_d = _funnel_rolling_window_dates()
+    present_dates = {
+        d
+        for (d,) in (
+            db.query(FunnelDaily.date)
+            .filter(FunnelDaily.user_id == user_id, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
+            .distinct()
+            .all()
+        )
+    }
+    window_days = [start_d + timedelta(days=i) for i in range((end_d - start_d).days + 1)]
+    missing = [d for d in window_days if d not in present_dates]
+    if not missing:
+        return {"ok": True, "message": "complete"}
+    day_d = max(missing)
+    day = day_d.isoformat()
+
+    user = db.get(User, user_id)
+    assert user is not None
+    key = user.wb_api_key.strip()
+    rows = fetch_funnel_products_for_day(day, [], key)
+    _funnel_insert_only(db, rows, user_id=user_id)
+    db.commit()
+    # refresh sku view for that day
+    recalculate_sku_daily.delay(user_id, day, day)
+    return {"ok": True, "message": "step_ok", "day": day, "missing_left": max(0, len(missing) - 1)}
+
+
+@celery_app.task(name="wb_orchestrator_tick")
+def wb_orchestrator_tick(user_id: str) -> dict:
+    """
+    Single per-user orchestrator that:
+    - enforces global cooldown after 429 based on WB headers
+    - executes one step per tick (pacing), prioritizing high lane
+    - avoids fan-out tasks and self-retry storms
+    """
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id)
+        if not user:
+            return {"ok": False, "error": "user_not_found"}
+        if not user.wb_api_key or not user.wb_api_key.strip():
+            return {"ok": False, "error": "no_wb_api_key"}
+
+        st = _ensure_orch_state(db, user_id=user_id)
+
+        # single-flight: if another tick recently marked running, do nothing
+        if st.status == "running" and st.updated_at is not None:
+            updated = st.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if (_utcnow() - updated).total_seconds() < 30:
+                return {"ok": True, "message": "already_running"}
+
+        now_dt = _utcnow()
+        cooldown_dt = _parse_iso_utc(st.cooldown_until)
+        if cooldown_dt is not None and cooldown_dt > now_dt:
+            st.status = "cooldown"
+            db.add(st)
+            db.commit()
+            delay = int((cooldown_dt - now_dt).total_seconds())
+            wb_orchestrator_tick.apply_async(args=[user_id], countdown=max(1, delay))
+            return {"ok": True, "message": "cooldown", "delay_sec": delay}
+
+        st.status = "running"
+        db.add(st)
+        db.commit()
+
+        intents = cast(dict, st.intents or {})
+        high = cast(dict, intents.get("high") or {})
+        low = cast(dict, intents.get("low") or {})
+
+        try:
+            # High lane 1: finance missing range (explicit)
+            fr = high.get("finance_range")
+            if isinstance(fr, dict) and fr.get("date_from") and fr.get("date_to"):
+                df = str(fr["date_from"])
+                dt = str(fr["date_to"])
+                res = _orch_finance_missing_step(db, user_id=user_id, date_from=df, date_to=dt)
+                high.pop("finance_range", None)
+                st.last_step = f"finance_missing {df}..{dt}"
+                st.intents = _intents_merge(intents, {"high": high})
+                st.status = "idle"
+                st.cooldown_until = None
+                db.add(st)
+                db.commit()
+                # If more work exists, schedule next tick with pacing.
+                if (high or low):
+                    wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
+                return {"ok": True, "step": res}
+
+            # High lane 2: funnel tail repair
+            if high.get("funnel_tail") is True:
+                res = _orch_funnel_tail_step(db, user_id=user_id)
+                st.last_step = f"funnel_tail {res.get('day') or ''}".strip()
+                # keep intent until complete
+                if res.get("message") == "complete":
+                    high.pop("funnel_tail", None)
+                st.intents = _intents_merge(intents, {"high": high})
+                st.status = "idle"
+                st.cooldown_until = None
+                db.add(st)
+                db.commit()
+                if (high or low) or (res.get("missing_left", 0) > 0):
+                    wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
+                return {"ok": True, "step": res}
+
+            # Low lane: finance backfill via existing FinanceBackfillState, one month per tick
+            backfill_year = low.get("finance_backfill_year")
+            if backfill_year in {2025, 2026}:
+                y = int(backfill_year)
+                # ensure state exists
+                state = (
+                    db.query(FinanceBackfillState)
+                    .filter(FinanceBackfillState.user_id == user_id, FinanceBackfillState.calendar_year == y)
+                    .first()
+                )
+                if not state:
+                    state = FinanceBackfillState(user_id=user_id, calendar_year=y, status="idle")
+                    db.add(state)
+                    db.commit()
+                    db.refresh(state)
+                year_start = date(y, 1, 1)
+                year_end_cap = date(y, 12, 31)
+                yesterday = date.today() - timedelta(days=1)
+                through = yesterday if yesterday <= year_end_cap else year_end_cap
+                cursor = through if state.last_completed_date is None else (state.last_completed_date - timedelta(days=1))
+                if cursor < year_start:
+                    state.status = "complete"
+                    state.error_message = None
+                    db.add(state)
+                    db.commit()
+                    if y == 2026:
+                        low["finance_backfill_year"] = 2025
+                    else:
+                        low.pop("finance_backfill_year", None)
+                    st.intents = _intents_merge(intents, {"low": low})
+                    st.status = "idle"
+                    st.cooldown_until = None
+                    st.last_step = f"finance_backfill_{y} complete"
+                    db.add(st)
+                    db.commit()
+                    if (high or low):
+                        wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
+                    return {"ok": True, "step": {"message": "complete", "year": y}}
+
+                df_d, dt_d = _build_desc_month_chunk(cursor=cursor, year_start=year_start)
+                df = df_d.isoformat()
+                dt = dt_d.isoformat()
+                state.status = "running"
+                db.add(state)
+                db.commit()
+                sync_sales(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                sync_ads(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                recalculate_pnl.delay(user_id, df, dt)
+                recalculate_sku_daily.delay(user_id, df, dt)
+                state.last_completed_date = dt_d
+                state.error_message = None
+                db.add(state)
+                db.commit()
+                st.last_step = f"finance_backfill_{y} {df}..{dt}"
+                st.status = "idle"
+                st.cooldown_until = None
+                db.add(st)
+                db.commit()
+                wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
+                return {"ok": True, "step": {"year": y, "chunk": {"date_from": df, "date_to": dt}}}
+
+            # Nothing to do
+            st.status = "idle"
+            st.cooldown_until = None
+            db.add(st)
+            db.commit()
+            return {"ok": True, "message": "idle"}
+
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+                delay = _retry_http_delay_with_headers(int(code), 1, exc.response)
+                until = now_dt + timedelta(seconds=delay)
+                _orch_set_cooldown(db, st, until=until, reason=f"wb_http_{code}")
+                wb_orchestrator_tick.apply_async(args=[user_id], countdown=delay)
+                return {"ok": False, "error": "wb_retry_scheduled", "http_code": int(code), "delay_sec": delay}
+            raise
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
 
 
 def _ensure_articles_from_raw(db, user_id: str, start: date, end: date, subject_by_nm: dict[int, str | None] | None = None) -> int:
@@ -890,9 +1228,10 @@ def sync_funnel_tail_repair(user_id: str, retry_raw: str | None = None) -> dict:
         if not user.wb_api_key or not user.wb_api_key.strip():
             return {"ok": False, "error": "no_wb_api_key"}
 
-        state = db.query(FunnelRollingSyncState).filter(FunnelRollingSyncState.user_id == user_id).first()
+        uid = uuid.UUID(str(user_id))
+        state = db.query(FunnelRollingSyncState).filter(FunnelRollingSyncState.user_id == uid).first()
         if not state:
-            state = FunnelRollingSyncState(user_id=user_id, status="idle")
+            state = FunnelRollingSyncState(user_id=uid, status="idle")
             db.add(state)
             db.commit()
             db.refresh(state)
@@ -911,7 +1250,7 @@ def sync_funnel_tail_repair(user_id: str, retry_raw: str | None = None) -> dict:
             d
             for (d,) in (
                 db.query(FunnelDaily.date)
-                .filter(FunnelDaily.user_id == user_id, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
+                .filter(FunnelDaily.user_id == uid, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
                 .distinct()
                 .all()
             )

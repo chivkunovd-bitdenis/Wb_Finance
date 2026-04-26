@@ -21,6 +21,7 @@ from app.models.promo_code import PromoCode
 from app.models.monthly_plan import MonthlyPlan
 from app.models.store_access_grant import StoreAccessGrant
 from app.models.store_access_audit_event import StoreAccessAuditEvent
+from app.models.wb_orchestrator_state import WbOrchestratorState
 
 __all__ = [
     "Base",
@@ -46,4 +47,5 @@ __all__ = [
     "MonthlyPlan",
     "StoreAccessGrant",
     "StoreAccessAuditEvent",
+    "WbOrchestratorState",
 ]

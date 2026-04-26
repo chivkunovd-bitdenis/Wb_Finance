@@ -23,14 +23,10 @@ from sqlalchemy.orm import Session
 
 # Импорт задачи Celery — по имени, чтобы воркер видел ту же задачу
 from celery_app.tasks import (
-    after_initial_sync_enqueue_funnel,
-    after_period_sync_enqueue_funnel,
-    sync_sales,
-    sync_ads,
-    sync_funnel,
     sync_funnel_ytd_step,
     recalculate_pnl,
     recalculate_sku_daily,
+    wb_orchestrator_kick,
 )
 from app.services.store_access_service import StoreContext
 
@@ -187,19 +183,19 @@ def trigger_sync_sales(
     body: SyncSalesRequest,
     store_ctx: StoreContext = Depends(get_store_context),
 ):
-    """Поставить в очередь задачу синхронизации продаж с WB за период."""
+    """Запросить синхронизацию продаж с WB за период (через оркестратор)."""
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
+    user_id = str(store_user.id)
     result = _delay_or_503(
-        sync_sales,
-        "sync_sales",
-        str(store_user.id),
-        body.date_from,
-        body.date_to,
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_sales",
+        user_id,
+        {"high": {"finance_range": {"date_from": body.date_from, "date_to": body.date_to}}},
     )
     return SyncTaskResponse(
-        task_id=result.id,
-        message="Задача синхронизации продаж поставлена в очередь.",
+        task_id=getattr(result, "id", "orchestrator"),
+        message="Запрошена синхронизация продаж (оркестратор).",
     )
 
 
@@ -208,19 +204,19 @@ def trigger_sync_ads(
     body: SyncSalesRequest,
     store_ctx: StoreContext = Depends(get_store_context),
 ):
-    """Поставить в очередь задачу синхронизации рекламы с WB за период."""
+    """Запросить синхронизацию рекламы с WB за период (через оркестратор)."""
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
+    user_id = str(store_user.id)
     result = _delay_or_503(
-        sync_ads,
-        "sync_ads",
-        str(store_user.id),
-        body.date_from,
-        body.date_to,
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_ads",
+        user_id,
+        {"high": {"finance_range": {"date_from": body.date_from, "date_to": body.date_to}}},
     )
     return SyncTaskResponse(
-        task_id=result.id,
-        message="Задача синхронизации рекламы поставлена в очередь.",
+        task_id=getattr(result, "id", "orchestrator"),
+        message="Запрошена синхронизация рекламы (оркестратор).",
     )
 
 
@@ -229,15 +225,19 @@ def trigger_sync_funnel(
     body: SyncFunnelRequest | None = Body(None),
     store_ctx: StoreContext = Depends(get_store_context),
 ):
-    """Поставить в очередь задачу синхронизации воронки. Период опционален — по умолчанию последние 7 дней."""
+    """Запросить починку хвоста воронки (последние 7 дней) через оркестратор."""
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
-    if body is None:
-        body = SyncFunnelRequest()
-    result = _delay_or_503(sync_funnel, "sync_funnel", str(store_user.id), body.date_from, body.date_to)
+    user_id = str(store_user.id)
+    result = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_funnel_tail",
+        user_id,
+        {"high": {"funnel_tail": True}},
+    )
     return SyncTaskResponse(
-        task_id=result.id,
-        message="Задача синхронизации воронки поставлена в очередь.",
+        task_id=getattr(result, "id", "orchestrator"),
+        message="Запрошена починка хвоста воронки (оркестратор).",
     )
 
 
@@ -254,10 +254,16 @@ def trigger_sync_period(
     """
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
-    result = _delay_or_503(sync_sales, "sync_period_sales", str(store_user.id), body.date_from, body.date_to)
+    user_id = str(store_user.id)
+    result = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_period",
+        user_id,
+        {"high": {"finance_range": {"date_from": body.date_from, "date_to": body.date_to}}},
+    )
     return SyncTaskResponse(
-        task_id=result.id,
-        message="Синхронизация финансового периода поставлена в очередь (sales).",
+        task_id=getattr(result, "id", "orchestrator"),
+        message="Запрошена синхронизация финансового периода (оркестратор).",
     )
 
 
@@ -345,16 +351,24 @@ def trigger_initial_sync(
     dt = date_to.isoformat()
 
     user_id = str(store_user.id)
-    # chord: нельзя .delay(sync_funnel) сразу — воронке нужны articles из sales.
-    async_result = _chord_or_503(
-        [sync_sales.s(user_id, df, dt)],
-        after_initial_sync_enqueue_funnel.s(user_id),
-        context="sync_initial",
+    async_result = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_initial",
+        user_id,
+        {
+            "high": {
+                "finance_range": {"date_from": df, "date_to": dt},
+                "funnel_tail": True,
+            },
+            "low": {
+                "finance_backfill_year": 2026,
+            },
+        },
     )
 
     return SyncTaskResponse(
-        task_id=async_result.id,
-        message=f"Первая синхронизация поставлена в очередь: {df} — {dt} (затем воронка).",
+        task_id=getattr(async_result, "id", "orchestrator"),
+        message=f"Первая синхронизация запрошена через оркестратор: {df} — {dt} (и хвост воронки).",
     )
 
 
@@ -383,20 +397,21 @@ def trigger_recent_sync(
     dt = date_to.isoformat()
 
     user_id = str(store_user.id)
+    # Оставляем UI-блокировку как подсказку пользователю, но фактический ретрай теперь централизован.
     blocked = _sales_retry_block_message(db, user_id=user_id, date_from=df, date_to=dt)
     if blocked is not None:
         return SyncTaskResponse(task_id="wb-sales-retry-scheduled", message=blocked)
     _reserve_sales_sync_state(db, user_id=user_id, date_from=df, date_to=dt)
-
-    async_result = _chord_or_503(
-        [sync_sales.s(user_id, df, dt)],
-        after_period_sync_enqueue_funnel.s(user_id, df, dt),
-        context="sync_recent",
+    async_result = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_recent",
+        user_id,
+        {"high": {"finance_range": {"date_from": df, "date_to": dt}, "funnel_tail": True}},
     )
 
     return SyncTaskResponse(
-        task_id=async_result.id,
-        message=f"Автосинхронизация последних 7 дней поставлена в очередь: {df} — {dt}.",
+        task_id=getattr(async_result, "id", "orchestrator"),
+        message=f"Автосинхронизация последних 7 дней запрошена через оркестратор: {df} — {dt}.",
     )
 
 
@@ -423,15 +438,15 @@ def trigger_backfill_2026(
         )
 
     user_id = str(store_user.id)
-    chunks = _month_chunks(date_from, date_to)
-    task_ids: list[str] = []
-    for df, dt in chunks:
-        r1 = _delay_or_503(sync_sales, "backfill_2026_sales", user_id, df, dt)
-        task_ids.append(r1.id)
-
+    r = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_backfill_2026",
+        user_id,
+        {"low": {"finance_backfill_year": 2026}},
+    )
     return SyncBatchResponse(
-        task_ids=task_ids,
-        message=f"Догрузка финансов 2026 поставлена в очередь ({len(chunks)} мес.): 2026-01-01 — {date_to.isoformat()}",
+        task_ids=[getattr(r, "id", "orchestrator")],
+        message=f"Догрузка финансов 2026 запрошена через оркестратор: 2026-01-01 — {date_to.isoformat()}",
     )
 
 
@@ -445,17 +460,16 @@ def trigger_backfill_2025(
     """
     store_user = store_ctx.store_owner
     _require_wb_key(store_user)
-    date_from = date(2025, 1, 1)
-    date_to = date(2025, 12, 31)
     user_id = str(store_user.id)
-    chunks = _month_chunks(date_from, date_to)
-    task_ids: list[str] = []
-    for df, dt in chunks:
-        r1 = _delay_or_503(sync_sales, "backfill_2025_sales", user_id, df, dt)
-        task_ids.append(r1.id)
+    r = _delay_or_503(
+        wb_orchestrator_kick,
+        "wb_orchestrator_kick_backfill_2025",
+        user_id,
+        {"low": {"finance_backfill_year": 2025}},
+    )
     return SyncBatchResponse(
-        task_ids=task_ids,
-        message=f"Догрузка финансового архива 2025 поставлена в очередь ({len(chunks)} мес.): 2025-01-01 — 2025-12-31",
+        task_ids=[getattr(r, "id", "orchestrator")],
+        message="Догрузка финансового архива 2025 запрошена через оркестратор: 2025-01-01 — 2025-12-31",
     )
 
 

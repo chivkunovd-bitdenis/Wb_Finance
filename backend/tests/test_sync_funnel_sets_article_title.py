@@ -15,9 +15,10 @@ def test_sync_funnel_sets_article_name_from_wb_title(real_db_session):
     )
     real_db_session.add(u)
     real_db_session.commit()
+    user_id = str(u.id)
 
     # Article exists but without name/vendor_code.
-    real_db_session.add(Article(user_id=str(u.id), nm_id=123))
+    real_db_session.add(Article(user_id=user_id, nm_id=123))
     real_db_session.commit()
 
     wb_rows = [
@@ -39,12 +40,12 @@ def test_sync_funnel_sets_article_name_from_wb_title(real_db_session):
 
     with patch("celery_app.tasks.SessionLocal", return_value=real_db_session):
         with patch("celery_app.tasks.fetch_funnel", return_value=wb_rows):
-            res = sync_funnel(str(u.id), "2026-04-01", "2026-04-01")
+            res = sync_funnel(user_id, "2026-04-01", "2026-04-01")
 
     assert res.get("ok") is True
     art = (
         real_db_session.query(Article)
-        .filter(Article.user_id == str(u.id), Article.nm_id == 123)
+        .filter(Article.user_id == user_id, Article.nm_id == 123)
         .first()
     )
     assert art is not None
