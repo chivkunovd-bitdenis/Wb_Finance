@@ -33,6 +33,7 @@ ID: BUG-6
 
 ## Исправление (что сделали)
 `/dashboard/state` теперь ставит warm-path через `wb_orchestrator_kick` с high-intent `finance_range + funnel_tail`. В ответ state добавлен `funnel_tail_sync`, а фронт polling-ит state и refresh-ит таблицы, пока активны finance/funnel tail repair.
+Кнопка ручного `Обновить WB` скрыта из интерфейса, чтобы пользовательский сценарий не зависел от ручного запуска и не создавал отдельный путь синхронизации.
 
 ## Профилактика (как не повторить)
 - Pytest обновлён: dashboard-entry теперь проверяет постановку orchestrator intent с `finance_range` и `funnel_tail`.
@@ -40,9 +41,9 @@ ID: BUG-6
 
 ## Проверка
 - Команды: `pytest backend/tests/test_integration_dashboard.py backend/tests/test_sync_api.py backend/tests/test_funnel_tail_repair_task.py backend/tests/test_wb_orchestrator_intents_merge.py`, `ruff check .`, `mypy .`, `pytest`, `npm run lint`, `npm run build`
-- Сценарии: вход в дашборд с missing finance tail → ставится один orchestrator high-intent finance+funnel; UI polling активен до завершения finance/funnel tail; YTD-autostart не возвращался.
+- Сценарии: вход в дашборд с missing finance tail → ставится один orchestrator high-intent finance+funnel; UI polling активен до завершения finance/funnel tail; ручная кнопка WB отсутствует; YTD-autostart не возвращался.
 
-Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/tests/test_integration_dashboard.py`, `frontend/src/Layout.jsx`, `frontend/dist/index.html`, `frontend/dist/assets/index-pdy5Lenm.js`
+Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/tests/test_integration_dashboard.py`, `frontend/src/Layout.jsx`, `frontend/src/components/Topbar.jsx`, `frontend/src/screens/Costs.jsx`, `frontend/dist/index.html`, `frontend/dist/assets/index-CLO5BLTY.js`
 ---
 
 ---

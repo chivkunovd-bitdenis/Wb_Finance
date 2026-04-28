@@ -6,10 +6,7 @@ export default function Topbar({
   setDateFromDraft,
   setDateToDraft,
   onApply,
-  onUpdateWb,
   onOpenBilling,
-  updating,
-  updateSyncing,
 }) {
   return (
     <div className="topbar">
@@ -34,20 +31,12 @@ export default function Topbar({
           onChange={(e) => setDateToDraft(e.target.value)}
         />
       </div>
-      <button className="btn-primary" onClick={onApply} disabled={updateSyncing || updating}>
+      <button className="btn-primary" onClick={onApply}>
         Показать
-      </button>
-      <button className="btn-outline" onClick={onUpdateWb} disabled={updating}>
-        {updating ? '...' : 'Обновить WB'}
       </button>
       <button className="btn-primary" onClick={onOpenBilling}>
         Подписка
       </button>
-      {updateSyncing && (
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: -4 }}>
-          Обновляем выбранный период…
-        </span>
-      )}
     </div>
   );
 }

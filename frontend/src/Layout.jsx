@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- Layout is the app shell: bootstrapping, polling, and route-store resets intentionally synchronize external app state. */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
@@ -55,8 +56,6 @@ export default function Layout() {
   });
   const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [updating, setUpdating] = useState(false);
-  const [updateSyncing, setUpdateSyncing] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialTriggered, setInitialTriggered] = useState(false);
   const [waitForFunnelAfterInitial, setWaitForFunnelAfterInitial] = useState(false);
@@ -86,14 +85,6 @@ export default function Layout() {
   const funnelTailActive = Boolean(
     funnelTailSync?.pending || ['queued', 'scheduled', 'running', 'cooldown'].includes(funnelTailSync?.status),
   );
-  const financeMissingMinutesLeft = useMemo(() => {
-    const nextRunAt = financeMissingSync?.next_run_at;
-    if (!nextRunAt) return null;
-    const ms = new Date(nextRunAt).getTime() - Date.now();
-    if (!Number.isFinite(ms)) return null;
-    const m = Math.ceil(ms / 60000);
-    return m > 0 ? m : 0;
-  }, [financeMissingSync?.next_run_at]);
   const loadBillingStatus = useCallback(async () => {
     try {
       const data = await api.getBillingStatus();
@@ -121,60 +112,6 @@ export default function Layout() {
     funnelYtdBootstrappedRef.current = false;
     setRefreshTrigger((t) => t + 1);
   }, [activeStoreOwnerId]);
-
-  const onUpdateWb = useCallback(async () => {
-    if (!dateFrom || !dateTo) {
-      alert('Укажите период для обновления данных');
-      return;
-    }
-    setUpdating(true);
-    setUpdateSyncing(true);
-    try {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-      // Подпись “до”: чтобы понять, что витрина реально обновилась
-      const signatureOf = (rows) => {
-        const list = Array.isArray(rows) ? rows : [];
-        const totalRevenue = list.reduce((acc, r) => acc + (Number(r.revenue) || 0), 0);
-        const last = list[list.length - 1] || {};
-        return JSON.stringify({
-          len: list.length,
-          totalRevenue: Math.round(totalRevenue * 100) / 100,
-          lastDate: last.date || null,
-          lastRev: Math.round((Number(last.revenue) || 0) * 100) / 100,
-        });
-      };
-
-      const beforeRows = await api.getPnl(dateFrom, dateTo);
-      const beforeSig = signatureOf(beforeRows);
-
-      await api.triggerSyncSales(dateFrom, dateTo);
-      await api.triggerSyncAds(dateFrom, dateTo);
-      // Контракт: воронка синкается только в rolling окне 7 дней (сервер сам выбирает окно).
-      await api.triggerSyncFunnel();
-
-      // sync_sales/sync_ads уже ставят recalculate_* после записи raw данных,
-      // но это асинхронно. Поэтому ждём появления изменений на витрине.
-      const startedAt = Date.now();
-      const timeoutMs = 180000; // 3 минуты
-      while (Date.now() - startedAt < timeoutMs) {
-        await sleep(5000);
-        const afterRows = await api.getPnl(dateFrom, dateTo);
-        if (signatureOf(afterRows) !== beforeSig) {
-          setRefreshTrigger((t) => t + 1);
-          return;
-        }
-      }
-
-      setRefreshTrigger((t) => t + 1);
-      alert('Обновление запущено, но витрина не успела измениться за 3 минуты. Проверь логи воркера.');
-    } catch (err) {
-      alert('Сбой обновления: ' + (err.message || err));
-    } finally {
-      setUpdating(false);
-      setUpdateSyncing(false);
-    }
-  }, [dateFrom, dateTo]);
 
   // Инициализация как в GAS: проверяем состояние данных и при необходимости запускаем первую синхронизацию
   useEffect(() => {
@@ -396,10 +333,7 @@ export default function Layout() {
             setDateTo(dt);
             setRefreshTrigger((t) => t + 1);
           }}
-          onUpdateWb={onUpdateWb}
           onOpenBilling={() => navigate('/billing')}
-          updating={updating}
-          updateSyncing={updateSyncing}
         />
 
         <div className="content">
@@ -508,9 +442,7 @@ export default function Layout() {
                     🔄 Догружаем финансы и воронку по пропущенным дням
                     {financeMissingSync ? ` (${financeMissingSync.date_from}–${financeMissingSync.date_to})` : ''}
                     {financeMissingSync?.next_run_at ? (
-                      financeMissingMinutesLeft != null
-                        ? `; следующая попытка через ~${financeMissingMinutesLeft} мин (${new Date(financeMissingSync.next_run_at).toLocaleString('ru')})`
-                        : `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
+                      `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
                     ) : ''}
                     {financeMissingSync?.status === 'error' && financeMissingSync.error_message
                       ? `; ошибка: ${financeMissingSync.error_message}`

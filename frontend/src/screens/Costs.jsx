@@ -94,7 +94,7 @@ function TaxRateBlock({ onTaxRateChange }) {
         <span style={{ fontSize: 12, color: 'var(--red)' }}>{loadError}</span>
       )}
       <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 4 }}>
-        % от суммы продаж. После изменения нажмите «Обновить WB» для пересчёта.
+        % от суммы продаж. Пересчёт подхватится при следующем автообновлении данных.
       </span>
     </div>
   );
