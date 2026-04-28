@@ -9,6 +9,43 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-6
+Дата: 2026-04-28
+Статус: fixed
+Автоматизация: да (pytest: dashboard state queues finance+funnel orchestrator intent; frontend lint/build)
+
+## Бизнес-описание
+Пользователь открывал дашборд, финансовые данные за вчера могли догрузиться, но “Заказы ₽” оставались нулями, потому что хвост воронки не запускался и таблица не перечитывалась после фонового repair.
+
+## Процесс / сценарий
+1) Пользователь заходит в дашборд.
+2) `/dashboard/state` обнаруживает пропущенные финансовые дни и ставит догрузку финансов.
+3) Ожидание: после финансового хвоста система последовательно чинит rolling-хвост воронки за последние 7 дней, а UI polling перечитывает данные.
+4) Факт: `/dashboard/state` ставил только прямую finance-задачу, воронка не попадала в тот же последовательный flow, а фронт не ждал завершения repair.
+
+## Техническое описание
+В `backend/app/routers/dashboard.py` warm-path `/dashboard/state` вызывал `sync_finance_missing_range.delay(...)` напрямую. Этот путь обходил `wb_orchestrator_kick` с `funnel_tail`, поэтому `wb_orchestrator_tick` не выполнял `_orch_funnel_tail_step`. Во фронтенде `Layout.jsx` не polling-ил состояние `finance_missing_sync`/`funnel_tail_sync` до завершения, поэтому таблица P&L могла остаться с устаревшими `funnelRows`.
+
+## Root cause (почему произошло)
+- Контракт “вход в дашборд → финансы → хвост воронки → видимый результат” не был зафиксирован тестом.
+- Warm-path входа в дашборд остался на прямой legacy-задаче финансов, а не на едином orchestrator intent.
+- UI обновлял таблицу раньше, чем фоновые задачи могли дописать `funnel_daily`.
+
+## Исправление (что сделали)
+`/dashboard/state` теперь ставит warm-path через `wb_orchestrator_kick` с high-intent `finance_range + funnel_tail`. В ответ state добавлен `funnel_tail_sync`, а фронт polling-ит state и refresh-ит таблицы, пока активны finance/funnel tail repair.
+
+## Профилактика (как не повторить)
+- Pytest обновлён: dashboard-entry теперь проверяет постановку orchestrator intent с `finance_range` и `funnel_tail`.
+- UI получает явный `funnel_tail_sync`, чтобы не терять фоновые repair-процессы.
+
+## Проверка
+- Команды: `pytest backend/tests/test_integration_dashboard.py backend/tests/test_sync_api.py backend/tests/test_funnel_tail_repair_task.py backend/tests/test_wb_orchestrator_intents_merge.py`, `ruff check .`, `mypy .`, `pytest`, `npm run lint`, `npm run build`
+- Сценарии: вход в дашборд с missing finance tail → ставится один orchestrator high-intent finance+funnel; UI polling активен до завершения finance/funnel tail; YTD-autostart не возвращался.
+
+Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/tests/test_integration_dashboard.py`, `frontend/src/Layout.jsx`, `frontend/dist/index.html`, `frontend/dist/assets/index-pdy5Lenm.js`
+---
+
+---
 ID: BUG-5
 Дата: 2026-04-26
 Статус: fixed

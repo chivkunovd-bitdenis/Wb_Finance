@@ -20,6 +20,7 @@ from app.models.article import Article
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.funnel_daily import FunnelDaily
 from app.models.finance_backfill_state import FinanceBackfillState
+from app.models.wb_orchestrator_state import WbOrchestratorState
 from app.models.raw_sales import RawSale
 from app.models.sku_daily import SkuDaily
 from app.models.operational_expense import OperationalExpense
@@ -27,7 +28,7 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import sync_funnel_ytd_step, sync_finance_missing_range
+from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
 from sqlalchemy.exc import IntegrityError
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 FUNNEL_BACKFILL_START_DATE = date_type(2026, 1, 1)
 FINANCE_MISSING_TAIL_LOOKBACK_DAYS = 45
 FINANCE_MISSING_TAIL_COOLDOWN = timedelta(minutes=10)
-FINANCE_HOLES_MAX_RANGES_PER_ENTRY = 3
+FINANCE_HOLES_MAX_RANGES_PER_ENTRY = 1
 FINANCE_HOLES_MAX_RANGE_DAYS = 7
 
 
@@ -200,13 +201,31 @@ def _maybe_start_funnel_ytd_backfill(
         logger.exception("Celery delay failed (sync_funnel_ytd_step): %s", exc)
 
 
+def _kick_finance_range_with_funnel_tail(user_id: str, date_from: date_type, date_to: date_type) -> bool:
+    """
+    Warm-path contract: dashboard entry repairs finance first, then rolling funnel tail,
+    through the single WB orchestrator instead of independent Celery fan-out.
+    """
+    df = date_from.isoformat()
+    dt = date_to.isoformat()
+    try:
+        wb_orchestrator_kick.delay(
+            user_id,
+            {"high": {"finance_range": {"date_from": df, "date_to": dt}, "funnel_tail": True}},
+        )
+        return True
+    except Exception as exc:
+        logger.exception("Celery delay failed (wb_orchestrator_kick finance+funnel): %s", exc)
+        return False
+
+
 def _maybe_start_finance_backfill(
     db: Session,
     user: User,
     calendar_year: int,
     year_start: date_type,
     through: date_type,
-) -> None:
+) -> bool:
     """
     Автостарт догрузки финансов (sales+ads) ретроспективно:
     - если у пользователя есть WB ключ,
@@ -216,9 +235,9 @@ def _maybe_start_finance_backfill(
     2025 запускаем только после завершения 2026 (внутри таски).
     """
     if through < year_start:
-        return
+        return False
     if not user.wb_api_key or not user.wb_api_key.strip():
-        return
+        return False
 
     # Не стартуем "с нуля": финансовый backfill имеет смысл только если у пользователя уже есть
     # хотя бы какие-то продажи/реклама в БД (например, после initial sync за 30 дней).
@@ -233,7 +252,7 @@ def _maybe_start_finance_backfill(
         is not None
     )
     if not has_any_sales:
-        return
+        return False
 
     # Warm path: точечно закрываем missing-tail (обычно вчера).
     miss = compute_missing_tail_range(
@@ -256,19 +275,19 @@ def _maybe_start_finance_backfill(
         now_dt = datetime.now(timezone.utc)
         if state is not None:
             if state.status == "running":
-                return
+                return False
             if state.next_run_at is not None:
                 nr = state.next_run_at
                 if nr.tzinfo is None:
                     nr = nr.replace(tzinfo=timezone.utc)
                 if nr > now_dt:
-                    return
+                    return False
             # анти-спам кулдаун для idle/error без next_run_at
             updated = state.updated_at
             if updated.tzinfo is None:
                 updated = updated.replace(tzinfo=timezone.utc)
             if now_dt - updated <= FINANCE_MISSING_TAIL_COOLDOWN:
-                return
+                return False
         else:
             state = FinanceMissingSyncState(
                 user_id=str(user.id),
@@ -285,15 +304,7 @@ def _maybe_start_finance_backfill(
         except IntegrityError:
             db.rollback()
 
-        try:
-            sync_finance_missing_range.delay(
-                str(user.id),
-                miss.date_from.isoformat(),
-                miss.date_to.isoformat(),
-            )
-        except Exception as exc:
-            logger.exception("Celery delay failed (sync_finance_missing_range): %s", exc)
-        return
+        return _kick_finance_range_with_funnel_tail(str(user.id), miss.date_from, miss.date_to)
 
     # Если хвоста нет (вчера уже присутствует), можно закрывать остальные дыры в окне lookback.
     window_from = through - timedelta(days=FINANCE_MISSING_TAIL_LOOKBACK_DAYS)
@@ -356,14 +367,16 @@ def _maybe_start_finance_backfill(
             db.rollback()
             continue
         try:
-            sync_finance_missing_range.delay(str(user.id), df.isoformat(), dt.isoformat())
-            queued += 1
+            if _kick_finance_range_with_funnel_tail(str(user.id), df, dt):
+                queued += 1
+            else:
+                continue
         except Exception as exc:
-            logger.exception("Celery delay failed (sync_finance_missing_range): %s", exc)
+            logger.exception("Failed to kick finance+funnel orchestrator: %s", exc)
 
     # Важно: /dashboard/state — read-only по смыслу. Он НЕ должен запускать тяжелые фоновые процессы backfill.
     # Архивная догрузка управляется оркестратором + дозирующим менеджером (celery_beat), либо явной кнопкой.
-    return
+    return queued > 0
 
 def _num(v):
     if v is None:
@@ -524,7 +537,7 @@ def get_dashboard_state(
     _repair_hollow_funnel_ytd(db, str(store_user.id), y, y_start, through_cap)
     # Историческую YTD-догрузку воронки больше не автозапускаем при входе:
     # воронка теперь rolling 7 дней, а приоритет у финансового контура.
-    _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
+    funnel_tail_requested = _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
 
     fb_row = (
         db.query(FunnelBackfillState)
@@ -604,6 +617,25 @@ def get_dashboard_state(
             "error_message": (row.error_message[:500] if row.error_message else None),
         }
 
+    def _funnel_tail_sync_state() -> dict:
+        """
+        Для UI polling: rolling repair воронки теперь живёт в WB orchestrator intents.
+        Первый ответ /dashboard/state может вернуться раньше, чем celery обработает kick,
+        поэтому учитываем локальный факт постановки `funnel_tail_requested`.
+        """
+        row = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(store_user.id)).first()
+        high = row.intents.get("high", {}) if row and isinstance(row.intents, dict) else {}
+        pending = bool(funnel_tail_requested or (isinstance(high, dict) and high.get("funnel_tail") is True))
+        status = "idle"
+        if pending:
+            status = row.status if row and row.status != "idle" else "queued"
+        return {
+            "status": status,
+            "pending": pending,
+            "cooldown_until": row.cooldown_until if row else None,
+            "last_step": row.last_step if row else None,
+        }
+
     return {
         "has_data": has_data,
         "min_date": min_date.isoformat() if min_date else None,
@@ -618,6 +650,7 @@ def get_dashboard_state(
         "finance_backfill": _finance_state_for(2026),
         "finance_backfill_2025": _finance_state_for(2025),
         "finance_missing_sync": _finance_missing_sync_state(),
+        "funnel_tail_sync": _funnel_tail_sync_state(),
     }
 
 

@@ -15,13 +15,16 @@ readonly: true
 
 Обязательные действия:
 1. Сверь результат с задачей и Acceptance criteria из planner.
-2. Сверь результат с планом: что сделано, что нет.
-3. Проведи проверки:
+2. Для сценарных `bugfix`/`new-feature` проверь наличие `Scenario contract` и `Scenario proof`.
+   - если `Scenario proof` отсутствует или не доказывает user-visible result — не подтверждай “готово”, даже при зелёных проверках.
+3. Сверь результат с планом: что сделано, что нет.
+4. Проведи проверки:
    - `ruff check .`
    - `mypy .`
    - `pytest`
-4. Явно сформируй отчёт:
+5. Явно сформируй отчёт:
    - `What was changed`
+   - `Scenario proof` (если применимо)
    - `What was verified` (какие команды/что подтвердили)
    - `Not verified` (если что-то пропущено) и почему
    - `Risks remaining`

@@ -75,8 +75,17 @@ export default function Layout() {
   const financeBackfill2026 = dashboardState?.finance_backfill || null;
   const financeBackfill2025 = dashboardState?.finance_backfill_2025 || null;
   const financeMissingSync = dashboardState?.finance_missing_sync || null;
+  const funnelTailSync = dashboardState?.funnel_tail_sync || null;
   const financeStatus2026 = financeBackfill2026?.status || 'idle';
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
+  const financeMissingActive = Boolean(
+    financeMissingSync &&
+      (['queued', 'running'].includes(financeMissingSync.status) ||
+        (financeMissingSync.status === 'idle' && financeMissingSync.next_run_at)),
+  );
+  const funnelTailActive = Boolean(
+    funnelTailSync?.pending || ['queued', 'scheduled', 'running', 'cooldown'].includes(funnelTailSync?.status),
+  );
   const financeMissingMinutesLeft = useMemo(() => {
     const nextRunAt = financeMissingSync?.next_run_at;
     if (!nextRunAt) return null;
@@ -299,6 +308,20 @@ export default function Layout() {
     return () => clearInterval(id);
   }, [funnelYtdStatus, funnelYtdLaunchPending]);
 
+  useEffect(() => {
+    if (!financeMissingActive && !funnelTailActive) return;
+    const id = setInterval(() => {
+      api
+        .getDashboardState()
+        .then((s) => {
+          setDashboardState(s);
+          setRefreshTrigger((t) => t + 1);
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [financeMissingActive, funnelTailActive]);
+
   // Архив 2025: если есть данные, но 2025 ещё нет — запускаем фоновую догрузку (неблокирующая жёлтая плашка, как в GAS)
   useEffect(() => {
     if (initialLoading) return;
@@ -461,9 +484,11 @@ export default function Layout() {
                   <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
                 </div>
               )}
-              {(financeMissingSync?.status === 'running'
+              {(financeMissingSync?.status === 'queued'
+                || financeMissingSync?.status === 'running'
                 || (financeMissingSync?.status === 'idle' && financeMissingSync?.next_run_at)
-                || financeMissingSync?.status === 'error') && (
+                || financeMissingSync?.status === 'error'
+                || funnelTailActive) && (
                 <div
                   style={{
                     display: 'flex',
@@ -480,13 +505,14 @@ export default function Layout() {
                 >
                   <span className="loader-spinner-sm" aria-hidden />
                   <span>
-                    🔄 Догружаем финансы по пропущенным дням ({financeMissingSync.date_from}–{financeMissingSync.date_to})
-                    {financeMissingSync.next_run_at ? (
+                    🔄 Догружаем финансы и воронку по пропущенным дням
+                    {financeMissingSync ? ` (${financeMissingSync.date_from}–${financeMissingSync.date_to})` : ''}
+                    {financeMissingSync?.next_run_at ? (
                       financeMissingMinutesLeft != null
                         ? `; следующая попытка через ~${financeMissingMinutesLeft} мин (${new Date(financeMissingSync.next_run_at).toLocaleString('ru')})`
                         : `; следующая попытка: ${new Date(financeMissingSync.next_run_at).toLocaleString('ru')}`
                     ) : ''}
-                    {financeMissingSync.status === 'error' && financeMissingSync.error_message
+                    {financeMissingSync?.status === 'error' && financeMissingSync.error_message
                       ? `; ошибка: ${financeMissingSync.error_message}`
                       : ''}
                   </span>

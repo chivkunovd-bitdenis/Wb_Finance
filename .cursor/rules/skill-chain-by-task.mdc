@@ -9,8 +9,8 @@ alwaysApply: true
 
 Тип -> цепочка skills:
 - `project-bootstrap` -> `project-bootstrap`
-- `new-feature` -> `new-feature` -> `write-tests` -> `self-review`
-- `bugfix` -> `bugfix` -> `write-tests` -> `self-review`
+- `new-feature` -> `new-feature` -> `scenario-contract` -> `write-tests` -> `self-review`
+- `bugfix` -> `bugfix` -> `scenario-contract` -> `write-tests` -> `self-review`
 - `refactor-safe` -> `refactor-safe` -> `self-review`
 - `design-new-screen` -> `design-new-screen` -> `design-system-apply` -> `responsive-pass` -> `self-review`
 - `design-system-apply` -> `responsive-pass` -> `self-review`
@@ -20,6 +20,9 @@ alwaysApply: true
 Если в задаче требуется UI + backend:
 - сначала UI цепочку (design-* / responsive-pass),
 - затем `new-feature` или `bugfix` (в зависимости от причины),
+- затем `scenario-contract` (если есть пользовательский flow/API/фон/БД/state/очереди/UI),
 - затем `write-tests` (если есть новые/обновлённые бизнес-кейсы),
 - затем `self-review`.
+
+`scenario-contract` — глобальный skill из `~/.cursor/skills`; он обязателен для сценарных изменений и дополняет project-level правила.
 

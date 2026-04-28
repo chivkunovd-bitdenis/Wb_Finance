@@ -54,9 +54,11 @@ STATE_KEYS = {
     "finance_backfill",
     "finance_backfill_2025",
     "finance_missing_sync",
+    "funnel_tail_sync",
 }
 FUNNEL_YTD_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
 FINANCE_BACKFILL_KEYS = {"year", "status", "last_completed_date", "through_date", "error_message"}
+FUNNEL_TAIL_KEYS = {"status", "pending", "cooldown_until", "last_step"}
 PNL_DAY_KEYS = {
     "date", "revenue", "commission", "logistics", "penalties", "storage",
     "ads_spend", "cogs", "tax", "operation_expenses", "margin",
@@ -124,6 +126,7 @@ def test_dashboard_state_structure_and_has_data_false(authenticated_client):
     assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
     assert set(data["finance_backfill"].keys()) == FINANCE_BACKFILL_KEYS
     assert set(data["finance_backfill_2025"].keys()) == FINANCE_BACKFILL_KEYS
+    assert set(data["funnel_tail_sync"].keys()) == FUNNEL_TAIL_KEYS
 
 
 def test_dashboard_state_structure_and_has_data_true(authenticated_client):
@@ -159,6 +162,7 @@ def test_dashboard_state_structure_and_has_data_true(authenticated_client):
     assert set(data["funnel_ytd_backfill"].keys()) == FUNNEL_YTD_KEYS
     assert set(data["finance_backfill"].keys()) == FINANCE_BACKFILL_KEYS
     assert set(data["finance_backfill_2025"].keys()) == FINANCE_BACKFILL_KEYS
+    assert set(data["funnel_tail_sync"].keys()) == FUNNEL_TAIL_KEYS
 
 
 def test_dashboard_state_does_not_autostart_funnel_ytd_when_yesterday_missing(authenticated_client):
@@ -291,14 +295,20 @@ def test_dashboard_state_syncs_finance_only_for_yesterday_when_only_yesterday_mi
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        mock_missing.assert_called_once()
-        args, _kwargs = mock_missing.call_args
+        data = r.json()
+        assert data["funnel_tail_sync"]["pending"] is True
+        assert data["funnel_tail_sync"]["status"] == "queued"
+        mock_kick.assert_called_once()
+        args, _kwargs = mock_kick.call_args
         assert args[0] == user_id
-        assert args[1] == yesterday.isoformat()
-        assert args[2] == yesterday.isoformat()
+        assert args[1]["high"]["finance_range"] == {
+            "date_from": yesterday.isoformat(),
+            "date_to": yesterday.isoformat(),
+        }
+        assert args[1]["high"]["funnel_tail"] is True
         from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
         state = (
@@ -357,14 +367,17 @@ def test_dashboard_state_syncs_finance_tail_for_yesterday_and_day_before(authent
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        mock_missing.assert_called_once()
-        args, _kwargs = mock_missing.call_args
+        mock_kick.assert_called_once()
+        args, _kwargs = mock_kick.call_args
         assert args[0] == user_id
-        assert args[1] == day_before.isoformat()
-        assert args[2] == yesterday.isoformat()
+        assert args[1]["high"]["finance_range"] == {
+            "date_from": day_before.isoformat(),
+            "date_to": yesterday.isoformat(),
+        }
+        assert args[1]["high"]["funnel_tail"] is True
         from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
         state = (
@@ -435,10 +448,10 @@ def test_dashboard_state_finance_missing_range_is_deduped_when_running(authentic
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        mock_missing.assert_not_called()
+        mock_kick.assert_not_called()
 
 
 def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_present(authenticated_client):
@@ -505,15 +518,17 @@ def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_p
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        assert mock_missing.called
+        assert mock_kick.called
         # at least one call should cover the hole_end..hole_start region (order doesn't matter)
-        calls = [c.args for c in mock_missing.call_args_list]
-        assert any(args[1] == hole_start.isoformat() and args[2] == hole_end.isoformat() for args in calls) or any(
-            hole_start.isoformat() <= args[1] <= hole_end.isoformat() or hole_start.isoformat() <= args[2] <= hole_end.isoformat()
-            for args in calls
+        calls = [c.args for c in mock_kick.call_args_list]
+        ranges = [args[1]["high"]["finance_range"] for args in calls]
+        assert any(rng["date_from"] == hole_start.isoformat() and rng["date_to"] == hole_end.isoformat() for rng in ranges) or any(
+            hole_start.isoformat() <= rng["date_from"] <= hole_end.isoformat()
+            or hole_start.isoformat() <= rng["date_to"] <= hole_end.isoformat()
+            for rng in ranges
         )
 
 def test_dashboard_pnl_response_structure_and_values_from_db(authenticated_client):

@@ -1,6 +1,11 @@
 # Cursor Autopilot: task orchestration
 
-Цель: по формулировке задачи определить тип, затем вызвать sub-agents в детерминированном порядке и отработать нужные skills (чеклисты процессов из `.cursor/skills/<skill>/SKILL.md`).
+Цель: по формулировке задачи определить тип, затем вызвать sub-agents в детерминированном порядке и отработать нужные skills.
+
+Важно:
+- Глобальный стандарт разработки задаётся в `~/.cursor/rules`, `~/.cursor/skills`, `~/.cursor/agents`.
+- Project-level правила ниже только дополняют глобальный стандарт спецификой этого репозитория.
+- Для сценарных `bugfix`/`new-feature` обязателен global skill `scenario-contract`: до кода нужен `Scenario contract` + `Flow trace`, перед “готово” нужен `Scenario proof`.
 
 Важное замечание про “код не писать”:
 - Если текущая ветка по skill запрещает код, sub-agent на этой стадии не должен создавать реализацию (только спецификация/план/контракт).
@@ -43,9 +48,10 @@ Sub-agents:
 7. `/verifier`
 Skills:
 1. `new-feature`
-2. `write-tests`
-3. `self-review`
-4. `release-prep` (если это merge/release)
+2. `scenario-contract`
+3. `write-tests`
+4. `self-review`
+5. `release-prep` (если это merge/release)
 
 ### 3) `bugfix` (backend-регрессия)
 Sub-agents:
@@ -58,9 +64,10 @@ Sub-agents:
 7. `/verifier`
 Skills:
 1. `bugfix`
-2. `write-tests`
-3. `self-review`
-4. `release-prep` (если это merge/release)
+2. `scenario-contract`
+3. `write-tests`
+4. `self-review`
+5. `release-prep` (если это merge/release)
 
 ### 4) `refactor-safe` (без изменения поведения)
 Sub-agents:
@@ -123,7 +130,8 @@ Skills:
 2. `design-system-apply`
 3. `responsive-pass`
 4. `new-feature` (только если backend-часть действительно меняется)
-5. `write-tests` (если есть backend или новые тест-кейсы)
-6. `self-review`
-7. `release-prep` (если merge/release)
+5. `scenario-contract` (если есть пользовательский flow/API/фон/БД/state/очереди/UI)
+6. `write-tests` (если есть backend или новые тест-кейсы)
+7. `self-review`
+8. `release-prep` (если merge/release)
 
