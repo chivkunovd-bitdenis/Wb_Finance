@@ -9,6 +9,41 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-8
+Дата: 2026-04-28
+Статус: fixed
+Автоматизация: да (pytest: consumed orchestrator lane removes stale intents)
+
+## Бизнес-описание
+После успешной починки воронки пользователь мог продолжать видеть состояние “догружаем”, хотя данные уже появились. Это создавало ложное ощущение незавершённой синхронизации.
+
+## Процесс / сценарий
+1) `/dashboard/state` ставит `funnel_tail`.
+2) Оркестратор выполняет repair, данные за дни появляются в `funnel_daily`.
+3) Ожидание: intent очищается, UI перестаёт считать repair pending.
+4) Факт: `funnel_tail=true` оставался в `wb_orchestrator_state.intents`.
+
+## Техническое описание
+`wb_orchestrator_tick` делал `high.pop(...)`, но затем записывал state через `_intents_merge(...)`. Merge добавляет/перезаписывает ключи, но не удаляет отсутствующие ключи, поэтому stale `funnel_tail`/`finance_range` мог оставаться навсегда.
+
+## Root cause (почему произошло)
+- Использовали merge-функцию для операции удаления.
+- Не было unit-теста на “consumed intent удалён из lane”.
+
+## Исправление (что сделали)
+Добавлен helper `_intents_with_lane`, который заменяет lane целиком или удаляет её, если она пустая. High/low lane после consumed steps теперь записываются через этот helper.
+
+## Профилактика (как не повторить)
+- Добавлен pytest: `_intents_with_lane` заменяет lane и удаляет её после consumed intent.
+
+## Проверка
+- Команды: `pytest backend/tests/test_wb_orchestrator_intents_merge.py backend/tests/test_dashboard_funnel_tail_autostart.py backend/tests/test_sync_api.py`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: `funnel_tail` выполнен и complete -> high lane очищается; остальные lanes сохраняются.
+
+Затронутые файлы: `backend/celery_app/tasks.py`, `backend/tests/test_wb_orchestrator_intents_merge.py`
+---
+
+---
 ID: BUG-7
 Дата: 2026-04-28
 Статус: fixed

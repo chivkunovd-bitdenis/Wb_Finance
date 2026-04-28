@@ -418,6 +418,19 @@ def _intents_merge(intents: dict, patch: dict) -> dict:
     return out
 
 
+def _intents_with_lane(intents: dict, lane: str, value: dict) -> dict:
+    """
+    Replace an orchestrator lane after a step consumed intents.
+    `_intents_merge` deliberately cannot delete keys, so using it after `pop()` keeps stale intents forever.
+    """
+    out = dict(intents or {})
+    if value:
+        out[lane] = value
+    else:
+        out.pop(lane, None)
+    return out
+
+
 def _ensure_orch_state(db, *, user_id: str) -> WbOrchestratorState:
     st = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
     if st is None:
@@ -654,7 +667,7 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 res = _orch_finance_missing_step(db, user_id=user_id, date_from=df, date_to=dt)
                 high.pop("finance_range", None)
                 st.last_step = f"finance_missing {df}..{dt}"
-                st.intents = _intents_merge(intents, {"high": high})
+                st.intents = _intents_with_lane(intents, "high", high)
                 st.status = "idle"
                 st.cooldown_until = None
                 db.add(st)
@@ -671,7 +684,7 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 # keep intent until complete
                 if res.get("message") == "complete":
                     high.pop("funnel_tail", None)
-                st.intents = _intents_merge(intents, {"high": high})
+                st.intents = _intents_with_lane(intents, "high", high)
                 st.status = "idle"
                 st.cooldown_until = None
                 db.add(st)
@@ -709,7 +722,7 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                         low["finance_backfill_year"] = 2025
                     else:
                         low.pop("finance_backfill_year", None)
-                    st.intents = _intents_merge(intents, {"low": low})
+                    st.intents = _intents_with_lane(intents, "low", low)
                     st.status = "idle"
                     st.cooldown_until = None
                     st.last_step = f"finance_backfill_{y} complete"
