@@ -122,3 +122,59 @@ def test_dashboard_state_autostarts_for_granted_store(client_real_db, real_db_se
         # Мы не проверяем точное число вызовов: автозапуск может не произойти, если условия не выполнены
         # (например, нет wb_api_key или уже есть данные за вчера). Главное — автозапуск НЕ запрещён.
 
+
+def test_wb_key_update_uses_active_granted_store(client_real_db, real_db_session):
+    owner = _mk_user("owner4@example.com", wb_api_key="owner-old-key")
+    viewer = _mk_user("viewer4@example.com", wb_api_key="viewer-old-key")
+    real_db_session.add_all([owner, viewer])
+    real_db_session.commit()
+
+    owner_token = _token_for(str(owner.id))
+    grant = client_real_db.post(
+        "/stores/grants",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"grantee_email": "viewer4@example.com"},
+    )
+    assert grant.status_code == 200
+
+    viewer_token = _token_for(str(viewer.id))
+    response = client_real_db.put(
+        "/auth/wb-key",
+        headers={
+            "Authorization": f"Bearer {viewer_token}",
+            "X-Store-Owner-Id": str(owner.id),
+        },
+        json={"wb_api_key": "owner-new-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(owner.id)
+    assert response.json()["wb_api_key"] == "owner-new-key"
+    real_db_session.refresh(owner)
+    real_db_session.refresh(viewer)
+    assert owner.wb_api_key == "owner-new-key"
+    assert viewer.wb_api_key == "viewer-old-key"
+
+
+def test_wb_key_update_rejects_ungranted_active_store(client_real_db, real_db_session):
+    owner = _mk_user("owner5@example.com", wb_api_key="owner-old-key")
+    stranger = _mk_user("stranger5@example.com", wb_api_key="stranger-old-key")
+    real_db_session.add_all([owner, stranger])
+    real_db_session.commit()
+
+    stranger_token = _token_for(str(stranger.id))
+    response = client_real_db.put(
+        "/auth/wb-key",
+        headers={
+            "Authorization": f"Bearer {stranger_token}",
+            "X-Store-Owner-Id": str(owner.id),
+        },
+        json={"wb_api_key": "must-not-save"},
+    )
+
+    assert response.status_code == 403
+    real_db_session.refresh(owner)
+    real_db_session.refresh(stranger)
+    assert owner.wb_api_key == "owner-old-key"
+    assert stranger.wb_api_key == "stranger-old-key"
+

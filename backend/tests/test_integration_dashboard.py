@@ -432,6 +432,19 @@ def test_dashboard_state_finance_missing_range_is_deduped_when_running(authentic
             margin=73,
         )
     )
+    for i in range(7):
+        d = yesterday - timedelta(days=i)
+        session.add(
+            FunnelDaily(
+                user_id=user_id,
+                date=d,
+                nm_id=123,
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=100,
+            )
+        )
 
     # уже есть state running на диапазон вчера
     from app.models.finance_missing_sync_state import FinanceMissingSyncState

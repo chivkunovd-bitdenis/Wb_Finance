@@ -101,15 +101,19 @@ def test_dashboard_state_finance_holes_limits_max_ranges_and_trims_long_range(re
 
     monkeypatch.setattr("app.routers.dashboard.compute_missing_ranges_in_window", lambda *a, **k: holes)
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        assert mock_missing.call_count <= 3
-        calls = [c.args for c in mock_missing.call_args_list]
+        assert mock_kick.call_count <= 1
+        calls = [c.args for c in mock_kick.call_args_list]
         trimmed_df = long_hole.date_to - timedelta(days=6)
         # if long hole was enqueued, it must be trimmed
-        if any(args[2] == long_hole.date_to.isoformat() for args in calls):
-            assert any(args[1] == trimmed_df.isoformat() and args[2] == long_hole.date_to.isoformat() for args in calls)
+        ranges = [args[1]["high"]["finance_range"] for args in calls]
+        if any(rng["date_to"] == long_hole.date_to.isoformat() for rng in ranges):
+            assert any(
+                rng["date_from"] == trimmed_df.isoformat() and rng["date_to"] == long_hole.date_to.isoformat()
+                for rng in ranges
+            )
 
     try:
         next(gen)
@@ -123,6 +127,7 @@ def test_dashboard_state_finance_missing_range_dedup_respects_next_run_at(real_d
 
     from app.models.raw_sales import RawSale
     from app.models.pnl_daily import PnlDaily
+    from app.models.funnel_daily import FunnelDaily
     from app.models.finance_missing_sync_state import FinanceMissingSyncState
 
     today = date.today()
@@ -177,6 +182,19 @@ def test_dashboard_state_finance_missing_range_dedup_respects_next_run_at(real_d
             operation_expenses=0,
         )
     )
+    for i in range(7):
+        d = yesterday - timedelta(days=i)
+        session.add(
+            FunnelDaily(
+                user_id=user_id,
+                date=d,
+                nm_id=123,
+                open_count=1,
+                cart_count=1,
+                order_count=1,
+                order_sum=100,
+            )
+        )
     # middle hole would be scheduled, but we create state for it with next_run_at in future
     hole_df = yesterday - timedelta(days=6)
     hole_dt = hole_df
@@ -191,14 +209,14 @@ def test_dashboard_state_finance_missing_range_dedup_respects_next_run_at(real_d
     )
     session.commit()
 
-    with patch("app.routers.dashboard.sync_finance_missing_range.delay") as mock_missing:
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
         with patch(
             "app.routers.dashboard.compute_missing_ranges_in_window",
             return_value=[MagicMock(date_from=hole_df, date_to=hole_dt)],
         ):
             r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code == 200
-            mock_missing.assert_not_called()
+            mock_kick.assert_not_called()
 
     try:
         next(gen)

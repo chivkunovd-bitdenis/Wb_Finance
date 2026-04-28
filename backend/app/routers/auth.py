@@ -5,7 +5,8 @@ from app.db import get_db
 from app.models.user import User
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse, UpdateWbApiKeyRequest, TaxSettingsResponse, TaxSettingsUpdate
 from app.core.security import hash_password, verify_password, create_access_token
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_store_context
+from app.services.store_access_service import StoreContext
 from app.services.billing_service import redeem_promo_code, start_trial_if_needed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -98,7 +99,8 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-def me(current_user: User = Depends(get_current_user)):
+def me(store_ctx: StoreContext = Depends(get_store_context)):
+    current_user = store_ctx.store_owner
     return UserResponse(
         id=_user_id(current_user),
         email=current_user.email,
@@ -110,9 +112,10 @@ def me(current_user: User = Depends(get_current_user)):
 @router.put("/wb-key", response_model=UserResponse)
 def update_wb_key(
     body: UpdateWbApiKeyRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    current_user = store_ctx.store_owner
     current_user.wb_api_key = body.wb_api_key.strip()
     start_trial_if_needed(db, current_user)
     db.commit()

@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-10
+Дата: 2026-04-28
+Статус: fixed
+Автоматизация: да (pytest: смена WB API key для active granted store и запрет без grant)
+
+## Бизнес-описание
+Пользователь с доступом к чужому магазину мог открыть вкладку с WB API ключом при активном чужом магазине и ожидать, что меняет ключ этого магазина. Фактически ключ записывался в его собственный аккаунт, а последующая первичная синхронизация могла запускаться уже для активного чужого магазина. Это создавало риск повторного смешения кабинетов и неверной загрузки данных.
+
+## Процесс / сценарий
+1) Пользователь Viewer получает доступ к магазину Owner.
+2) Viewer выбирает магазин Owner в переключателе магазинов.
+3) Viewer вводит новый WB API key и сохраняет его.
+Ожидание: ключ сохраняется в `users.wb_api_key` владельца активного магазина Owner, а initial sync работает с тем же owner context.
+Факт: ключ сохранялся в `users.wb_api_key` Viewer, потому что `/auth/wb-key` игнорировал `X-Store-Owner-Id`.
+
+## Техническое описание
+Роут `/auth/wb-key` использовал `get_current_user`, тогда как `/sync/initial` уже использовал `get_store_context`. Из-за разных источников `user_id` возникал контрактный рассинхрон между сохранением ключа и запуском синхронизации.
+
+## Root cause (почему произошло)
+- При добавлении multi-store context не все auth endpoints были переведены на active store contract.
+- Не было регрессионного теста на смену WB key при `X-Store-Owner-Id` granted store.
+
+## Исправление (что сделали)
+`/auth/me` и `/auth/wb-key` теперь используют `get_store_context` и работают с `store_ctx.store_owner`. Проверка доступа к чужому магазину остаётся централизованной: без active grant backend возвращает 403.
+
+## Профилактика (как не повторить)
+Добавлены pytest-кейсы: granted viewer меняет ключ active store owner, viewer key не меняется; stranger без grant получает 403 и ключи не меняются.
+
+## Проверка
+- Команды: `DATABASE_URL=postgresql://wb_finance:wb_finance@localhost:5433/wb_finance python3 -m pytest backend/tests/test_integration_store_access.py -q`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: смена ключа в активном магазине Иванова; запрет смены ключа магазина без доступа.
+
+Затронутые файлы: `backend/app/routers/auth.py`, `backend/tests/test_integration_store_access.py`, `backend/tests/test_finance_holes_process.py`, `backend/tests/test_integration_dashboard.py`
+---
+
+---
 ID: BUG-9
 Дата: 2026-04-28
 Статус: fixed
