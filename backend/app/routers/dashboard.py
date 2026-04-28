@@ -28,7 +28,7 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick
+from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick, wb_orchestrator_tick
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
 from sqlalchemy.exc import IntegrityError
@@ -238,12 +238,24 @@ def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type)
         )
     }
     window_days = [window_from + timedelta(days=i) for i in range((through - window_from).days + 1)]
-    if all(d in present_dates for d in window_days):
-        return False
 
     orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(user.id)).first()
     high = orch.intents.get("high", {}) if orch and isinstance(orch.intents, dict) else {}
-    if isinstance(high, dict) and high.get("funnel_tail") is True:
+    has_pending_funnel_tail = isinstance(high, dict) and high.get("funnel_tail") is True
+    is_idle_or_scheduled = orch is not None and orch.status in {"idle", "scheduled"}
+
+    # Existing stale/pending intents must be processed for all users, not only for the one manually woken.
+    # If data is already complete, the tick will clear the consumed intent; if not, it will continue repair.
+    if has_pending_funnel_tail:
+        if is_idle_or_scheduled:
+            try:
+                wb_orchestrator_tick.delay(str(user.id))
+                return True
+            except Exception as exc:
+                logger.exception("Celery delay failed (wb_orchestrator_tick funnel_tail wake): %s", exc)
+        return False
+
+    if all(d in present_dates for d in window_days):
         return False
 
     try:

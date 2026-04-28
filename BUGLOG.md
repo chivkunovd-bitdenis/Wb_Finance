@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-9
+Дата: 2026-04-28
+Статус: fixed
+Автоматизация: да (pytest: pending+idle/stale funnel_tail wakes orchestrator)
+
+## Бизнес-описание
+Старые зависшие `funnel_tail` intents могли оставаться у любых пользователей после предыдущего релиза. Если пользователь открывал дашборд, система видела pending intent и не будила оркестратор, поэтому repair мог не продолжиться/не очиститься без ручного вмешательства.
+
+## Процесс / сценарий
+1) У пользователя в `wb_orchestrator_state.intents` уже есть `high.funnel_tail=true`.
+2) Оркестратор при этом `idle` или данные воронки уже фактически заполнены.
+3) Пользователь открывает дашборд.
+Ожидание: `/dashboard/state` будит `wb_orchestrator_tick`, чтобы продолжить repair или очистить stale intent.
+Факт: endpoint считал pending intent достаточным и ничего не делал.
+
+## Техническое описание
+В `_maybe_start_funnel_tail_repair` при `high.funnel_tail=true` был ранний `return False`. Это предотвращало дубли, но также блокировало wake для idle/stale pending state.
+
+## Root cause (почему произошло)
+- Дедуп pending intent не отличал “уже выполняется” от “idle, но не запланировано”.
+- Проверка полного rolling-окна выполнялась до wake stale intent, поэтому очищать уже закрытые stale states тоже было нечем.
+
+## Исправление (что сделали)
+Если `funnel_tail` уже pending и оркестратор `idle`/`scheduled`, `/dashboard/state` теперь ставит `wb_orchestrator_tick.delay(user_id)`. Если intent running — не дублирует. Если данные уже есть, tick очистит consumed intent новым кодом.
+
+## Профилактика (как не повторить)
+- Добавлены pytest-кейсы: pending+idle -> wake tick; pending+running -> no duplicate; pending+complete window -> wake tick for cleanup.
+
+## Проверка
+- Команды: `pytest backend/tests/test_dashboard_funnel_tail_autostart.py backend/tests/test_wb_orchestrator_intents_merge.py`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: все пользователи со stale/pending `funnel_tail` получают wake при следующем `/dashboard/state`; running intent не дублируется.
+
+Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/tests/test_dashboard_funnel_tail_autostart.py`
+---
+
+---
 ID: BUG-8
 Дата: 2026-04-28
 Статус: fixed
