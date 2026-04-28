@@ -219,6 +219,41 @@ def _kick_finance_range_with_funnel_tail(user_id: str, date_from: date_type, dat
         return False
 
 
+def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type) -> bool:
+    """
+    Dashboard-entry contract: even if finance is already complete, missing funnel days in the
+    rolling window must wake the single orchestrator and repair `funnel_daily` without a button.
+    """
+    if not user.wb_api_key or not user.wb_api_key.strip():
+        return False
+
+    window_from = through - timedelta(days=6)
+    present_dates = {
+        d
+        for (d,) in (
+            db.query(FunnelDaily.date)
+            .filter(FunnelDaily.user_id == user.id, FunnelDaily.date >= window_from, FunnelDaily.date <= through)
+            .distinct()
+            .all()
+        )
+    }
+    window_days = [window_from + timedelta(days=i) for i in range((through - window_from).days + 1)]
+    if all(d in present_dates for d in window_days):
+        return False
+
+    orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(user.id)).first()
+    high = orch.intents.get("high", {}) if orch and isinstance(orch.intents, dict) else {}
+    if isinstance(high, dict) and high.get("funnel_tail") is True:
+        return False
+
+    try:
+        wb_orchestrator_kick.delay(str(user.id), {"high": {"funnel_tail": True}})
+        return True
+    except Exception as exc:
+        logger.exception("Celery delay failed (wb_orchestrator_kick funnel_tail): %s", exc)
+        return False
+
+
 def _maybe_start_finance_backfill(
     db: Session,
     user: User,
@@ -538,6 +573,8 @@ def get_dashboard_state(
     # Историческую YTD-догрузку воронки больше не автозапускаем при входе:
     # воронка теперь rolling 7 дней, а приоритет у финансового контура.
     funnel_tail_requested = _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
+    if not funnel_tail_requested:
+        funnel_tail_requested = _maybe_start_funnel_tail_repair(db, store_user, through_cap)
 
     fb_row = (
         db.query(FunnelBackfillState)

@@ -454,6 +454,61 @@ def test_dashboard_state_finance_missing_range_is_deduped_when_running(authentic
         mock_kick.assert_not_called()
 
 
+def test_dashboard_state_enqueues_funnel_tail_when_finance_complete_but_funnel_missing(authenticated_client):
+    """
+    Scenario contract: пользователь только открывает дашборд.
+    Если финансы за вчера уже есть, но воронки за вчера нет, /dashboard/state должен
+    разбудить orchestrator с `funnel_tail`, без ручной кнопки и без finance_range.
+    """
+    client, session, user_id, token = authenticated_client
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=yesterday,
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    session.add(
+        PnlDaily(
+            user_id=user_id,
+            date=yesterday,
+            revenue=100,
+            commission=10,
+            logistics=1,
+            penalties=0,
+            storage=0,
+            ads_spend=0,
+            cogs=10,
+            tax=6,
+            margin=73,
+        )
+    )
+    session.commit()
+
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["funnel_tail_sync"]["pending"] is True
+        assert data["funnel_tail_sync"]["status"] == "queued"
+        mock_kick.assert_called_once()
+        args, _kwargs = mock_kick.call_args
+        assert args[0] == user_id
+        assert args[1] == {"high": {"funnel_tail": True}}
+
+
 def test_dashboard_state_enqueues_missing_range_for_middle_hole_when_yesterday_present(authenticated_client):
     """
     Если вчера уже есть, но в пределах lookback есть дыра в середине —

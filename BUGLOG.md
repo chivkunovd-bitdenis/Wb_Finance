@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-7
+Дата: 2026-04-28
+Статус: fixed
+Автоматизация: да (pytest: finance complete + funnel missing -> dashboard state kicks funnel_tail)
+
+## Бизнес-описание
+После выката auto-repair пользователь мог открыть дашборд, увидеть актуальные финансы за вчера, но “Заказы ₽” оставались нулями, если финансы уже были complete, а `funnel_daily` за вчера/позавчера всё ещё отсутствовала.
+
+## Процесс / сценарий
+1) Пользователь открывает дашборд, ничего не нажимает.
+2) Финансовый хвост уже закрыт (`finance_missing_sync=complete`).
+3) В rolling-окне последних 7 дней есть дырка в `funnel_daily`.
+Ожидание: `/dashboard/state` всё равно ставит `funnel_tail` в orchestrator.
+Факт: `funnel_tail_sync.pending=false`, потому что запуск был привязан только к обнаружению finance-missing.
+
+## Техническое описание
+В `backend/app/routers/dashboard.py` `funnel_tail` ставился вместе с `finance_range`, но не было отдельной проверки “финансы есть, воронки нет”. Из-за этого `_orch_funnel_tail_step` не запускался для уже закрытого финансового хвоста.
+
+## Root cause (почему произошло)
+- Scenario contract был неполным: проверили “finance missing -> finance+funnel”, но не проверили “finance complete -> funnel missing”.
+- Не было непропускаемого unit/contract теста на funnel-only gap.
+
+## Исправление (что сделали)
+Добавлена `_maybe_start_funnel_tail_repair`: `/dashboard/state` проверяет rolling-окно `funnel_daily` и будит `wb_orchestrator_kick` с `{"high": {"funnel_tail": true}}`, если есть пропуск и intent ещё не pending.
+
+## Профилактика (как не повторить)
+- Добавлен pytest `test_dashboard_funnel_tail_autostart.py`: finance complete + funnel missing -> ставится `funnel_tail`; уже pending intent не дублируется.
+
+## Проверка
+- Команды: `pytest backend/tests/test_dashboard_funnel_tail_autostart.py backend/tests/test_sync_api.py backend/tests/test_wb_orchestrator_intents_merge.py`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: вход в дашборд без ручных действий; финансы complete, воронка missing -> orchestrator получает `funnel_tail`.
+
+Затронутые файлы: `backend/app/routers/dashboard.py`, `backend/tests/test_dashboard_funnel_tail_autostart.py`, `backend/tests/test_integration_dashboard.py`
+---
+
+---
 ID: BUG-6
 Дата: 2026-04-28
 Статус: fixed
