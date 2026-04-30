@@ -1,4 +1,43 @@
-from celery_app.tasks import _intents_merge, _intents_with_lane
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from unittest.mock import patch
+
+from app.models.wb_orchestrator_state import WbOrchestratorState
+from celery_app.tasks import _intents_merge, _intents_with_lane, wb_orchestrator_kick, wb_orchestrator_tick
+
+
+class _FakeQuery:
+    def __init__(self, state: WbOrchestratorState):
+        self._state = state
+
+    def filter(self, *args: Any, **kwargs: Any) -> "_FakeQuery":
+        return self
+
+    def first(self) -> WbOrchestratorState:
+        return self._state
+
+
+class _FakeSession:
+    def __init__(self, state: WbOrchestratorState):
+        self._state = state
+
+    def query(self, *args: Any, **kwargs: Any) -> _FakeQuery:
+        return _FakeQuery(self._state)
+
+    def add(self, obj: WbOrchestratorState) -> None:
+        self._state = obj
+
+    def commit(self) -> None:
+        return None
+
+    def refresh(self, obj: WbOrchestratorState) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
 
 def test_intents_merge_recursively_unions_lists_and_overwrites_scalars():
@@ -35,4 +74,35 @@ def test_intents_with_lane_replaces_or_removes_consumed_lane():
 
     assert "high" not in out
     assert out["low"] == {"finance_backfill_year": 2026}
+
+
+def test_orchestrator_kick_wakes_expired_cooldown():
+    """
+    Регрессия: если celery ETA-task потерялась после рестарта, persisted cooldown может уже истечь.
+    Новый kick не должен оставлять пользователя в вечном status=cooldown.
+    """
+    user_id = "fed8d7b9-b816-4252-bd9a-a213d73cd99d"
+    state = WbOrchestratorState(
+        user_id=user_id,
+        status="cooldown",
+        cooldown_until=(datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        intents={"high": {"funnel_tail": True}},
+        last_step="wb_http_429",
+    )
+    session = _FakeSession(state)
+
+    with (
+        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch.object(wb_orchestrator_tick, "delay", return_value=None) as mock_delay,
+    ):
+        out = wb_orchestrator_kick(
+            user_id,
+            {"high": {"finance_range": {"date_from": "2026-04-28", "date_to": "2026-04-29"}}},
+        )
+
+    assert out == {"ok": True, "status": "scheduled"}
+    mock_delay.assert_called_once_with(user_id)
+    assert state.status == "scheduled"
+    assert state.intents["high"]["funnel_tail"] is True
+    assert state.intents["high"]["finance_range"] == {"date_from": "2026-04-28", "date_to": "2026-04-29"}
 

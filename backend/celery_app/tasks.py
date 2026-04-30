@@ -512,8 +512,11 @@ def wb_orchestrator_kick(user_id: str, intents_patch: dict | None = None) -> dic
     try:
         st = _ensure_orch_state(db, user_id=user_id)
         st.intents = _intents_merge(cast(dict, st.intents or {}), cast(dict, intents_patch or {}))
-        # schedule tick if idle; if running, it will pick up intents on next loop
-        if st.status == "idle":
+        cooldown_dt = _parse_iso_utc(st.cooldown_until)
+        cooldown_expired = st.status == "cooldown" and (cooldown_dt is None or cooldown_dt <= _utcnow())
+        # schedule tick if idle or if a persisted cooldown has already expired; if running, it will pick up intents
+        # on the next loop.
+        if st.status == "idle" or cooldown_expired:
             st.status = "scheduled"
             db.add(st)
             db.commit()

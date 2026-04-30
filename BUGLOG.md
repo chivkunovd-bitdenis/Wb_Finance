@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-11
+Дата: 2026-04-30
+Статус: fixed
+Автоматизация: да (pytest: `wb_orchestrator_kick` будит оркестратор после истекшего cooldown)
+
+## Бизнес-описание
+У пользователя `sherin-ivan@ya.ru` на проде не появлялись продажи за последние дни и заказы в rolling-воронке. Дашборд выглядел так, будто новых данных нет, хотя WB-ключ был задан и фоновые заявки на догрузку создавались.
+
+## Процесс / сценарий
+1) Пользователь открывает дашборд после нескольких дней работы магазина.
+2) `/dashboard/state` находит missing-tail по финансам и/или хвосту воронки.
+3) Ожидание: `wb_orchestrator_kick` ставит intent и запускает `wb_orchestrator_tick`, который догружает продажи/рекламу/воронку.
+4) Факт: `wb_orchestrator_state.status='cooldown'` оставался после уже истекшего `cooldown_until`, новые kicks только обновляли intents и не ставили tick.
+
+## Техническое описание
+В `wb_orchestrator_kick` запуск tick выполнялся только при `status='idle'`. Если Celery ETA-task после WB 429 была потеряна/не выполнилась, persisted state оставался `cooldown` даже после истечения `cooldown_until`. Последующие kicks возвращали `status='cooldown'`, не будили оркестратор и оставляли pending intents.
+
+## Root cause (почему произошло)
+- Недоучтён кейс восстановления после потерянной ETA-task/рестарта воркера во время cooldown.
+- Контракт `kick -> pending work must eventually wake tick` проверял только `idle`, но не `expired cooldown`.
+- Недостаток регрессионного теста на expired cooldown.
+
+## Исправление (что сделали)
+`wb_orchestrator_kick` теперь считает `cooldown` с пустым/истекшим `cooldown_until` пробуждаемым состоянием: переводит orchestrator в `scheduled`, сохраняет intents и ставит `wb_orchestrator_tick.delay(user_id)`.
+
+## Профилактика (как не повторить)
+Добавлен pytest, который создаёт state `status='cooldown'` с прошедшим `cooldown_until`, вызывает `wb_orchestrator_kick` и проверяет, что tick поставлен, status стал `scheduled`, а intents не потерялись.
+
+## Проверка
+- Команды: `pytest backend/tests/test_wb_orchestrator_intents_merge.py -q`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: на проде вручную разбудили `wb_orchestrator_tick` для `sherin-ivan@ya.ru`; `finance_missing_sync_state` для `2026-04-28..2026-04-29` стал `complete`; в `raw_sales` и `pnl_daily` появились строки за `2026-04-28` и `2026-04-29`, в `funnel_daily` появились заказы за `2026-04-27..2026-04-29`.
+
+Затронутые файлы: `backend/celery_app/tasks.py`, `backend/tests/test_wb_orchestrator_intents_merge.py`, `BUGLOG.md`, `TASKLOG.md`
+---
+
+---
 ID: BUG-10
 Дата: 2026-04-28
 Статус: fixed
