@@ -1,6 +1,7 @@
 """
 Celery-задачи: синк с WB и пересчёт P&L.
 """
+import copy
 import logging
 import random
 import time
@@ -431,6 +432,58 @@ def _intents_with_lane(intents: dict, lane: str, value: dict) -> dict:
     return out
 
 
+def _intents_after_consumed_step(
+    current_intents: dict,
+    snapshot_intents: dict,
+    lane: str,
+    remaining_lane: dict,
+) -> dict:
+    """
+    Save tick progress without dropping intents added while the tick was running.
+
+    A tick works on a snapshot. Concurrent `wb_orchestrator_kick` may merge new work
+    into the same DB row before the tick commits its result, so only keys that still
+    equal the processed snapshot are safe to remove.
+    """
+    snapshot_lane = dict((snapshot_intents or {}).get(lane) or {})
+    latest_lane = dict((current_intents or {}).get(lane) or {})
+
+    for key, snapshot_value in snapshot_lane.items():
+        if key not in remaining_lane and latest_lane.get(key) == snapshot_value:
+            latest_lane.pop(key, None)
+
+    for key, value in (remaining_lane or {}).items():
+        latest_lane[key] = value
+
+    return _intents_with_lane(current_intents or {}, lane, latest_lane)
+
+
+def _save_orch_step_state(
+    db,
+    st: WbOrchestratorState,
+    *,
+    snapshot_intents: dict,
+    lane: str,
+    remaining_lane: dict,
+    status: str,
+    cooldown_until: str | None,
+    last_step: str,
+) -> dict:
+    db.refresh(st)
+    st.intents = _intents_after_consumed_step(
+        cast(dict, st.intents or {}),
+        snapshot_intents,
+        lane,
+        remaining_lane,
+    )
+    st.status = status
+    st.cooldown_until = cooldown_until
+    st.last_step = last_step
+    db.add(st)
+    db.commit()
+    return cast(dict, st.intents or {})
+
+
 def _ensure_orch_state(db, *, user_id: str) -> WbOrchestratorState:
     st = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
     if st is None:
@@ -657,9 +710,9 @@ def wb_orchestrator_tick(user_id: str) -> dict:
         db.add(st)
         db.commit()
 
-        intents = cast(dict, st.intents or {})
-        high = cast(dict, intents.get("high") or {})
-        low = cast(dict, intents.get("low") or {})
+        intents = copy.deepcopy(cast(dict, st.intents or {}))
+        high = dict(intents.get("high") or {})
+        low = dict(intents.get("low") or {})
 
         try:
             # High lane 1: finance missing range (explicit)
@@ -669,14 +722,18 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 dt = str(fr["date_to"])
                 res = _orch_finance_missing_step(db, user_id=user_id, date_from=df, date_to=dt)
                 high.pop("finance_range", None)
-                st.last_step = f"finance_missing {df}..{dt}"
-                st.intents = _intents_with_lane(intents, "high", high)
-                st.status = "idle"
-                st.cooldown_until = None
-                db.add(st)
-                db.commit()
+                saved_intents = _save_orch_step_state(
+                    db,
+                    st,
+                    snapshot_intents=intents,
+                    lane="high",
+                    remaining_lane=high,
+                    status="idle",
+                    cooldown_until=None,
+                    last_step=f"finance_missing {df}..{dt}",
+                )
                 # If more work exists, schedule next tick with pacing.
-                if (high or low):
+                if saved_intents:
                     wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
                 return {"ok": True, "step": res}
 
@@ -687,12 +744,17 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 # keep intent until complete
                 if res.get("message") == "complete":
                     high.pop("funnel_tail", None)
-                st.intents = _intents_with_lane(intents, "high", high)
-                st.status = "idle"
-                st.cooldown_until = None
-                db.add(st)
-                db.commit()
-                if (high or low) or (res.get("missing_left", 0) > 0):
+                saved_intents = _save_orch_step_state(
+                    db,
+                    st,
+                    snapshot_intents=intents,
+                    lane="high",
+                    remaining_lane=high,
+                    status="idle",
+                    cooldown_until=None,
+                    last_step=f"funnel_tail {res.get('day') or ''}".strip(),
+                )
+                if saved_intents or (res.get("missing_left", 0) > 0):
                     wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
                 return {"ok": True, "step": res}
 
@@ -725,13 +787,17 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                         low["finance_backfill_year"] = 2025
                     else:
                         low.pop("finance_backfill_year", None)
-                    st.intents = _intents_with_lane(intents, "low", low)
-                    st.status = "idle"
-                    st.cooldown_until = None
-                    st.last_step = f"finance_backfill_{y} complete"
-                    db.add(st)
-                    db.commit()
-                    if (high or low):
+                    saved_intents = _save_orch_step_state(
+                        db,
+                        st,
+                        snapshot_intents=intents,
+                        lane="low",
+                        remaining_lane=low,
+                        status="idle",
+                        cooldown_until=None,
+                        last_step=f"finance_backfill_{y} complete",
+                    )
+                    if saved_intents:
                         wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
                     return {"ok": True, "step": {"message": "complete", "year": y}}
 
@@ -752,11 +818,16 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                 state.error_message = None
                 db.add(state)
                 db.commit()
-                st.last_step = f"finance_backfill_{y} {df}..{dt}"
-                st.status = "idle"
-                st.cooldown_until = None
-                db.add(st)
-                db.commit()
+                _save_orch_step_state(
+                    db,
+                    st,
+                    snapshot_intents=intents,
+                    lane="low",
+                    remaining_lane=low,
+                    status="idle",
+                    cooldown_until=None,
+                    last_step=f"finance_backfill_{y} {df}..{dt}",
+                )
                 wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
                 return {"ok": True, "step": {"year": y, "chunk": {"date_from": df, "date_to": dt}}}
 

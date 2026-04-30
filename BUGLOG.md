@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-12
+Дата: 2026-04-30
+Статус: fixed
+Автоматизация: да (pytest: consumed orchestrator step сохраняет intents, добавленные параллельным kick)
+
+## Бизнес-описание
+Новый пользователь `alex054x@gmail.com` после регистрации с WB API key видел первичный экран ошибки, что синхронизация не стартовала/зависла. Фактически часть синхронизации выполнилась: воронка и SKU появились, но финансовые данные `pnl_daily` не появились, поэтому дашборд оставался в первичном loader/error состоянии.
+
+## Процесс / сценарий
+1) Пользователь регистрируется с WB API key.
+2) Frontend после login вызывает `/dashboard/state`; если `has_data=false`, вызывает `/sync/initial`.
+3) Ожидание: оба фоновых намерения сохраняются — rolling `funnel_tail` и initial `finance_range`; оркестратор последовательно обрабатывает финансы и воронку.
+4) Факт: `/sync/initial` вернул `200 OK`, но в БД остались `raw_sales=0`, `raw_ads=0`, `pnl_daily=0`; при этом `funnel_daily` и `sku_daily` были заполнены за `2026-04-23..2026-04-29`, а `wb_orchestrator_state.intents` стал `{}`.
+
+## Техническое описание
+В `wb_orchestrator_tick` tick работал на snapshot `st.intents`, затем после выполнения шага полностью записывал lane через `_intents_with_lane(intents, ...)`. Если параллельно `wb_orchestrator_kick` добавлял в ту же lane новый intent, например `high.finance_range` от `/sync/initial`, завершающийся tick мог перезаписать более свежий DB state старым snapshot и потерять новый intent.
+
+## Root cause (почему произошло)
+- Недоучтён race condition между `/dashboard/state` auto-kick и `/sync/initial`.
+- Контракт “tick may consume only the work it observed” не был закреплён инвариантом.
+- Недостаток теста на сохранение intents, добавленных во время выполнения background step.
+
+## Исправление (что сделали)
+`wb_orchestrator_tick` теперь перед сохранением результата шага перечитывает актуальный `wb_orchestrator_state` и удаляет только те ключи, которые были в snapshot и не изменились. Intents, добавленные параллельным `wb_orchestrator_kick`, сохраняются и приводят к следующему tick.
+
+## Профилактика (как не повторить)
+Добавлен unit-test, который моделирует consumed `funnel_tail` из старого snapshot и параллельно добавленный `finance_range`; тест гарантирует, что `finance_range` не теряется.
+
+## Проверка
+- Команды: `python3 -m pytest backend/tests/test_wb_orchestrator_intents_merge.py -q`, `ruff check .`, `mypy .`, `pytest`
+- Сценарии: primary registration flow `/dashboard/state` + `/sync/initial` не должен терять finance intent при параллельном funnel-tail tick.
+
+Затронутые файлы: `backend/celery_app/tasks.py`, `backend/tests/test_wb_orchestrator_intents_merge.py`, `BUGLOG.md`, `TASKLOG.md`
+---
+
+---
 ID: BUG-11
 Дата: 2026-04-30
 Статус: fixed

@@ -3,7 +3,13 @@ from typing import Any
 from unittest.mock import patch
 
 from app.models.wb_orchestrator_state import WbOrchestratorState
-from celery_app.tasks import _intents_merge, _intents_with_lane, wb_orchestrator_kick, wb_orchestrator_tick
+from celery_app.tasks import (
+    _intents_after_consumed_step,
+    _intents_merge,
+    _intents_with_lane,
+    wb_orchestrator_kick,
+    wb_orchestrator_tick,
+)
 
 
 class _FakeQuery:
@@ -73,6 +79,32 @@ def test_intents_with_lane_replaces_or_removes_consumed_lane():
     out = _intents_with_lane(out, "high", {})
 
     assert "high" not in out
+    assert out["low"] == {"finance_backfill_year": 2026}
+
+
+def test_consumed_step_preserves_intents_added_by_concurrent_kick():
+    """
+    Регрессия первичного входа: /dashboard/state мог запустить funnel_tail, а /sync/initial
+    почти одновременно добавлял finance_range. Завершение funnel step не должно стирать
+    finance_range из более свежего состояния.
+    """
+    snapshot = {"high": {"funnel_tail": True}}
+    current = {
+        "high": {
+            "funnel_tail": True,
+            "finance_range": {"date_from": "2026-04-01", "date_to": "2026-04-30"},
+        },
+        "low": {"finance_backfill_year": 2026},
+    }
+
+    out = _intents_after_consumed_step(
+        current,
+        snapshot,
+        "high",
+        {},
+    )
+
+    assert out["high"] == {"finance_range": {"date_from": "2026-04-01", "date_to": "2026-04-30"}}
     assert out["low"] == {"finance_backfill_year": 2026}
 
 
