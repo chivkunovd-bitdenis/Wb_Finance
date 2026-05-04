@@ -27,6 +27,19 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    restart: unless-stopped
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   api:
     restart: unless-stopped
     build:
@@ -41,6 +54,7 @@ services:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
       # AI daily brief + внешние вызовы к LLM выключены по умолчанию
       DAILY_BRIEF_ENABLED: "false"
     depends_on:
@@ -48,12 +62,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     volumes:
       - ./backend/.env:/app/.env
       - ./backend/app:/app/app
       - ./backend/celery_app:/app/celery_app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/data:/app/data
     # entrypoint: при уже актуальной alembic_version пропускает upgrade (обход overlaps на head).
     command: ["python", "/app/docker_entrypoint_api.py"]
     healthcheck:
@@ -80,11 +97,14 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
       DAILY_BRIEF_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       - ./backend/.env:/app/.env
@@ -92,6 +112,7 @@ services:
       - ./backend/celery_app:/app/celery_app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/data:/app/data
     command: celery -A celery_app.celery worker --loglevel=info
 
   celery_beat:
@@ -105,11 +126,14 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
       DAILY_BRIEF_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       - ./backend/.env:/app/.env
@@ -117,6 +141,7 @@ services:
       - ./backend/celery_app:/app/celery_app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/data:/app/data
     command: celery -A celery_app.celery beat --loglevel=info
 
   caddy:
@@ -137,5 +162,6 @@ services:
 
 volumes:
   postgres_data:
+  qdrant_data:
   caddy_data:
   caddy_config:

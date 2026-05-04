@@ -376,6 +376,53 @@ export async function triggerDailyBrief() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Offer AI (RAG по оферте WB) ───────────────────────────────────────────────
+
+export async function getOfferAiStatus() {
+  const res = await apiFetch(`${API_BASE}/offer/status`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function uploadOfferAiFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await apiFetch(`${API_BASE}/offer/upload`, {
+    method: 'POST',
+    headers: (() => {
+      const h = headers();
+      // Важно: для FormData нельзя ставить Content-Type вручную
+      delete h['Content-Type'];
+      return h;
+    })(),
+    body: form,
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function askOfferAi(question) {
+  const res = await apiFetch(`${API_BASE}/offer/ask`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ question }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function getBillingStatus() {
   const res = await apiFetch(`${API_BASE}/billing/status`, { headers: headers() });
   if (res.status === 401) throw new Error('unauthorized');

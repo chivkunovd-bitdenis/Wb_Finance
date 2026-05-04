@@ -1,0 +1,206 @@
+/* eslint react-hooks/set-state-in-effect: off */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as api from '../api';
+
+function StatusPill({ status, version }) {
+  const cfg = (() => {
+    if (status === 'ready') return { bg: 'rgba(20,184,166,0.12)', border: 'rgba(20,184,166,0.35)', color: '#0f766e', text: 'Готово' };
+    if (status === 'indexing') return { bg: 'rgba(124,58,237,0.10)', border: 'rgba(124,58,237,0.25)', color: '#7c3aed', text: 'Индексация' };
+    if (status === 'failed') return { bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.25)', color: '#b91c1c', text: 'Ошибка' };
+    return { bg: 'rgba(100,116,196,0.08)', border: 'rgba(100,116,196,0.20)', color: '#475569', text: 'Не загружено' };
+  })();
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 10px',
+        borderRadius: 999,
+        background: cfg.bg,
+        border: `1px solid ${cfg.border}`,
+        color: cfg.color,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+      }}
+      title={version ? `Версия: ${version}` : undefined}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: cfg.color, display: 'inline-block', opacity: 0.8 }} />
+      {cfg.text}{version ? ` • ${version}` : ''}
+    </div>
+  );
+}
+
+export default function OfferAiBlock() {
+  const [status, setStatus] = useState({ status: 'idle', active_version: null, indexed_at: null, error_message: null });
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState('');
+
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileRef = useRef(null);
+
+  const [question, setQuestion] = useState('');
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [sources, setSources] = useState([]);
+
+  const canAsk = useMemo(() => (status?.status === 'ready' && status?.active_version), [status]);
+
+  async function refreshStatus() {
+    setStatusLoading(true);
+    setStatusError('');
+    try {
+      const s = await api.getOfferAiStatus();
+      setStatus(s || { status: 'idle' });
+    } catch (e) {
+      setStatusError(e?.message || 'Не удалось загрузить статус');
+    } finally {
+      setStatusLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshStatus();
+  }, []);
+
+  // Polling while indexing
+  useEffect(() => {
+    if (status?.status !== 'indexing') return;
+    const tid = setInterval(() => refreshStatus(), 4000);
+    return () => clearInterval(tid);
+  }, [status?.status]);
+
+  async function onUploadClick() {
+    setUploadError('');
+    const file = fileRef.current?.files?.[0];
+    if (!file) {
+      setUploadError('Выберите файл (.pdf/.txt/.html)');
+      return;
+    }
+    setUploading(true);
+    try {
+      await api.uploadOfferAiFile(file);
+      await refreshStatus();
+    } catch (e) {
+      setUploadError(e?.message || 'Не удалось загрузить оферту');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function onAsk() {
+    setAskError('');
+    setAnswer('');
+    setSources([]);
+    const q = (question || '').trim();
+    if (!q) {
+      setAskError('Введите вопрос');
+      return;
+    }
+    setAsking(true);
+    try {
+      const res = await api.askOfferAi(q);
+      setAnswer(res?.answer || '');
+      setSources(Array.isArray(res?.sources) ? res.sources : []);
+    } catch (e) {
+      setAskError(e?.message || 'Не удалось получить ответ');
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  return (
+    <div className="ai-card" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div className="ai-icon">✦</div>
+          <div className="ai-body">
+            <h3>AI по оферте WB</h3>
+            <p>Загрузите оферту и задавайте вопросы. Ответы строятся только по тексту оферты.</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <StatusPill status={status?.status} version={status?.active_version} />
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary"
+            onClick={refreshStatus}
+            disabled={statusLoading}
+            title="Обновить статус"
+          >
+            Обновить
+          </button>
+        </div>
+      </div>
+
+      {statusError && <div className="alert alert-danger" style={{ marginTop: 12 }}>{statusError}</div>}
+      {status?.status === 'failed' && status?.error_message && (
+        <div className="alert alert-danger" style={{ marginTop: 12 }}>
+          Индексация завершилась ошибкой: {status.error_message}
+        </div>
+      )}
+
+      <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'end' }}>
+        <div>
+          <label style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 6, display: 'block' }}>Файл оферты (.pdf/.txt/.html)</label>
+          <input ref={fileRef} type="file" className="form-control" accept=".pdf,.txt,.html" />
+          {uploadError && <div style={{ color: 'var(--red)', marginTop: 6 }}>{uploadError}</div>}
+        </div>
+        <button type="button" className="btn btn-primary" onClick={onUploadClick} disabled={uploading}>
+          {uploading ? 'Загрузка…' : 'Загрузить и проиндексировать'}
+        </button>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <label style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 6, display: 'block' }}>Вопрос</label>
+        <textarea
+          className="form-control"
+          rows={3}
+          placeholder={canAsk ? 'Например: Какие условия возврата товара?' : 'Сначала проиндексируйте оферту'}
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          disabled={!canAsk || asking}
+        />
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
+          <button type="button" className="btn btn-outline-primary" onClick={onAsk} disabled={!canAsk || asking}>
+            {asking ? 'Думаю…' : 'Спросить'}
+          </button>
+          {!canAsk && (
+            <div style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>
+              Доступно после статуса <b>Готово</b>.
+            </div>
+          )}
+          {askError && <div style={{ color: 'var(--red)' }}>{askError}</div>}
+        </div>
+      </div>
+
+      {(answer || sources.length > 0) && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>Ответ</div>
+          <div style={{ whiteSpace: 'pre-wrap', background: 'rgba(2,6,23,0.03)', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 12, padding: 12 }}>
+            {answer || '—'}
+          </div>
+
+          {sources.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Использованные фрагменты</div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {sources.slice(0, 6).map((s, idx) => (
+                  <div key={idx} style={{ border: '1px solid rgba(2,6,23,0.08)', borderRadius: 12, padding: 10, background: '#fff' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginBottom: 6 }}>
+                      chunk #{s.chunk_id} • score {Number(s.score || 0).toFixed(3)}
+                    </div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{s.text}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+

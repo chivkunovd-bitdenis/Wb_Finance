@@ -8,6 +8,10 @@ services:
     ports:
       - "6380:6379"
 
+  qdrant:
+    ports:
+      - "6334:6333"
+
   api:
     ports:
       - "8001:8000"

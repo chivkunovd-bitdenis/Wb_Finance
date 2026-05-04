@@ -2428,3 +2428,26 @@ def generate_all_daily_briefs() -> dict:
         return {"ok": False, "error": str(e)}
     finally:
         db.close()
+
+
+@celery_app.task(name="index_offer_document")
+def index_offer_document(file_path: str, version: str) -> dict:
+    """
+    Проиндексировать оферту WB в Qdrant:
+    parse → chunk → embeddings → upsert.
+
+    Храним активную версию в Redis, и после успешной индексации чистим старую версию точечно.
+    """
+    from app.services.offer_index_state import get_offer_index_state, mark_failed, mark_ready
+    from app.services.offer_rag_service import index_offer_file
+
+    st = get_offer_index_state()
+    prev_version = st.active_version
+    try:
+        res = index_offer_file(file_path=file_path, version=version, prev_version=prev_version)
+        mark_ready(active_version=version)
+        return {"ok": True, "result": res}
+    except Exception as exc:
+        mark_failed(error_message=str(exc))
+        logger.exception("offer_ai: indexing failed version=%s path=%s err=%s", version, file_path, type(exc).__name__)
+        return {"ok": False, "error": str(exc)}

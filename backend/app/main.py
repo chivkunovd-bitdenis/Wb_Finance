@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth, sync, dashboard, billing, stores
 from app.routers import daily_brief
+from app.routers import offer_ai
 from app.middleware.request_logging import RequestLoggingMiddleware
 
 app = FastAPI(title="WB Finance API", version="0.1.0")
@@ -40,6 +41,7 @@ app.include_router(dashboard.router)
 app.include_router(billing.router)
 app.include_router(daily_brief.router)
 app.include_router(stores.router)
+app.include_router(offer_ai.router)
 
 
 @app.get("/health")
