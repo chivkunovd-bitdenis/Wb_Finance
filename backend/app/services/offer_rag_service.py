@@ -30,8 +30,8 @@ _AI_EMBED_MODEL = os.getenv("AI_EMBED_MODEL") or "text-embedding-3-small"
 
 _QDRANT_URL = (os.getenv("QDRANT_URL") or "http://localhost:6333").strip()
 
-_CHUNK_SIZE = int(os.getenv("OFFER_CHUNK_SIZE") or "900")
-_CHUNK_OVERLAP = int(os.getenv("OFFER_CHUNK_OVERLAP") or "140")
+_CHUNK_SIZE = int(os.getenv("OFFER_CHUNK_SIZE") or "1000")
+_CHUNK_OVERLAP = int(os.getenv("OFFER_CHUNK_OVERLAP") or "150")
 _TOP_K = int(os.getenv("OFFER_TOP_K") or "5")
 _TEMPERATURE = float(os.getenv("OFFER_TEMPERATURE") or "0.3")
 
@@ -196,7 +196,12 @@ def extract_text_from_file(path: Path) -> str:
 
 def chunk_offer_text(text: str) -> list[str]:
     # LlamaIndex splitter: стабильнее, чем наивный split
-    splitter = SentenceSplitter(chunk_size=_CHUNK_SIZE, chunk_overlap=_CHUNK_OVERLAP)
+    splitter = SentenceSplitter(
+        chunk_size=_CHUNK_SIZE,
+        chunk_overlap=_CHUNK_OVERLAP,
+        paragraph_separator="\n\n",
+        separator=" ",
+    )
     # SentenceSplitter expects documents; avoid pulling full Document stack:
     # Use internal split_text for minimal dependency.
     chunks = splitter.split_text(text)
@@ -256,6 +261,11 @@ def index_offer_file(*, file_path: str, version: str, prev_version: str | None) 
     vector_size = len(embeddings[0])
     client = _qdrant()
     _ensure_collection(client, vector_size=vector_size)
+
+    # Полная переиндексация: если повторно индексируем тот же файл (тот же version),
+    # то набор чанков может поменяться (из-за параметров splitter), поэтому сначала
+    # удаляем все точки этой версии, чтобы не оставить "хвост" старых chunk_id.
+    delete_version_points(version=version)
 
     points: list[qmodels.PointStruct] = []
     for i, (chunk, vec) in enumerate(zip(chunks, embeddings, strict=True)):
