@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID, uuid5
 
 import httpx
 from llama_index.core.node_parser import SentenceSplitter
@@ -42,6 +43,11 @@ def compute_offer_version(raw_bytes: bytes) -> str:
     # короткий, но достаточно уникальный идентификатор версии
     h = hashlib.sha256(raw_bytes).hexdigest()
     return h[:16]
+
+def _point_uuid(*, version: str, chunk_id: int) -> UUID:
+    # Qdrant PointId must be uint or UUID (string IDs are rejected).
+    # Keep it deterministic so re-indexing is idempotent per version+chunk.
+    return uuid5(UUID("00000000-0000-0000-0000-000000000000"), f"{version}:{chunk_id}")
 
 
 def extract_text_from_file(path: Path) -> str:
@@ -149,7 +155,7 @@ def index_offer_file(*, file_path: str, version: str, prev_version: str | None) 
     for i, (chunk, vec) in enumerate(zip(chunks, embeddings, strict=True)):
         points.append(
             qmodels.PointStruct(
-                id=f"{version}:{i}",
+                id=_point_uuid(version=version, chunk_id=i),
                 vector=vec,
                 payload={
                     "offer_version": version,
