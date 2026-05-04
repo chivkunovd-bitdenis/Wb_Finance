@@ -304,6 +304,7 @@ class OfferSource:
     score: float
     chunk_id: int
     text: str
+    metadata: dict | None = None
 
 
 def ask_offer(*, question: str, active_version: str) -> tuple[str, list[OfferSource]]:
@@ -321,7 +322,7 @@ def ask_offer(*, question: str, active_version: str) -> tuple[str, list[OfferSou
             chunk_id = int(meta.get("chunk_id") or 0)
         except Exception:
             chunk_id = 0
-        sources.append(OfferSource(score=score, chunk_id=chunk_id, text=text))
+        sources.append(OfferSource(score=score, chunk_id=chunk_id, text=text, metadata=dict(meta) if meta else None))
 
     if not sources:
         # strict no-hallucination contract

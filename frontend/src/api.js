@@ -423,6 +423,60 @@ export async function askOfferAi(question) {
   return res.json();
 }
 
+export async function startOfferAiChat(chatId) {
+  const res = await apiFetch(`${API_BASE}/offer/chat/start`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ chat_id: chatId }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function resetOfferAiChat(chatId) {
+  const res = await apiFetch(`${API_BASE}/offer/chat/reset`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ chat_id: chatId }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getOfferAiChatHistory(chatId) {
+  const p = new URLSearchParams();
+  p.set('chat_id', chatId);
+  const res = await apiFetch(`${API_BASE}/offer/chat/history?${p}`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function askOfferAiChat(chatId, message) {
+  const res = await apiFetch(`${API_BASE}/offer/chat/ask`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ chat_id: chatId, message }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function getBillingStatus() {
   const res = await apiFetch(`${API_BASE}/billing/status`, { headers: headers() });
   if (res.status === 401) throw new Error('unauthorized');

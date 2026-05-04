@@ -22,6 +22,8 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.store_access_grant import StoreAccessGrant
 from app.models.store_access_audit_event import StoreAccessAuditEvent
 from app.models.wb_orchestrator_state import WbOrchestratorState
+from app.models.offer_ai_chat import OfferAiChat
+from app.models.offer_ai_message import OfferAiMessage
 
 __all__ = [
     "Base",
@@ -48,4 +50,6 @@ __all__ = [
     "StoreAccessGrant",
     "StoreAccessAuditEvent",
     "WbOrchestratorState",
+    "OfferAiChat",
+    "OfferAiMessage",
 ]

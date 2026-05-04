@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     wb_api_key: str | None
+    is_admin: bool
     is_active: bool
 
     class Config:

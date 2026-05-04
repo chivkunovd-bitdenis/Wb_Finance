@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.dependencies import get_current_user
+from app.db import SessionLocal
+from app.models.user import User
 
 
 class _FakeRedis:
@@ -24,7 +26,31 @@ class _FakeRedis:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Generator[TestClient, None, None]:
     # Auth bypass
-    app.dependency_overrides[get_current_user] = lambda: MagicMock(id="u", is_active=True)
+    user_id = "00000000-0000-0000-0000-000000000002"
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(
+        id="00000000-0000-0000-0000-000000000002",
+        is_active=True,
+        is_admin=True,
+    )
+
+    # Ensure user exists in DB (chat tables have FK to users.id)
+    db = SessionLocal()
+    try:
+        existing = db.query(User).filter(User.id == user_id).first()
+        if not existing:
+            db.add(
+                User(
+                    id=user_id,
+                    email="admin@example.com",
+                    password_hash="x",
+                    wb_api_key=None,
+                    is_admin=True,
+                    is_active=True,
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
 
     # Redirect offer storage to temp dir
     monkeypatch.setenv("OFFER_DATA_DIR", str(tmp_path / "offers"))
@@ -108,5 +134,67 @@ def test_offer_ask_happy_path(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert data["answer"] == "ответ"
     assert data["active_version"] == "v1"
     assert isinstance(data["sources"], list)
+    assert data["sources"][0]["chunk_id"] == 1
+
+
+def test_offer_chat_requires_admin(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Seed redis state to ready
+    from app.services.offer_index_state import set_offer_index_state, OfferIndexState
+
+    set_offer_index_state(
+        OfferIndexState(
+            status="ready",
+            active_version="v1",
+            indexed_at="2026-05-04T00:00:00+00:00",
+            error_message=None,
+        )
+    )
+
+    # Override auth for this test: non-admin user
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(
+        id="00000000-0000-0000-0000-000000000002",
+        is_active=True,
+        is_admin=False,
+    )
+
+    r = client.post("/offer/chat/start", json={"chat_id": "00000000-0000-0000-0000-000000000001"})
+    assert r.status_code == 403
+
+
+def test_offer_chat_happy_path(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.offer_index_state import set_offer_index_state, OfferIndexState
+
+    set_offer_index_state(
+        OfferIndexState(
+            status="ready",
+            active_version="v1",
+            indexed_at="2026-05-04T00:00:00+00:00",
+            error_message=None,
+        )
+    )
+
+    # avoid real llm condense + real rag
+    monkeypatch.setattr(
+        "app.services.offer_chat_service.condense_question",
+        lambda *, history, message: type("X", (), {"standalone_question": message, "need_clarification": False, "clarifying_question": None})(),
+    )
+    monkeypatch.setattr(
+        "app.services.offer_chat_service.ask_offer",
+        lambda *, question, active_version: (
+            "ответ",
+            [MagicMock(chunk_id=1, score=0.9, text="кусок", metadata={"chunk_id": 1})],
+        ),
+    )
+
+    r0 = client.post("/offer/chat/start", json={"chat_id": "00000000-0000-0000-0000-000000000001"})
+    assert r0.status_code == 200
+
+    r = client.post("/offer/chat/ask", json={"chat_id": "00000000-0000-0000-0000-000000000001", "message": "вопрос"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["chat_id"] == "00000000-0000-0000-0000-000000000001"
+    assert data["answer"] == "ответ"
+    assert data["active_version"] == "v1"
+    assert data["need_clarification"] is False
     assert data["sources"][0]["chunk_id"] == 1
 

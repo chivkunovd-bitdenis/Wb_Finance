@@ -41,6 +41,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
             email=body.email.lower().strip(),
             password_hash=hash_password(pwd),
             wb_api_key=body.wb_api_key.strip() if body.wb_api_key else None,
+            is_admin=False,
             is_active=True,
         )
         db.add(user)
@@ -68,6 +69,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
             id=_user_id(user),
             email=user.email,
             wb_api_key=user.wb_api_key,
+            is_admin=bool(user.is_admin),
             is_active=user.is_active,
         )
     except HTTPException:
@@ -105,6 +107,7 @@ def me(store_ctx: StoreContext = Depends(get_store_context)):
         id=_user_id(current_user),
         email=current_user.email,
         wb_api_key=current_user.wb_api_key,
+        is_admin=bool(getattr(current_user, "is_admin", False)),
         is_active=current_user.is_active,
     )
 
@@ -124,6 +127,7 @@ def update_wb_key(
         id=_user_id(current_user),
         email=current_user.email,
         wb_api_key=current_user.wb_api_key,
+        is_admin=bool(getattr(current_user, "is_admin", False)),
         is_active=current_user.is_active,
     )
 
