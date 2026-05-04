@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid5
 
-import httpx
+from llama_index.core import PromptTemplate, Settings, get_response_synthesizer
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
+from llama_index.core.schema import NodeWithScore, TextNode
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
@@ -27,7 +32,8 @@ _QDRANT_URL = (os.getenv("QDRANT_URL") or "http://localhost:6333").strip()
 
 _CHUNK_SIZE = int(os.getenv("OFFER_CHUNK_SIZE") or "900")
 _CHUNK_OVERLAP = int(os.getenv("OFFER_CHUNK_OVERLAP") or "140")
-_TOP_K = int(os.getenv("OFFER_TOP_K") or "6")
+_TOP_K = int(os.getenv("OFFER_TOP_K") or "5")
+_TEMPERATURE = float(os.getenv("OFFER_TEMPERATURE") or "0.3")
 
 
 def _require_ai_key() -> None:
@@ -38,6 +44,119 @@ def _require_ai_key() -> None:
 def _qdrant() -> QdrantClient:
     return QdrantClient(url=_QDRANT_URL, timeout=60.0)
 
+def _llama_settings() -> None:
+    """
+    Configure LlamaIndex global settings.
+    We use our existing env vars (AI_API_KEY / AI_API_BASE_URL) instead of OPENAI_API_KEY.
+    """
+    _require_ai_key()
+    Settings.embed_model = OpenAIEmbedding(
+        model=_AI_EMBED_MODEL,
+        api_key=_AI_API_KEY,
+        api_base=_AI_API_BASE,
+        timeout=_AI_TIMEOUT_SEC,
+    )
+    Settings.llm = OpenAI(
+        model=_AI_MODEL,
+        temperature=_TEMPERATURE,
+        api_key=_AI_API_KEY,
+        api_base=_AI_API_BASE,
+        timeout=_AI_TIMEOUT_SEC,
+        max_tokens=900,
+    )
+
+
+def _offer_prompt_template() -> PromptTemplate:
+    template = """Ты — ассистент по оферте Wildberries.
+
+Отвечай ТОЛЬКО на основании контекста из оферты. Нельзя выдумывать.
+Если в контексте нет ответа — прямо скажи, что ответа в контексте нет, и не додумывай.
+
+Требования к ответу:
+- объясняй простыми словами;
+- не начинай с цитаты;
+- дай пример;
+- объясни практический риск для селлера;
+- в конце кратко укажи основание в оферте (по смыслу, можно сослаться на фрагменты).
+
+Формат ответа (строго):
+Коротко:
+Простыми словами:
+Пример:
+Что важно для селлера:
+Основание в оферте:
+
+Контекст из оферты:
+{context_str}
+
+Вопрос:
+{query_str}
+"""
+    return PromptTemplate(template)
+
+
+def _offer_query_engine(*, version: str) -> RetrieverQueryEngine:
+    _llama_settings()
+    retriever = _QdrantOfferRetriever(
+        qdrant=_qdrant(),
+        offer_version=version,
+        similarity_top_k=_TOP_K,
+    )
+    synthesizer = get_response_synthesizer(
+        response_mode="compact",
+        text_qa_template=_offer_prompt_template(),
+    )
+    return RetrieverQueryEngine(retriever=retriever, response_synthesizer=synthesizer)
+
+
+class _QdrantOfferRetriever(BaseRetriever):
+    def __init__(self, *, qdrant: QdrantClient, offer_version: str, similarity_top_k: int) -> None:
+        super().__init__()
+        self._qdrant = qdrant
+        self._offer_version = offer_version
+        self._top_k = int(similarity_top_k)
+
+    def _retrieve(self, query_bundle):  # type: ignore[override]
+        query_str = str(getattr(query_bundle, "query_str", "") or "")
+        if not query_str.strip():
+            return []
+
+        # LlamaIndex provides embedding model via Settings; use it to embed query.
+        q_vec = Settings.embed_model.get_text_embedding(query_str)  # type: ignore[no-any-return]
+
+        flt = qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="offer_version",
+                    match=qmodels.MatchValue(value=self._offer_version),
+                )
+            ]
+        )
+        points = self._qdrant.query_points(
+            collection_name=OFFER_COLLECTION,
+            query=q_vec,
+            limit=self._top_k,
+            with_payload=True,
+            query_filter=flt,
+        ).points
+
+        out: list[NodeWithScore] = []
+        for p in points or []:
+            payload = p.payload or {}
+            text = str(payload.get("text") or "")
+            try:
+                chunk_id = int(payload.get("chunk_id") or 0)
+            except Exception:
+                chunk_id = 0
+            node = TextNode(
+                text=text,
+                metadata={
+                    "offer_version": self._offer_version,
+                    "chunk_id": chunk_id,
+                },
+            )
+            out.append(NodeWithScore(node=node, score=float(p.score or 0.0)))
+        return out
 
 def compute_offer_version(raw_bytes: bytes) -> str:
     # короткий, но достаточно уникальный идентификатор версии
@@ -84,24 +203,11 @@ def chunk_offer_text(text: str) -> list[str]:
     return [c.strip() for c in chunks if c and c.strip()]
 
 
-def _openai_embeddings(texts: list[str]) -> list[list[float]]:
-    _require_ai_key()
-    url = f"{_AI_API_BASE}/embeddings"
-    headers = {"Authorization": f"Bearer {_AI_API_KEY}", "Content-Type": "application/json"}
-    body = {"model": _AI_EMBED_MODEL, "input": texts}
-    resp = httpx.post(url, headers=headers, json=body, timeout=_AI_TIMEOUT_SEC)
-    resp.raise_for_status()
-    data = resp.json()
-    items = data.get("data") or []
-    embeddings: list[list[float]] = []
-    for it in items:
-        emb = it.get("embedding")
-        if not isinstance(emb, list):
-            raise ValueError("Bad embeddings response")
-        embeddings.append([float(x) for x in emb])
-    if len(embeddings) != len(texts):
-        raise ValueError("Embeddings size mismatch")
-    return embeddings
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    _llama_settings()
+    # Settings.embed_model is OpenAIEmbedding
+    embs = Settings.embed_model.get_text_embedding_batch(texts)  # type: ignore[no-any-return]
+    return [[float(x) for x in e] for e in embs]
 
 
 def _ensure_collection(client: QdrantClient, *, vector_size: int) -> None:
@@ -145,7 +251,7 @@ def index_offer_file(*, file_path: str, version: str, prev_version: str | None) 
     embeddings: list[list[float]] = []
     batch = 64
     for i in range(0, len(chunks), batch):
-        embeddings.extend(_openai_embeddings(chunks[i : i + batch]))
+        embeddings.extend(_embed_texts(chunks[i : i + batch]))
 
     vector_size = len(embeddings[0])
     client = _qdrant()
@@ -158,8 +264,10 @@ def index_offer_file(*, file_path: str, version: str, prev_version: str | None) 
                 id=_point_uuid(version=version, chunk_id=i),
                 vector=vec,
                 payload={
+                    # Qdrant payload == LlamaIndex node metadata.
                     "offer_version": version,
                     "chunk_id": i,
+                    # Keep raw text also in payload to enable direct UI inspection.
                     "text": chunk,
                 },
             )
@@ -188,78 +296,39 @@ class OfferSource:
     text: str
 
 
-def _qdrant_search(*, query_vector: list[float], version: str) -> list[OfferSource]:
-    client = _qdrant()
-    flt = qmodels.Filter(
-        must=[qmodels.FieldCondition(key="offer_version", match=qmodels.MatchValue(value=version))]
-    )
-    # qdrant-client>=1.17: используем unified query_points API
-    res = client.query_points(
-        collection_name=OFFER_COLLECTION,
-        query=query_vector,
-        limit=_TOP_K,
-        with_payload=True,
-        query_filter=flt,
-    ).points
-    out: list[OfferSource] = []
-    for p in res or []:
-        payload = p.payload or {}
-        text = str(payload.get("text") or "")
+def ask_offer(*, question: str, active_version: str) -> tuple[str, list[OfferSource]]:
+    engine = _offer_query_engine(version=active_version)
+    response = engine.query(question)
+
+    # sources from LlamaIndex
+    sources: list[OfferSource] = []
+    for sn in getattr(response, "source_nodes", []) or []:
+        node = getattr(sn, "node", None)
+        score = float(getattr(sn, "score", 0.0) or 0.0)
+        text = str(getattr(node, "text", "") or "")
+        meta = getattr(node, "metadata", {}) or {}
         try:
-            chunk_id = int(payload.get("chunk_id") or 0)
+            chunk_id = int(meta.get("chunk_id") or 0)
         except Exception:
             chunk_id = 0
-        out.append(OfferSource(score=float(p.score or 0.0), chunk_id=chunk_id, text=text))
-    return out
+        sources.append(OfferSource(score=score, chunk_id=chunk_id, text=text))
 
-
-def _openai_chat_answer(*, question: str, context: str) -> str:
-    _require_ai_key()
-    url = f"{_AI_API_BASE}/chat/completions"
-    headers = {"Authorization": f"Bearer {_AI_API_KEY}", "Content-Type": "application/json"}
-
-    system = (
-        "Ты помощник по оферте Wildberries. Отвечай ТОЛЬКО на основании предоставленного контекста.\n"
-        "Если в контексте нет ответа — честно скажи, что в оферте это не найдено.\n"
-        "Не выдумывай. Пиши кратко и по делу. При необходимости цитируй фразы из контекста."
-    )
-    user = f"КОНТЕКСТ (фрагменты оферты):\n{context}\n\nВОПРОС:\n{question}\n"
-
-    body = {
-        "model": _AI_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 800,
-    }
-    resp = httpx.post(url, headers=headers, json=body, timeout=_AI_TIMEOUT_SEC)
-    resp.raise_for_status()
-    data = resp.json()
-    choices = data.get("choices") or []
-    if not choices:
-        raise ValueError("Пустой ответ от LLM")
-    text: str = choices[0].get("message", {}).get("content") or ""
-    return text.strip()
-
-
-def ask_offer(*, question: str, active_version: str) -> tuple[str, list[OfferSource]]:
-    q_emb = _openai_embeddings([question])[0]
-    sources = _qdrant_search(query_vector=q_emb, version=active_version)
     if not sources:
-        return "В оферте не найдено релевантных фрагментов под этот вопрос.", []
+        # strict no-hallucination contract
+        answer = (
+            "Коротко:\n"
+            "В контексте оферты нет ответа на этот вопрос.\n\n"
+            "Простыми словами:\n"
+            "Я не нашёл в загруженной оферте подходящих фрагментов, чтобы ответить уверенно.\n\n"
+            "Пример:\n"
+            "Если в оферте нет условия про конкретную ситуацию, я не могу его придумать.\n\n"
+            "Что важно для селлера:\n"
+            "Лучше уточнить формулировку вопроса или проверить актуальную редакцию оферты.\n\n"
+            "Основание в оферте:\n"
+            "Нет релевантных фрагментов в найденных чанках."
+        )
+        return answer, []
 
-    # ограничиваем контекст по длине, чтобы не сжечь токены
-    ctx_parts: list[str] = []
-    for s in sources[: min(len(sources), 6)]:
-        t = (s.text or "").strip()
-        if not t:
-            continue
-        if len(t) > 1400:
-            t = t[:1400] + "…"
-        ctx_parts.append(f"[chunk {s.chunk_id} | score={s.score:.3f}]\n{t}")
-    context = "\n\n---\n\n".join(ctx_parts)
-    answer = _openai_chat_answer(question=question, context=context)
-    return answer, sources
+    text_out = str(getattr(response, "response", "") or "").strip()
+    return text_out, sources
 
