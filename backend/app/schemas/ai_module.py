@@ -162,3 +162,32 @@ class AiDailyAnalyticsRunResponse(BaseModel):
     created_task_ids: list[str]
     created_hypothesis_ids: list[str]
 
+
+class AiWbCredentialsUpsertRequest(BaseModel):
+    wb_login: str
+    wb_password: str
+
+
+class AiWbCredentialsStatusResponse(BaseModel):
+    status: str  # active|invalid|needs_reauth|disabled|missing
+    last_verified_at: datetime | None = None
+    last_error: str | None = None
+
+
+class AiTaskExecuteResponse(BaseModel):
+    status: str
+    task_id: str
+    message: str | None = None
+
+
+class AiCompetitorReportRefreshRequest(BaseModel):
+    period: str = Field(..., description="week|month|quarter")
+
+
+class AiCompetitorReportStatusResponse(BaseModel):
+    status: str  # missing|ready|stale|running|error
+    report_id: str | None = None
+    report_date: date | None = None
+    valid_until: date | None = None
+    last_error: str | None = None
+

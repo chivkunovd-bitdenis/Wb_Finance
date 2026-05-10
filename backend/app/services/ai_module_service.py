@@ -78,6 +78,30 @@ def update_task_status(*, db: Session, user_id: str, task_id: str, status: str) 
     return row
 
 
+def execute_task(*, db: Session, user_id: str, task_id: str) -> None:
+    """
+    Execute a task that represents an explicit user confirmation (spend/automation).
+
+    Contract:
+    - must be idempotent (re-executing should not enqueue multiple identical jobs)
+    - only allowed for specific task_type values
+    """
+    row = get_task(db=db, user_id=user_id, task_id=task_id)
+    if row.status not in {"new", "in_progress"}:
+        raise InvalidTransitionError("Task can be executed only when open")
+
+    if row.task_type not in {"competitor_report_refresh", "competitor_report_create"}:
+        raise InvalidTransitionError("Task type is not executable")
+
+    # If already in_progress, treat as idempotent no-op.
+    if row.status == "in_progress":
+        return
+
+    # Mark as in_progress (allowed transition new -> in_progress)
+    update_task_status(db=db, user_id=user_id, task_id=task_id, status="in_progress")
+
+
+
 def list_hypotheses(*, db: Session, user_id: str) -> list[AiHypothesis]:
     return (
         db.query(AiHypothesis)

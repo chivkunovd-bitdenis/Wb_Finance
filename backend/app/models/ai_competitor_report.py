@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Column, Date, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.models.base import Base, uuid_gen
@@ -21,6 +21,11 @@ class AiCompetitorComparisonReport(Base):
     period = Column(String(16), nullable=False, default="unknown")  # week|month|quarter|unknown
     source = Column(String(32), nullable=False, default="manual")  # manual|playwright
 
+    valid_until = Column(Date, nullable=True)
+    status = Column(String(16), nullable=False, default="ready")  # ready|stale|running|error
+    cost_or_limit_spent = Column(Boolean, nullable=False, default=False)
+    last_error = Column(Text, nullable=True)
+
     raw_payload = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
@@ -32,6 +37,10 @@ class AiCompetitorComparisonReport(Base):
             "report_date",
             "period",
             name="uq_ai_competitor_report_user_date_period",
+        ),
+        CheckConstraint(
+            "status in ('ready','stale','running','error')",
+            name="ck_ai_competitor_reports_status",
         ),
     )
 

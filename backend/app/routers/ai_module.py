@@ -12,6 +12,8 @@ from app.schemas.ai_module import (
     AiCompetitorReportImportRequest,
     AiCompetitorReportItem,
     AiCompetitorReportListResponse,
+    AiCompetitorReportRefreshRequest,
+    AiCompetitorReportStatusResponse,
     AiCompetitorMetricItem,
     AiDailyAnalyticsRunRequest,
     AiDailyAnalyticsRunResponse,
@@ -25,12 +27,16 @@ from app.schemas.ai_module import (
     AiHypothesisStartResponse,
     AiTaskItem,
     AiTaskListResponse,
+    AiTaskExecuteResponse,
     AiTaskUpdateRequest,
+    AiWbCredentialsStatusResponse,
+    AiWbCredentialsUpsertRequest,
 )
 from app.services.ai_competitor_service import (
     InvalidPayloadError as CompetitorInvalidPayloadError,
     NotFoundError as CompetitorNotFoundError,
     get_report as get_competitor_report,
+    get_latest_report as get_latest_competitor_report,
     import_competitor_report,
     list_report_metrics,
     list_reports as list_competitor_reports,
@@ -43,6 +49,7 @@ from app.services.ai_daily_analytics_service import (
 from app.services.ai_module_service import (
     InvalidTransitionError,
     NotFoundError,
+    execute_task,
     finish_hypothesis,
     get_hypothesis,
     get_task,
@@ -52,7 +59,14 @@ from app.services.ai_module_service import (
     upsert_hypothesis_daily_log,
     update_task_status,
 )
+from app.services.ai_wb_credentials_service import (
+    InvalidPayloadError as CredsInvalidPayloadError,
+    credentials_status as get_creds_status,
+    upsert_credentials,
+)
 from app.services.store_access_service import StoreContext
+from celery_app.tasks import ai_competitor_report_fetch_playwright
+from app.models.ai_task import AiTask
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +109,41 @@ def ai_task_patch(
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
     return AiTaskItem.model_validate(row)
+
+
+@router.post("/tasks/{task_id}/execute", response_model=AiTaskExecuteResponse)
+def ai_task_execute(
+    task_id: str,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiTaskExecuteResponse:
+    user_id = str(store_ctx.store_owner.id)
+    try:
+        # Will mark task as in_progress if needed
+        execute_task(db=db, user_id=user_id, task_id=task_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
+
+    # Enqueue explicit action job based on task_type
+    task = get_task(db=db, user_id=user_id, task_id=task_id)
+    if task.task_type in {"competitor_report_refresh", "competitor_report_create"}:
+        period = None
+        if isinstance(task.current_value, dict):
+            period = task.current_value.get("period")
+        p = (str(period or "week")).strip().lower()
+        try:
+            ai_competitor_report_fetch_playwright.delay(user_id, p)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Celery delay failed (ai_competitor_report_fetch_playwright): %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось поставить задачу в очередь (celery/redis недоступны)",
+            ) from exc
+        return AiTaskExecuteResponse(status="ok", task_id=task_id, message="queued")
+
+    return AiTaskExecuteResponse(status="ok", task_id=task_id, message="noop")
 
 
 @router.get("/hypotheses", response_model=AiHypothesisListResponse)
@@ -215,6 +264,34 @@ def ai_competitor_report_import(
     return AiCompetitorReportItem.model_validate(row)
 
 
+@router.put("/wb-credentials", response_model=AiWbCredentialsStatusResponse)
+def ai_wb_credentials_upsert(
+    body: AiWbCredentialsUpsertRequest,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiWbCredentialsStatusResponse:
+    try:
+        upsert_credentials(
+            db=db,
+            user_id=str(store_ctx.store_owner.id),
+            wb_login=body.wb_login,
+            wb_password=body.wb_password,
+        )
+    except CredsInvalidPayloadError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+    st = get_creds_status(db=db, user_id=str(store_ctx.store_owner.id))
+    return AiWbCredentialsStatusResponse(**st)
+
+
+@router.get("/wb-credentials/status", response_model=AiWbCredentialsStatusResponse)
+def ai_wb_credentials_status(
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiWbCredentialsStatusResponse:
+    st = get_creds_status(db=db, user_id=str(store_ctx.store_owner.id))
+    return AiWbCredentialsStatusResponse(**st)
+
+
 @router.get("/competitor-reports", response_model=AiCompetitorReportListResponse)
 def ai_competitor_reports_list(
     store_ctx: StoreContext = Depends(get_store_context),
@@ -239,6 +316,83 @@ def ai_competitor_report_get(
         report=AiCompetitorReportItem.model_validate(rep),
         metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
     )
+
+
+@router.get("/competitor-reports/status", response_model=AiCompetitorReportStatusResponse)
+def ai_competitor_report_status(
+    period: str = "week",
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiCompetitorReportStatusResponse:
+    p = (period or "week").strip().lower()
+    rep = get_latest_competitor_report(db=db, user_id=str(store_ctx.store_owner.id), period=p)
+    if rep is None:
+        return AiCompetitorReportStatusResponse(status="missing")
+    # Treat expired as stale
+    st = rep.status
+    if rep.valid_until is not None:
+        from datetime import date as date_type
+
+        if rep.valid_until < date_type.today():
+            st = "stale"
+    return AiCompetitorReportStatusResponse(
+        status=st,
+        report_id=str(rep.id),
+        report_date=rep.report_date,
+        valid_until=rep.valid_until,
+        last_error=(rep.last_error[:500] if rep.last_error else None),
+    )
+
+
+@router.post("/competitor-reports/request-refresh", response_model=AiTaskItem)
+def ai_competitor_report_request_refresh(
+    body: AiCompetitorReportRefreshRequest,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiTaskItem:
+    period = (body.period or "").strip().lower()
+    if period not in {"week", "month", "quarter"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid period")
+
+    user_id = str(store_ctx.store_owner.id)
+    dedupe_key = f"task:competitor_report_refresh:{period}"
+    existing = (
+        db.query(AiTask)
+        .filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == dedupe_key,
+            AiTask.status.in_(["new", "in_progress"]),
+        )
+        .order_by(AiTask.created_at.desc())
+        .first()
+    )
+    if existing is None:
+        row = AiTask(
+            user_id=user_id,
+            nm_id=None,
+            task_type="competitor_report_refresh",
+            title="Обновить отчёт сравнения с конкурентами",
+            description="Операция может быть платной/лимитной — требуется подтверждение",
+            reason="competitor_report_validity_3d",
+            current_value={"period": period},
+            priority=50,
+            status="new",
+            fingerprint=None,
+            dedupe_key=dedupe_key,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return AiTaskItem.model_validate(row)
+
+    # Refresh explanation only
+    existing.current_value = {"period": period}
+    existing.title = "Обновить отчёт сравнения с конкурентами"
+    existing.description = "Операция может быть платной/лимитной — требуется подтверждение"
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    return AiTaskItem.model_validate(existing)
 
 
 @router.post("/analytics/run", response_model=AiDailyAnalyticsRunResponse)

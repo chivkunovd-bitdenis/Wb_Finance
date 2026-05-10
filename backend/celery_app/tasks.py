@@ -69,6 +69,107 @@ FUNNEL_BACKFILL_START_DATE = date(2026, 1, 1)
 FINANCE_MISSING_LOOKBACK_DAYS = 45
 
 
+# ── AI: competitor comparison report (Playwright + Excel) ─────────────────────
+
+
+@celery_app.task(name="ai_competitor_report_fetch_playwright")
+def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
+    """
+    Fetch WB competitor comparison report via Playwright, parse Excel, and import metrics.
+
+    Safety contract:
+    - This task MUST be enqueued only after explicit user confirmation (UI action /ai/tasks/{id}/execute).
+    """
+    from datetime import date as date_type, timedelta as td
+    from app.services.ai_wb_credentials_service import decrypt_credentials, mark_error, mark_verified
+    from app.services.ai_competitor_excel_parser import ParseError, parse_wb_competitor_excel
+    from app.services.ai_competitor_service import import_competitor_report
+    from app.services.ai_competitor_playwright import (
+        PlaywrightAuthError,
+        PlaywrightBlockedError,
+        fetch_comparison_excel_bytes,
+    )
+
+    db = SessionLocal()
+    try:
+        period = (period or "").strip().lower()
+        if period not in {"week", "month", "quarter"}:
+            return {"ok": False, "error": "invalid_period"}
+
+        try:
+            login, password = decrypt_credentials(db=db, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
+            return {"ok": False, "error": "missing_credentials"}
+
+        report_date = date_type.today()
+
+        try:
+            excel_bytes, raw_meta = fetch_comparison_excel_bytes(login=login, password=password, period=period)
+        except PlaywrightAuthError as exc:
+            mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
+            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            return {"ok": False, "error": "auth_failed"}
+        except PlaywrightBlockedError as exc:
+            mark_error(db=db, user_id=user_id, status="needs_reauth", message=str(exc))
+            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            return {"ok": False, "error": "blocked"}
+        except Exception as exc:  # noqa: BLE001
+            mark_error(db=db, user_id=user_id, status="needs_reauth", message=str(exc))
+            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            return {"ok": False, "error": "playwright_error"}
+
+        try:
+            payload = parse_wb_competitor_excel(
+                content=excel_bytes,
+                report_date=report_date,
+                period=period,
+                raw_payload={"playwright": raw_meta},
+            )
+        except ParseError as exc:
+            _log_action(db, user_id, None, action="refresh", ok=False, err=exc.message)
+            return {"ok": False, "error": "excel_parse_failed", "detail": exc.message}
+
+        rep = import_competitor_report(
+            db=db,
+            user_id=user_id,
+            report_date=payload["report_date"],
+            period=payload["period"],
+            source="playwright",
+            raw_payload=payload.get("raw_payload"),
+            items=payload["items"],
+        )
+        # Ensure valid_until is set, even if report_date changes.
+        rep.valid_until = report_date + td(days=3)
+        rep.status = "ready"
+        rep.last_error = None
+        db.add(rep)
+        db.commit()
+
+        mark_verified(db=db, user_id=user_id)
+        _log_action(db, user_id, str(rep.id), action="refresh", ok=True, err=None)
+
+        return {"ok": True, "report_id": str(rep.id), "report_date": report_date.isoformat(), "valid_until": rep.valid_until.isoformat() if rep.valid_until else None}
+    finally:
+        db.close()
+
+
+def _log_action(db: Session, user_id: str, report_id: str | None, *, action: str, ok: bool, err: str | None) -> None:
+    from app.models.ai_competitor_report_action import AiCompetitorReportAction
+    from app.models.base import uuid_gen
+
+    row = AiCompetitorReportAction(
+        id=uuid_gen(),
+        user_id=user_id,
+        report_id=report_id,
+        action=action,
+        result=("ok" if ok else "error"),
+        error_message=(err[:800] if err else None),
+    )
+    db.add(row)
+    db.commit()
+
+
 def _funnel_nm_ids(db, *, user_id: str, date_from: date, date_to: date) -> list[int]:
     """
     Список nm_id для запросов funnel.

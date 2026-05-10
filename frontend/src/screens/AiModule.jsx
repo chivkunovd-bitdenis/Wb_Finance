@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 
@@ -96,6 +96,19 @@ function TasksTab() {
     }
   };
 
+  const execute = async (taskId) => {
+    setBusyId(taskId);
+    setError('');
+    try {
+      await api.executeAiTask(taskId);
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Ошибка');
+    } finally {
+      setBusyId('');
+    }
+  };
+
   return (
     <DataTable title="Задачи" tag="ИИ модуль" actions={
       <button type="button" className="btn btn-outline-secondary btn-sm" onClick={reload} disabled={loading}>
@@ -132,6 +145,11 @@ function TasksTab() {
                   <td>{statusBadge(t.status)}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {t.task_type === 'competitor_report_refresh' && t.status === 'new' && (
+                        <button type="button" className="btn btn-sm btn-warning" disabled={busyId === t.id} onClick={() => execute(t.id)}>
+                          Подтвердить и обновить
+                        </button>
+                      )}
                       {t.status === 'new' && (
                         <button type="button" className="btn btn-sm btn-outline-primary" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'in_progress')}>
                           В работу
@@ -282,8 +300,125 @@ function HypothesesTab() {
 
 export default function AiModule() {
   const [tab, setTab] = useState('tasks');
+  const [period, setPeriod] = useState('week');
+  const [reportStatus, setReportStatus] = useState(null);
+  const [credsStatus, setCredsStatus] = useState(null);
+  const [reportError, setReportError] = useState('');
+  const [credsForm, setCredsForm] = useState({ wb_login: '', wb_password: '' });
+  const [savingCreds, setSavingCreds] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+
+  const loadReport = useCallback(async () => {
+    setReportError('');
+    try {
+      const st = await api.getAiCompetitorReportStatus(period);
+      setReportStatus(st);
+    } catch (e) {
+      setReportError(e?.message || 'Ошибка загрузки статуса отчёта');
+    }
+  }, [period]);
+
+  const loadCreds = useCallback(async () => {
+    try {
+      const st = await api.getAiWbCredentialsStatus();
+      setCredsStatus(st);
+    } catch {
+      // ignore; screen still works
+    }
+  }, []);
+
+  useEffect(() => {
+    loadReport();
+    loadCreds();
+  }, [loadReport, loadCreds]);
+
+  const saveCreds = async () => {
+    setSavingCreds(true);
+    setReportError('');
+    try {
+      const st = await api.upsertAiWbCredentials(credsForm);
+      setCredsStatus(st);
+      setCredsForm({ wb_login: '', wb_password: '' });
+    } catch (e) {
+      setReportError(e?.message || 'Ошибка сохранения учётки WB');
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const requestRefresh = async () => {
+    setRequesting(true);
+    setReportError('');
+    try {
+      await api.requestAiCompetitorReportRefresh(period);
+    } catch (e) {
+      setReportError(e?.message || 'Ошибка создания задачи');
+    } finally {
+      setRequesting(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <DataTable title="Отчёт конкурентов WB" tag="ИИ модуль">
+        {reportError && <div className="alert alert-danger" style={{ margin: 12 }}>{reportError}</div>}
+        <div style={{ padding: 12, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ fontWeight: 700 }}>Период:</div>
+            <select className="form-select form-select-sm" style={{ width: 160 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
+              <option value="week">Неделя</option>
+              <option value="month">Месяц</option>
+              <option value="quarter">Квартал</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ fontWeight: 700 }}>Статус:</div>
+            <span style={{ color: 'var(--text-tertiary)' }}>{reportStatus?.status || '—'}</span>
+            {reportStatus?.valid_until && (
+              <span style={{ color: 'var(--text-tertiary)' }}>до {String(reportStatus.valid_until)}</span>
+            )}
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadReport}>
+              Обновить статус
+            </button>
+            <button type="button" className="btn btn-warning btn-sm" onClick={requestRefresh} disabled={requesting}>
+              Создать задачу на обновление (подтверждение)
+            </button>
+          </div>
+        </div>
+        <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+          <div style={{ fontWeight: 800, marginBottom: 6 }}>Учётка WB для Playwright</div>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
+            Пароль хранится зашифрованно. Операция обновления отчёта может быть платной/лимитной — запуск только по подтверждению.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              className="form-control form-control-sm"
+              style={{ width: 240 }}
+              value={credsForm.wb_login}
+              placeholder="WB логин"
+              onChange={(e) => setCredsForm((m) => ({ ...m, wb_login: e.target.value }))}
+            />
+            <input
+              className="form-control form-control-sm"
+              style={{ width: 240 }}
+              value={credsForm.wb_password}
+              placeholder="WB пароль"
+              type="password"
+              onChange={(e) => setCredsForm((m) => ({ ...m, wb_password: e.target.value }))}
+            />
+            <button type="button" className="btn btn-primary btn-sm" onClick={saveCreds} disabled={savingCreds}>
+              Сохранить
+            </button>
+            <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+              status: {credsStatus?.status || 'missing'}
+              {credsStatus?.last_error ? `; error: ${credsStatus.last_error}` : ''}
+            </span>
+          </div>
+        </div>
+      </DataTable>
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <TabButton active={tab === 'tasks'} onClick={() => setTab('tasks')}>Задачи</TabButton>
         <TabButton active={tab === 'hypotheses'} onClick={() => setTab('hypotheses')}>Гипотезы</TabButton>

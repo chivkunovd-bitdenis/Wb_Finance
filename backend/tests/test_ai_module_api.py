@@ -101,6 +101,41 @@ def _ensure_ai_module_schema() -> None:
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_nm_id ON ai_competitor_metrics (nm_id)",
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_metric_code ON ai_competitor_metrics (metric_code)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_comp_metric_report_nm_code ON ai_competitor_metrics (report_id, nm_id, metric_code)",
+        # WB cabinet credentials (encrypted)
+        """
+        CREATE TABLE IF NOT EXISTS ai_wb_cabinet_credentials (
+            id UUID NOT NULL,
+            user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            wb_login_enc TEXT NOT NULL,
+            wb_password_enc TEXT NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'active',
+            last_error TEXT NULL,
+            last_verified_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT pk_ai_wb_cabinet_credentials PRIMARY KEY (id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_ai_wb_cabinet_credentials_user_id ON ai_wb_cabinet_credentials (user_id)",
+        # report lifecycle columns (best-effort additive)
+        "ALTER TABLE ai_competitor_comparison_reports ADD COLUMN IF NOT EXISTS valid_until DATE",
+        "ALTER TABLE ai_competitor_comparison_reports ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ready'",
+        "ALTER TABLE ai_competitor_comparison_reports ADD COLUMN IF NOT EXISTS cost_or_limit_spent BOOLEAN NOT NULL DEFAULT false",
+        "ALTER TABLE ai_competitor_comparison_reports ADD COLUMN IF NOT EXISTS last_error TEXT",
+        # actions log
+        """
+        CREATE TABLE IF NOT EXISTS ai_competitor_report_actions (
+            id UUID NOT NULL,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            report_id UUID NULL REFERENCES ai_competitor_comparison_reports(id) ON DELETE SET NULL,
+            action VARCHAR(16) NOT NULL,
+            result VARCHAR(16) NOT NULL DEFAULT 'ok',
+            error_message TEXT NULL,
+            requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT pk_ai_competitor_report_actions PRIMARY KEY (id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_report_actions_user_id ON ai_competitor_report_actions (user_id)",
     ]
     with engine.begin() as conn:
         for stmt in ddl:
@@ -539,6 +574,12 @@ def test_ai_daily_analytics_task_dedupe_updates_open_and_creates_after_close(cli
     db = SessionLocal()
     try:
         db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete()
+        # Also cleanup any OPEN task by dedupe_key (test isolation; fingerprints can collide with closed rows)
+        db.query(AiTask).filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == "task:restock:123",
+            AiTask.status.in_(["new", "in_progress"]),
+        ).delete()
         db.commit()
     finally:
         db.rollback()
@@ -624,4 +665,55 @@ def test_ai_daily_analytics_hypothesis_dedupe_blocks_duplicate_when_active(clien
 def test_ai_daily_analytics_run_unknown_report_returns_404(client: TestClient) -> None:
     r = client.post("/ai/analytics/run", json={"report_id": "00000000-0000-0000-0000-000000000999"})
     assert r.status_code == 404
+
+
+def test_ai_wb_credentials_upsert_and_status(client: TestClient, monkeypatch) -> None:
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+
+    r0 = client.get("/ai/wb-credentials/status")
+    assert r0.status_code == 200
+    assert r0.json()["status"] in {"missing", "active", "invalid", "needs_reauth", "disabled"}
+
+    r1 = client.put("/ai/wb-credentials", json={"wb_login": "user", "wb_password": "pass"})
+    assert r1.status_code == 200
+    assert r1.json()["status"] == "active"
+
+    r2 = client.get("/ai/wb-credentials/status")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "active"
+
+
+def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: TestClient, monkeypatch) -> None:
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    # Disable real Playwright in tests; patch task function to avoid network.
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "0")
+
+    # Test isolation: remove any existing open refresh task
+    db = SessionLocal()
+    try:
+        db.query(AiTask).filter(
+            AiTask.user_id == "00000000-0000-0000-0000-000000000111",
+            AiTask.dedupe_key == "task:competitor_report_refresh:week",
+            AiTask.status.in_(["new", "in_progress"]),
+        ).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    # Create refresh task (explicit confirmation)
+    r1 = client.post("/ai/competitor-reports/request-refresh", json={"period": "week"})
+    assert r1.status_code == 200
+    task_id = r1.json()["id"]
+    assert r1.json()["task_type"] == "competitor_report_refresh"
+    assert r1.json()["status"] == "new"
+
+    # Execute should enqueue (but with Playwright disabled it still queues; actual worker handles error)
+    r2 = client.post(f"/ai/tasks/{task_id}/execute")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "ok"
 

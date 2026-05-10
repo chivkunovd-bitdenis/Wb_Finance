@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -60,6 +60,10 @@ def import_competitor_report(
             period=period,
             source=source,
             raw_payload=raw_payload,
+            valid_until=(report_date + timedelta(days=3)),
+            status="ready",
+            cost_or_limit_spent=(source == "playwright"),
+            last_error=None,
         )
         db.add(report)
         db.commit()
@@ -68,6 +72,10 @@ def import_competitor_report(
         report = existing
         report.source = source
         report.raw_payload = raw_payload
+        report.valid_until = report_date + timedelta(days=3)
+        report.status = "ready"
+        report.cost_or_limit_spent = bool(report.cost_or_limit_spent) or (source == "playwright")
+        report.last_error = None
         db.add(report)
         # Replace metrics for the report to keep import idempotent
         db.query(AiCompetitorMetric).filter(AiCompetitorMetric.report_id == report.id).delete()
@@ -116,6 +124,16 @@ def list_reports(*, db: Session, user_id: str, limit: int = 20) -> list[AiCompet
         .order_by(AiCompetitorComparisonReport.report_date.desc(), AiCompetitorComparisonReport.created_at.desc())
         .limit(lim)
         .all()
+    )
+
+
+def get_latest_report(*, db: Session, user_id: str, period: str) -> AiCompetitorComparisonReport | None:
+    period = (period or "unknown").strip().lower()
+    return (
+        db.query(AiCompetitorComparisonReport)
+        .filter(AiCompetitorComparisonReport.user_id == user_id, AiCompetitorComparisonReport.period == period)
+        .order_by(AiCompetitorComparisonReport.report_date.desc(), AiCompetitorComparisonReport.created_at.desc())
+        .first()
     )
 
 

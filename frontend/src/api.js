@@ -593,6 +593,69 @@ export async function upsertAiHypothesisDailyLog(hypothesisId, { day, happened, 
   return res.json(); // { items: [...] }
 }
 
+export async function getAiCompetitorReportStatus(period = 'week') {
+  const p = new URLSearchParams();
+  if (period) p.set('period', period);
+  const res = await apiFetch(`${API_BASE}/ai/competitor-reports/status?${p}`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function requestAiCompetitorReportRefresh(period) {
+  const res = await apiFetch(`${API_BASE}/ai/competitor-reports/request-refresh`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ period }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // task item
+}
+
+export async function executeAiTask(taskId) {
+  const res = await apiFetch(`${API_BASE}/ai/tasks/${taskId}/execute`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function upsertAiWbCredentials({ wb_login, wb_password }) {
+  const res = await apiFetch(`${API_BASE}/ai/wb-credentials`, {
+    method: 'PUT',
+    headers: headers(),
+    body: JSON.stringify({ wb_login, wb_password }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getAiWbCredentialsStatus() {
+  const res = await apiFetch(`${API_BASE}/ai/wb-credentials/status`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function updateWbApiKey(wbApiKey) {
   const res = await apiFetch(`${API_BASE}/auth/wb-key`, {
     method: 'PUT',

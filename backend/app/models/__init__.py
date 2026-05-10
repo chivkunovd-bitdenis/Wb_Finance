@@ -29,6 +29,8 @@ from app.models.ai_hypothesis import AiHypothesis
 from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
 from app.models.ai_competitor_report import AiCompetitorComparisonReport
 from app.models.ai_competitor_metric import AiCompetitorMetric
+from app.models.ai_wb_cabinet_credential import AiWbCabinetCredential
+from app.models.ai_competitor_report_action import AiCompetitorReportAction
 
 __all__ = [
     "Base",
@@ -62,4 +64,6 @@ __all__ = [
     "AiHypothesisDailyLog",
     "AiCompetitorComparisonReport",
     "AiCompetitorMetric",
+    "AiWbCabinetCredential",
+    "AiCompetitorReportAction",
 ]
