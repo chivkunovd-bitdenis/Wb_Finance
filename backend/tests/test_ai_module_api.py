@@ -393,6 +393,13 @@ def _seed_sku_daily_logistics_spike(user_id: str, nm_id: int) -> None:
     db = SessionLocal()
     try:
         base_day = date.fromisoformat("2026-05-10")
+        db.query(SkuDaily).filter(
+            SkuDaily.user_id == user_id,
+            SkuDaily.nm_id == nm_id,
+            SkuDaily.date >= base_day - timedelta(days=6),
+            SkuDaily.date <= base_day,
+        ).delete()
+        db.commit()
         for i in range(6):
             d = base_day - timedelta(days=6 - i)
             db.add(
@@ -431,9 +438,11 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     user_id = "00000000-0000-0000-0000-000000000111"
 
     # Import competitor report for nm_id=123 with bad funnels + bad ctr
+    report_date = "2026-05-10"
+    period = "week"
     body = {
-        "report_date": "2026-05-10",
-        "period": "week",
+        "report_date": report_date,
+        "period": period,
         "source": "manual",
         "items": [
             {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
@@ -443,6 +452,24 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     r = client.post("/ai/competitor-reports/import", json=body)
     assert r.status_code == 200
     rep_id = r.json()["id"]
+
+    # Clean up potential leftovers from previous runs (fingerprint is deterministic)
+    db = SessionLocal()
+    try:
+        for fp in (
+            f"hyp:content_change:123:{report_date}:{period}",
+            f"hyp:ab_test:123:{report_date}:{period}",
+            f"task:self_buyouts:123:{report_date}:{period}",
+            "task:restock:123:2026-05-10",
+            f"task:check_measurements:123:{report_date}:2026-05-10",
+            f"task:check_ktr:123:{report_date}:2026-05-10",
+        ):
+            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete()
+            db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
 
     _seed_sku_daily_logistics_spike(user_id, 123)
 
