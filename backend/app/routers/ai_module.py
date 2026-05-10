@@ -14,6 +14,8 @@ from app.schemas.ai_module import (
     AiCompetitorReportItem,
     AiCompetitorReportListResponse,
     AiCompetitorMetricItem,
+    AiDailyAnalyticsRunRequest,
+    AiDailyAnalyticsRunResponse,
     AiHypothesisDailyLogResponse,
     AiHypothesisDailyLogUpsertRequest,
     AiHypothesisDailyLogItem,
@@ -33,6 +35,11 @@ from app.services.ai_competitor_service import (
     import_competitor_report,
     list_report_metrics,
     list_reports as list_competitor_reports,
+)
+from app.services.ai_daily_analytics_service import (
+    InvalidPayloadError as AnalyticsInvalidPayloadError,
+    NotFoundError as AnalyticsNotFoundError,
+    run_daily_analytics,
 )
 from app.services.ai_module_service import (
     InvalidTransitionError,
@@ -231,5 +238,34 @@ def ai_competitor_report_get(
     return AiCompetitorReportDetailResponse(
         report=AiCompetitorReportItem.model_validate(rep),
         metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
+    )
+
+
+@router.post("/analytics/run", response_model=AiDailyAnalyticsRunResponse)
+def ai_daily_analytics_run(
+    body: AiDailyAnalyticsRunRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AiDailyAnalyticsRunResponse:
+    try:
+        res = run_daily_analytics(
+            db=db,
+            user_id=str(current_user.id),
+            report_id=body.report_id,
+            date_for=body.date_for,
+            stock_days_left=body.stock_days_left,
+            social=body.social,
+        )
+    except AnalyticsNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except AnalyticsInvalidPayloadError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+
+    return AiDailyAnalyticsRunResponse(
+        status="ok",
+        date_for=res.date_for,
+        report_id=res.report_id,
+        created_task_ids=res.created_task_ids,
+        created_hypothesis_ids=res.created_hypothesis_ids,
     )
 

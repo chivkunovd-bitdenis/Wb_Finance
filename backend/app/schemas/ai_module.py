@@ -146,3 +146,19 @@ class AiCompetitorReportDetailResponse(BaseModel):
     report: AiCompetitorReportItem
     metrics: list[AiCompetitorMetricItem]
 
+
+class AiDailyAnalyticsRunRequest(BaseModel):
+    report_id: str
+    date_for: date | None = None
+    # Optional: data not yet persisted in DB
+    stock_days_left: dict[int, int] | None = None
+    social: dict[int, dict[str, float | int]] | None = None  # e.g. {123: {"reviews": 10, "rating": 4.2}}
+
+
+class AiDailyAnalyticsRunResponse(BaseModel):
+    status: str
+    date_for: date
+    report_id: str
+    created_task_ids: list[str]
+    created_hypothesis_ids: list[str]
+

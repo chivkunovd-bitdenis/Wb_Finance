@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import date, timedelta
 from functools import lru_cache
 import uuid
 from unittest.mock import MagicMock
@@ -16,6 +17,7 @@ from app.main import app
 from app.models.ai_hypothesis import AiHypothesis
 from app.models.ai_task import AiTask
 from app.models.base import Base
+from app.models.sku_daily import SkuDaily
 from app.models.user import User
 
 
@@ -382,4 +384,94 @@ def test_ai_competitor_report_import_rejects_invalid_metric_code(client: TestCli
     }
     r = client.post("/ai/competitor-reports/import", json=body)
     assert r.status_code == 400
+
+
+def _seed_sku_daily_logistics_spike(user_id: str, nm_id: int) -> None:
+    """
+    Creates 7 days of sku_daily with avg logistics=100 and yesterday=140 -> +40% spike.
+    """
+    db = SessionLocal()
+    try:
+        base_day = date.fromisoformat("2026-05-10")
+        for i in range(6):
+            d = base_day - timedelta(days=6 - i)
+            db.add(
+                SkuDaily(
+                    user_id=user_id,
+                    date=d,
+                    nm_id=nm_id,
+                    logistics=100,
+                    revenue=1000,
+                    margin=200,
+                    ads_spend=50,
+                    open_count=100,
+                    order_count=10,
+                )
+            )
+        db.add(
+            SkuDaily(
+                user_id=user_id,
+                date=base_day,
+                nm_id=nm_id,
+                logistics=140,
+                revenue=1000,
+                margin=200,
+                ads_spend=50,
+                open_count=100,
+                order_count=10,
+            )
+        )
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+
+    # Import competitor report for nm_id=123 with bad funnels + bad ctr
+    body = {
+        "report_date": "2026-05-10",
+        "period": "week",
+        "source": "manual",
+        "items": [
+            {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+            {"nm_id": 123, "metric_code": "funnel_cart", "our_value": 1.0, "competitor_median_value": 2.0},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    _seed_sku_daily_logistics_spike(user_id, 123)
+
+    # Run analytics
+    r2 = client.post(
+        "/ai/analytics/run",
+        json={
+            "report_id": rep_id,
+            "date_for": "2026-05-10",
+            "stock_days_left": {"123": 10},
+            "social": {"123": {"reviews": 10, "rating": 4.2}},
+        },
+    )
+    assert r2.status_code == 200
+    data = r2.json()
+    assert data["status"] == "ok"
+    assert data["report_id"] == rep_id
+    assert len(data["created_hypothesis_ids"]) >= 2  # content_change + ab_test
+    assert len(data["created_task_ids"]) >= 3  # restock + 2 logistics tasks + self_buyouts
+
+    # Second run should create nothing new (fingerprints)
+    r3 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10"})
+    assert r3.status_code == 200
+    data2 = r3.json()
+    assert data2["created_task_ids"] == []
+    assert data2["created_hypothesis_ids"] == []
+
+
+def test_ai_daily_analytics_run_unknown_report_returns_404(client: TestClient) -> None:
+    r = client.post("/ai/analytics/run", json={"report_id": "00000000-0000-0000-0000-000000000999"})
+    assert r.status_code == 404
 
