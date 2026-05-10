@@ -35,12 +35,20 @@ def _ensure_ai_module_schema() -> None:
         # fingerprint columns
         "ALTER TABLE ai_tasks ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(80)",
         "ALTER TABLE ai_hypotheses ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(80)",
+        # dedupe keys
+        "ALTER TABLE ai_tasks ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(120)",
+        "ALTER TABLE ai_hypotheses ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(120)",
         # indexes
         "CREATE INDEX IF NOT EXISTS ix_ai_tasks_fingerprint ON ai_tasks (fingerprint)",
         "CREATE INDEX IF NOT EXISTS ix_ai_hypotheses_fingerprint ON ai_hypotheses (fingerprint)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_tasks_dedupe_key ON ai_tasks (dedupe_key)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_hypotheses_dedupe_key ON ai_hypotheses (dedupe_key)",
         # unique per user (use unique index to allow IF NOT EXISTS)
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_tasks_user_fingerprint ON ai_tasks (user_id, fingerprint)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_hypotheses_user_fingerprint ON ai_hypotheses (user_id, fingerprint)",
+        # open/active unique indexes (partial)
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_tasks_user_dedupe_key_open ON ai_tasks (user_id, dedupe_key) WHERE dedupe_key is not null AND status in ('new','in_progress')",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_hypotheses_user_dedupe_key_active ON ai_hypotheses (user_id, dedupe_key) WHERE dedupe_key is not null AND status in ('draft','running')",
         # daily log table
         """
         CREATE TABLE IF NOT EXISTS ai_hypothesis_daily_log (
@@ -111,6 +119,12 @@ def client() -> Generator[TestClient, None, None]:
         is_active=True,
         is_admin=True,
     )
+    # Store scoping for /ai/*: map store_owner to the same user_id in tests
+    from app.dependencies import get_store_context  # local import to avoid import-time cycles
+
+    app.dependency_overrides[get_store_context] = lambda: MagicMock(
+        store_owner=MagicMock(id=user_id),
+    )
 
     db = SessionLocal()
     try:
@@ -134,6 +148,7 @@ def client() -> Generator[TestClient, None, None]:
         yield c
 
     app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_store_context, None)
 
 
 def _seed_task(user_id: str) -> str:
@@ -388,33 +403,32 @@ def test_ai_competitor_report_import_rejects_invalid_metric_code(client: TestCli
 
 def _seed_sku_daily_logistics_spike(user_id: str, nm_id: int) -> None:
     """
-    Creates 7 days of sku_daily with avg logistics=100 and yesterday=140 -> +40% spike.
+    Creates 2 days of sku_daily with prev=100 and today=140 -> +40% spike (day-to-day).
     """
     db = SessionLocal()
     try:
         base_day = date.fromisoformat("2026-05-10")
+        prev_day = base_day - timedelta(days=1)
         db.query(SkuDaily).filter(
             SkuDaily.user_id == user_id,
             SkuDaily.nm_id == nm_id,
-            SkuDaily.date >= base_day - timedelta(days=6),
+            SkuDaily.date >= prev_day,
             SkuDaily.date <= base_day,
         ).delete()
         db.commit()
-        for i in range(6):
-            d = base_day - timedelta(days=6 - i)
-            db.add(
-                SkuDaily(
-                    user_id=user_id,
-                    date=d,
-                    nm_id=nm_id,
-                    logistics=100,
-                    revenue=1000,
-                    margin=200,
-                    ads_spend=50,
-                    open_count=100,
-                    order_count=10,
-                )
+        db.add(
+            SkuDaily(
+                user_id=user_id,
+                date=prev_day,
+                nm_id=nm_id,
+                logistics=100,
+                revenue=1000,
+                margin=200,
+                ads_spend=50,
+                open_count=100,
+                order_count=10,
             )
+        )
         db.add(
             SkuDaily(
                 user_id=user_id,
@@ -496,6 +510,115 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     data2 = r3.json()
     assert data2["created_task_ids"] == []
     assert data2["created_hypothesis_ids"] == []
+
+
+def test_ai_daily_analytics_task_dedupe_updates_open_and_creates_after_close(client: TestClient) -> None:
+    """
+    Rule:
+    - if task is open (new|in_progress) -> analytics updates it (no new id)
+    - if task is closed (completed|cancelled) -> analytics creates a new row
+    """
+    user_id = "00000000-0000-0000-0000-000000000111"
+
+    report_date = "2026-05-10"
+    period = "week"
+    body = {
+        "report_date": report_date,
+        "period": period,
+        "source": "manual",
+        "items": [
+            {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    # Cleanup deterministic fingerprints
+    fp = "task:restock:123:2026-05-10"
+    db = SessionLocal()
+    try:
+        db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    # 1) First run creates restock task (open)
+    r1 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10", "stock_days_left": {"123": 10}})
+    assert r1.status_code == 200
+    created1 = r1.json()["created_task_ids"]
+    assert len(created1) >= 1
+
+    # 2) Second run updates open task (no new)
+    r2 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10", "stock_days_left": {"123": 9}})
+    assert r2.status_code == 200
+    assert r2.json()["created_task_ids"] == []
+
+    # Close the open task
+    db = SessionLocal()
+    try:
+        open_row = (
+            db.query(AiTask)
+            .filter(AiTask.user_id == user_id, AiTask.dedupe_key == "task:restock:123", AiTask.status.in_(["new", "in_progress"]))
+            .order_by(AiTask.created_at.desc())
+            .first()
+        )
+        assert open_row is not None
+        open_row.status = "completed"
+        db.add(open_row)
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    # 3) Third run should create a new restock task because previous is closed
+    r3 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10", "stock_days_left": {"123": 8}})
+    assert r3.status_code == 200
+    created3 = r3.json()["created_task_ids"]
+    assert len(created3) >= 1
+
+
+def test_ai_daily_analytics_hypothesis_dedupe_blocks_duplicate_when_active(client: TestClient) -> None:
+    """
+    Rule: repeated hypotheses are not generated if there is an existing one in status != cancelled/finished
+    (i.e. active draft/running exists for the same nm_id + hypothesis_type).
+    """
+    user_id = "00000000-0000-0000-0000-000000000111"
+
+    report_date = "2026-05-10"
+    period = "week"
+    body = {
+        "report_date": report_date,
+        "period": period,
+        "source": "manual",
+        "items": [
+            {"nm_id": 123, "metric_code": "funnel_cart", "our_value": 1.0, "competitor_median_value": 2.0},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    # cleanup deterministic fingerprint
+    fp = f"hyp:content_change:123:{report_date}:{period}"
+    db = SessionLocal()
+    try:
+        db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    # first run creates content_change hypothesis (draft)
+    r1 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10"})
+    assert r1.status_code == 200
+    assert len(r1.json()["created_hypothesis_ids"]) >= 1
+
+    # second run should not create a new one because an active draft exists
+    r2 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10"})
+    assert r2.status_code == 200
+    assert r2.json()["created_hypothesis_ids"] == []
 
 
 def test_ai_daily_analytics_run_unknown_report_returns_404(client: TestClient) -> None:

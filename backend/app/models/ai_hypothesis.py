@@ -32,6 +32,9 @@ class AiHypothesis(Base):
     # For idempotent creation by analytics (AI-MVP3): stable key to prevent duplicates.
     fingerprint = Column(String(80), nullable=True, index=True)
 
+    # Dedupe key for "active hypothesis suppression": stable per (nm_id, hypothesis_type, etc.)
+    dedupe_key = Column(String(120), nullable=True, index=True)
+
     test_period_days = Column(Integer, nullable=True)
 
     status = Column(String(16), nullable=False, default="draft")  # draft|running|finished|cancelled

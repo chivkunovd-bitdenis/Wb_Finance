@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from statistics import mean
 
+from typing import cast
+from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -255,24 +256,34 @@ def _upsert_task(
     competitor_median_value: dict | None = None,
     priority: int = 0,
 ) -> AiTask | None:
-    existing = (
-        db.query(AiTask)
-        .filter(AiTask.user_id == user_id, AiTask.fingerprint == fingerprint)
-        .first()
-    )
-    if existing:
-        # Keep status/user actions intact; only refresh the explanation payload.
-        existing.title = title
-        existing.description = description
-        existing.reason = reason
-        existing.source_metrics = source_metrics
-        existing.threshold = threshold
-        existing.current_value = current_value
-        existing.competitor_median_value = competitor_median_value
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
-        return None
+    dedupe_key = _task_dedupe_key(nm_id=nm_id, task_type=task_type)
+
+    # Rule: if there is an OPEN task (new|in_progress) for (user_id, dedupe_key) -> update it.
+    if dedupe_key is not None:
+        open_row = (
+            db.query(AiTask)
+            .filter(
+                AiTask.user_id == user_id,
+                AiTask.dedupe_key == dedupe_key,
+                AiTask.status.in_(["new", "in_progress"]),
+            )
+            .order_by(AiTask.created_at.desc())
+            .first()
+        )
+        if open_row is not None:
+            open_row.title = title
+            open_row.description = description
+            open_row.reason = reason
+            open_row.source_metrics = source_metrics
+            open_row.threshold = threshold
+            open_row.current_value = current_value
+            open_row.competitor_median_value = competitor_median_value
+            open_row.priority = priority
+            # Keep status/user action timestamps intact.
+            db.add(open_row)
+            db.commit()
+            db.refresh(open_row)
+            return None
 
     row = AiTask(
         user_id=user_id,
@@ -288,13 +299,66 @@ def _upsert_task(
         priority=priority,
         status="new",
         fingerprint=fingerprint,
+        dedupe_key=dedupe_key,
     )
     db.add(row)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        return None
+        # Another transaction created the OPEN row first. Update it (do not create duplicates).
+        if dedupe_key is None:
+            return None
+        open_row = (
+            db.query(AiTask)
+            .filter(
+                AiTask.user_id == user_id,
+                AiTask.dedupe_key == dedupe_key,
+                AiTask.status.in_(["new", "in_progress"]),
+            )
+            .order_by(AiTask.created_at.desc())
+            .first()
+        )
+        if open_row is not None:
+            open_row.title = title
+            open_row.description = description
+            open_row.reason = reason
+            open_row.source_metrics = source_metrics
+            open_row.threshold = threshold
+            open_row.current_value = current_value
+            open_row.competitor_median_value = competitor_median_value
+            open_row.priority = priority
+            db.add(open_row)
+            db.commit()
+            db.refresh(open_row)
+            return None
+
+        # If there's no open row, the IntegrityError is likely due to fingerprint collision with a CLOSED task.
+        # In that case we still must create a new task (your rule: closed -> create new).
+        retry = AiTask(
+            user_id=user_id,
+            nm_id=nm_id,
+            task_type=task_type,
+            title=title,
+            description=description,
+            reason=reason,
+            source_metrics=source_metrics,
+            threshold=threshold,
+            current_value=current_value,
+            competitor_median_value=competitor_median_value,
+            priority=priority,
+            status="new",
+            fingerprint=f"{fingerprint}:{uuid4()}" if fingerprint else None,
+            dedupe_key=dedupe_key,
+        )
+        db.add(retry)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return None
+        db.refresh(retry)
+        return retry
     db.refresh(row)
     return row
 
@@ -315,24 +379,34 @@ def _upsert_hypothesis(
     expected_effect: dict | None = None,
     test_period_days: int | None = None,
 ) -> AiHypothesis | None:
-    existing = (
-        db.query(AiHypothesis)
-        .filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fingerprint)
-        .first()
-    )
-    if existing:
-        existing.title = title
-        existing.description = description
-        existing.goal = goal
-        existing.trigger_reason = trigger_reason
-        existing.baseline_metrics = baseline_metrics
-        existing.competitor_median_metrics = competitor_median_metrics
-        existing.expected_effect = expected_effect
-        existing.test_period_days = test_period_days
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
-        return None
+    dedupe_key = _hypothesis_dedupe_key(nm_id=nm_id, hypothesis_type=hypothesis_type)
+
+    # Rule: do not create a new hypothesis if there is an ACTIVE one (draft|running).
+    if dedupe_key is not None:
+        active = (
+            db.query(AiHypothesis)
+            .filter(
+                AiHypothesis.user_id == user_id,
+                AiHypothesis.dedupe_key == dedupe_key,
+                AiHypothesis.status.in_(["draft", "running"]),
+            )
+            .order_by(AiHypothesis.created_at.desc())
+            .first()
+        )
+        if active is not None:
+            # Keep status/user actions; refresh payload to keep it relevant.
+            active.title = title
+            active.description = description
+            active.goal = goal
+            active.trigger_reason = trigger_reason
+            active.baseline_metrics = baseline_metrics
+            active.competitor_median_metrics = competitor_median_metrics
+            active.expected_effect = expected_effect
+            active.test_period_days = test_period_days
+            db.add(active)
+            db.commit()
+            db.refresh(active)
+            return None
 
     row = AiHypothesis(
         user_id=user_id,
@@ -350,6 +424,7 @@ def _upsert_hypothesis(
         started_at=None,
         ended_at=None,
         fingerprint=fingerprint,
+        dedupe_key=dedupe_key,
     )
     db.add(row)
     try:
@@ -363,38 +438,43 @@ def _upsert_hypothesis(
 
 def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_date: date) -> list[str]:
     """
-    Rule: logistics increase 20%+ vs avg7d -> tasks:
+    Rule: logistics increase 20%+ day-to-day -> tasks:
     - check_measurements
     - check_ktr
     """
-    window_start_7 = date_for - timedelta(days=6)
+    d_prev = date_for - timedelta(days=1)
     rows: list[SkuDaily] = (
         db.query(SkuDaily)
-        .filter(SkuDaily.user_id == user_id, SkuDaily.date >= window_start_7, SkuDaily.date <= date_for)
+        .filter(SkuDaily.user_id == user_id, SkuDaily.date.in_([d_prev, date_for]))
         .order_by(SkuDaily.date.asc())
         .all()
     )
     if not rows:
         return []
 
-    by_nm: dict[int, list[SkuDaily]] = {}
+    by_nm: dict[int, dict[date, SkuDaily]] = {}
     for r in rows:
-        by_nm.setdefault(int(r.nm_id), []).append(r)
+        by_nm.setdefault(int(r.nm_id), {})[cast(date, r.date)] = r
 
     created: list[str] = []
     for nm_id, rr in by_nm.items():
-        y = next((x for x in rr if x.date == date_for), None)
-        if not y:
+        cur = rr.get(date_for)
+        prev = rr.get(d_prev)
+        if cur is None or prev is None:
             continue
-        avg7 = mean([_to_float(x.logistics) for x in rr])
-        y_log = _to_float(y.logistics)
-        if avg7 == 0.0:
+        cur_log = _to_float(cur.logistics)
+        prev_log = _to_float(prev.logistics)
+        if prev_log == 0.0:
             continue
-        delta_pct = (y_log - avg7) / abs(avg7) * 100.0
+        delta_pct = (cur_log - prev_log) / abs(prev_log) * 100.0
         if delta_pct < _LOGISTICS_DELTA_THRESHOLD_PCT:
             continue
 
-        current = {"logistics_yesterday": round(y_log, 2), "logistics_avg7d": round(avg7, 2), "delta_pct": round(delta_pct, 1)}
+        current = {
+            "logistics_today": round(cur_log, 2),
+            "logistics_prev_day": round(prev_log, 2),
+            "delta_pct": round(delta_pct, 1),
+        }
         thr = {"logistics_delta_pct": _LOGISTICS_DELTA_THRESHOLD_PCT}
 
         for task_type, title in (
@@ -408,7 +488,7 @@ def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_da
                 nm_id=nm_id,
                 task_type=task_type,
                 title=title,
-                description="Затраты на логистику выросли на 20%+ относительно среднего за неделю",
+                description="Затраты на логистику выросли на 20%+ относительно предыдущего дня",
                 reason="logistics_delta_pct >= 20",
                 current_value=current,
                 threshold=thr,
@@ -418,4 +498,16 @@ def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_da
                 created.append(str(t.id))
 
     return created
+
+
+def _task_dedupe_key(*, nm_id: int | None, task_type: str) -> str | None:
+    if nm_id is None:
+        return None
+    return f"task:{task_type}:{int(nm_id)}"
+
+
+def _hypothesis_dedupe_key(*, nm_id: int | None, hypothesis_type: str) -> str | None:
+    if nm_id is None:
+        return None
+    return f"hyp:{hypothesis_type}:{int(nm_id)}"
 

@@ -516,6 +516,83 @@ export async function getBillingReminders() {
   return res.json();
 }
 
+// ── AI module (tasks + hypotheses) ────────────────────────────────────────────
+
+export async function getAiTasks() {
+  const res = await apiFetch(`${API_BASE}/ai/tasks`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { items: [...] }
+}
+
+export async function updateAiTaskStatus(taskId, status) {
+  const res = await apiFetch(`${API_BASE}/ai/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify({ status }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getAiHypotheses() {
+  const res = await apiFetch(`${API_BASE}/ai/hypotheses`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { items: [...] }
+}
+
+export async function startAiHypothesis(hypothesisId) {
+  const res = await apiFetch(`${API_BASE}/ai/hypotheses/${hypothesisId}/start`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function finishAiHypothesis(hypothesisId, resultSummary) {
+  const res = await apiFetch(`${API_BASE}/ai/hypotheses/${hypothesisId}/finish`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ result_summary: resultSummary || null }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function upsertAiHypothesisDailyLog(hypothesisId, { day, happened, changed, unchanged }) {
+  const res = await apiFetch(`${API_BASE}/ai/hypotheses/${hypothesisId}/daily-log`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ day, happened: happened || null, changed: changed || null, unchanged: unchanged || null }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { items: [...] }
+}
+
 export async function updateWbApiKey(wbApiKey) {
   const res = await apiFetch(`${API_BASE}/auth/wb-key`, {
     method: 'PUT',

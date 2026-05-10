@@ -13,6 +13,7 @@ import Costs from './screens/Costs';
 import OperationalExpenses from './screens/OperationalExpenses';
 import Billing from './screens/Billing';
 import Settings from './screens/Settings';
+import AiModule from './screens/AiModule';
 import { useStore } from './StoreContext';
 
 export default function Layout() {
@@ -303,6 +304,7 @@ export default function Layout() {
     if (p.startsWith('/costs')) return 'Себестоимость';
     if (p.startsWith('/operational-expenses')) return 'Опер. расходы';
     if (p.startsWith('/billing')) return 'Подписка';
+    if (p.startsWith('/ai-module')) return 'ИИ модуль';
     return 'Дашборд';
   }, [location.pathname]);
 
@@ -564,6 +566,7 @@ export default function Layout() {
                   path="/billing"
                   element={<Billing billingStatus={billingStatus} onRefreshStatus={loadBillingStatus} />}
                 />
+                <Route path="/ai-module" element={<AiModule />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </>

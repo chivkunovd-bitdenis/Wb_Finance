@@ -32,6 +32,9 @@ class AiTask(Base):
     # For idempotent creation by analytics (AI-MVP3): stable key to prevent duplicates.
     fingerprint = Column(String(80), nullable=True, index=True)
 
+    # Dedupe key for "open task updates": stable per (nm_id, task_type, etc.)
+    dedupe_key = Column(String(120), nullable=True, index=True)
+
     priority = Column(Integer, nullable=False, default=0)  # higher = more important
     status = Column(String(16), nullable=False, default="new")  # new|in_progress|completed|cancelled
 

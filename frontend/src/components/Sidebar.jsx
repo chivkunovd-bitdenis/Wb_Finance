@@ -19,6 +19,7 @@ export default function Sidebar({ onLogout }) {
     { to: '/dashboard', label: 'Дашборд', icon: '📊' },
     { to: '/articles', label: 'Артикулы', icon: '📦' },
     { to: '/funnel', label: 'Воронка', icon: '📈' },
+    { to: '/ai-module', label: 'ИИ модуль', icon: '🧠' },
     { to: '/costs', label: 'Себестоимость', icon: '💰' },
     { to: '/operational-expenses', label: 'Опер. расходы', icon: '🧾' },
     { to: '/billing', label: 'Подписка', icon: '💳' },
@@ -123,10 +124,6 @@ export default function Sidebar({ onLogout }) {
           <span className="icon">{nav[2].icon}</span>
           <span>{nav[2].label}</span>
         </NavLink>
-
-        <div className="nav-section-label" style={{ marginTop: 8 }}>
-          Настройки
-        </div>
         <NavLink
           to={nav[3].to}
           className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
@@ -135,6 +132,10 @@ export default function Sidebar({ onLogout }) {
           <span className="icon">{nav[3].icon}</span>
           <span>{nav[3].label}</span>
         </NavLink>
+
+        <div className="nav-section-label" style={{ marginTop: 8 }}>
+          Настройки
+        </div>
         <NavLink
           to={nav[4].to}
           className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
@@ -158,6 +159,14 @@ export default function Sidebar({ onLogout }) {
         >
           <span className="icon">{nav[6].icon}</span>
           <span>{nav[6].label}</span>
+        </NavLink>
+        <NavLink
+          to={nav[7].to}
+          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+          end
+        >
+          <span className="icon">{nav[7].icon}</span>
+          <span>{nav[7].label}</span>
         </NavLink>
       </nav>
 
