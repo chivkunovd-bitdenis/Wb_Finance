@@ -17,7 +17,23 @@ from app.db import DATABASE_URL as APP_DATABASE_URL
 from app.models.base import Base
 
 # Импорт моделей, чтобы Base.metadata знал все таблицы
-from app.models import User, Article, RawSale, RawAd, PnlDaily, FunnelDaily, SkuDaily, OperationalExpense, Subscription, Payment, License, ReminderLog, MonthlyPlan  # noqa: F401
+from app.models import (  # noqa: F401
+    Article,
+    MonthlyPlan,
+    OperationalExpense,
+    Payment,
+    PnlDaily,
+    RawAd,
+    RawSale,
+    ReminderLog,
+    SkuDaily,
+    Subscription,
+    User,
+    License,
+    FunnelDaily,
+    AiTask,
+    AiHypothesis,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)

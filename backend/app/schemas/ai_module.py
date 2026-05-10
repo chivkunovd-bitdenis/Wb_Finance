@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class AiTaskItem(BaseModel):
+    id: str
+    nm_id: int | None
+    task_type: str
+    title: str
+    description: str | None
+    reason: str | None
+    source_metrics: dict[str, Any] | None
+    threshold: dict[str, Any] | None
+    current_value: dict[str, Any] | None
+    competitor_median_value: dict[str, Any] | None
+    priority: int
+    status: str
+    due_date: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AiTaskListResponse(BaseModel):
+    items: list[AiTaskItem]
+
+
+class AiTaskUpdateRequest(BaseModel):
+    status: str = Field(..., description="new|in_progress|completed|cancelled")
+
+
+class AiHypothesisItem(BaseModel):
+    id: str
+    nm_id: int | None
+    hypothesis_type: str
+    title: str
+    description: str | None
+    goal: str | None
+    trigger_reason: str | None
+    baseline_metrics: dict[str, Any] | None
+    competitor_median_metrics: dict[str, Any] | None
+    expected_effect: dict[str, Any] | None
+    test_period_days: int | None
+    status: str
+    started_at: datetime | None
+    ended_at: datetime | None
+    daily_log: list[dict[str, Any]] | dict[str, Any] | None
+    result_metrics: dict[str, Any] | None
+    result_summary: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AiHypothesisListResponse(BaseModel):
+    items: list[AiHypothesisItem]
+
+
+class AiHypothesisStartResponse(BaseModel):
+    status: str
+
+
+class AiHypothesisFinishRequest(BaseModel):
+    result_summary: str | None = None
+
+
+class AiHypothesisFinishResponse(BaseModel):
+    status: str
+

@@ -24,6 +24,8 @@ from app.models.store_access_audit_event import StoreAccessAuditEvent
 from app.models.wb_orchestrator_state import WbOrchestratorState
 from app.models.offer_ai_chat import OfferAiChat
 from app.models.offer_ai_message import OfferAiMessage
+from app.models.ai_task import AiTask
+from app.models.ai_hypothesis import AiHypothesis
 
 __all__ = [
     "Base",
@@ -52,4 +54,6 @@ __all__ = [
     "WbOrchestratorState",
     "OfferAiChat",
     "OfferAiMessage",
+    "AiTask",
+    "AiHypothesis",
 ]
