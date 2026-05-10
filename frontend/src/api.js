@@ -605,6 +605,18 @@ export async function getAiCompetitorReportStatus(period = 'week') {
   return res.json();
 }
 
+export async function getAiCompetitorReportDetail(reportId) {
+  const rid = String(reportId || '').trim();
+  if (!rid) throw new Error('report_id is required');
+  const res = await apiFetch(`${API_BASE}/ai/competitor-reports/${encodeURIComponent(rid)}`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { report: {...}, metrics: [...] }
+}
+
 export async function requestAiCompetitorReportRefresh(period) {
   const res = await apiFetch(`${API_BASE}/ai/competitor-reports/request-refresh`, {
     method: 'POST',
