@@ -106,7 +106,18 @@ def get_or_create_subscription(db: Session, user_id: str) -> Subscription:
     return sub
 
 
+def _is_lifetime(db: Session, user_id: str) -> bool:
+    """Проверить наличие пожизненного доступа."""
+    lic = db.query(License).filter(License.user_id == user_id).first()
+    if not isinstance(lic, License):
+        return False
+    return bool(lic.status == "lifetime")
+
+
 def start_trial_if_needed(db: Session, user: User) -> Subscription:
+    """Не перезаписывать license на trial, если уже выдан lifetime (ручной/promo grant)."""
+    if _is_lifetime(db, str(user.id)):
+        return get_or_create_subscription(db, str(user.id))
     sub = get_or_create_subscription(db, str(user.id))
     if sub.trial_started_at or not user.wb_api_key or not user.wb_api_key.strip():
         return sub
@@ -116,14 +127,6 @@ def start_trial_if_needed(db: Session, user: User) -> Subscription:
     sub.trial_ends_at = now + timedelta(days=TRIAL_DAYS)
     _upsert_license(db, str(user.id), "trial", sub.trial_ends_at, "trial")
     return sub
-
-
-def _is_lifetime(db: Session, user_id: str) -> bool:
-    """Проверить наличие пожизненного доступа."""
-    lic = db.query(License).filter(License.user_id == user_id).first()
-    if not isinstance(lic, License):
-        return False
-    return bool(lic.status == "lifetime")
 
 
 def grant_lifetime(db: Session, user_id: str) -> License:

@@ -14,6 +14,7 @@ from app.services.billing_service import (
     get_billing_status,
     process_yookassa_webhook,
     require_access,
+    start_trial_if_needed,
     sync_latest_yookassa_payment,
     yookassa_money_string,
 )
@@ -203,3 +204,20 @@ def test_get_billing_status_days_left_ceil_for_active_period() -> None:
         out = get_billing_status(db, user)
     assert out["subscription_status"] == "active"
     assert out["days_left"] == 30
+
+
+def test_start_trial_if_needed_skips_when_lifetime() -> None:
+    """Lifetime не должен перетираться триалом при наличии WB ключа и пустом trial_started_at."""
+    db = MagicMock()
+    user = User(id="u1", email="u1@example.com", password_hash="h", wb_api_key="secret", is_active=True)
+    sub = Subscription(user_id="u1", status="trial", trial_started_at=None, trial_ends_at=None)
+    with (
+        patch("app.services.billing_service._is_lifetime", return_value=True) as mock_life,
+        patch("app.services.billing_service.get_or_create_subscription", return_value=sub) as mock_get,
+        patch("app.services.billing_service._upsert_license") as mock_upsert,
+    ):
+        out = start_trial_if_needed(db, user)
+    mock_life.assert_called_once_with(db, "u1")
+    mock_get.assert_called_once_with(db, "u1")
+    mock_upsert.assert_not_called()
+    assert out is sub
