@@ -5,10 +5,33 @@ sellerfocus.pro, www.sellerfocus.pro {
 	file_server
 }
 
+# Локальный тестовый стенд: https://localhost:8444 (порт см. docker-compose)
+localhost, 127.0.0.1 {
+	tls internal
+	encode zstd gzip
+
+	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /offer/* /ai/* /health /openapi.json /docs* /redoc*
+
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	@index path / /index.html
+	header @index Cache-Control "no-cache, no-store, must-revalidate"
+
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /var/www/app
+		try_files {path} /index.html
+		file_server
+	}
+}
+
 app.sellerfocus.pro {
 	encode zstd gzip
 
-	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /offer/* /health /openapi.json /docs* /redoc*
+	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /offer/* /ai/* /health /openapi.json /docs* /redoc*
 
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"

@@ -156,7 +156,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8444:443"
       - "443:443/udp"
+      - "8444:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./landing:/var/www/landing:ro
