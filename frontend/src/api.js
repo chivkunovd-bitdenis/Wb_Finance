@@ -593,6 +593,18 @@ export async function upsertAiHypothesisDailyLog(hypothesisId, { day, happened, 
   return res.json(); // { items: [...] }
 }
 
+export async function getAiCompetitorReportActions(limit = 50) {
+  const p = new URLSearchParams();
+  if (limit != null) p.set('limit', String(limit));
+  const res = await apiFetch(`${API_BASE}/ai/competitor-reports/actions?${p}`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function getAiCompetitorReportStatus(period = 'week') {
   const p = new URLSearchParams();
   if (period) p.set('period', period);

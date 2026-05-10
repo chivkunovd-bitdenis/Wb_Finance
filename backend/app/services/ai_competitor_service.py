@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ai_competitor_metric import AiCompetitorMetric
 from app.models.ai_competitor_report import AiCompetitorComparisonReport
+from app.models.ai_competitor_report_action import AiCompetitorReportAction
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,17 @@ def list_report_metrics(*, db: Session, report_id: str) -> list[AiCompetitorMetr
         db.query(AiCompetitorMetric)
         .filter(AiCompetitorMetric.report_id == report_id)
         .order_by(AiCompetitorMetric.nm_id.asc(), AiCompetitorMetric.metric_code.asc())
+        .all()
+    )
+
+
+def list_report_actions(*, db: Session, user_id: str, limit: int = 50) -> list[AiCompetitorReportAction]:
+    lim = max(1, min(int(limit or 50), 200))
+    return (
+        db.query(AiCompetitorReportAction)
+        .filter(AiCompetitorReportAction.user_id == user_id)
+        .order_by(AiCompetitorReportAction.requested_at.desc())
+        .limit(lim)
         .all()
     )
 

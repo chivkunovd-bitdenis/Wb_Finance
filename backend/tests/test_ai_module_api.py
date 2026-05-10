@@ -803,6 +803,49 @@ def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: Tes
     assert r2.json()["status"] == "ok"
 
 
+def test_ai_competitor_report_status_path_not_shadowed_by_report_id_route(client: TestClient) -> None:
+    """Регрессия: /competitor-reports/status не должен матчиться как {report_id}=status."""
+    r = client.get("/ai/competitor-reports/status", params={"period": "week"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "status" in data
+    assert data["status"] in {"missing", "ready", "stale", "running", "error"}
+
+
+def test_ai_competitor_report_actions_list_returns_store_owner_rows(client: TestClient) -> None:
+    from app.models.ai_competitor_report_action import AiCompetitorReportAction
+    from app.models.base import uuid_gen
+
+    user_id = "00000000-0000-0000-0000-000000000111"
+    db = SessionLocal()
+    try:
+        db.query(AiCompetitorReportAction).filter(AiCompetitorReportAction.user_id == user_id).delete()
+        db.commit()
+        aid = str(uuid_gen())
+        db.add(
+            AiCompetitorReportAction(
+                id=aid,
+                user_id=user_id,
+                report_id=None,
+                action="refresh",
+                result="error",
+                error_message="stub failure",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get("/ai/competitor-reports/actions")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) >= 1
+    assert items[0]["id"] == aid
+    assert items[0]["action"] == "refresh"
+    assert items[0]["result"] == "error"
+    assert items[0]["error_message"] == "stub failure"
+
+
 def test_competitor_excel_parser_header_not_first_row() -> None:
     """
     Regression: WB excel may have title rows before header.

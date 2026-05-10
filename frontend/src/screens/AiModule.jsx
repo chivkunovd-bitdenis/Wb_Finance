@@ -311,6 +311,10 @@ export default function AiModule() {
   const [credsForm, setCredsForm] = useState({ wb_login: '', wb_password: '' });
   const [savingCreds, setSavingCreds] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditItems, setAuditItems] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState('');
 
   const loadReport = useCallback(async () => {
     setReportError('');
@@ -387,6 +391,28 @@ export default function AiModule() {
     }
   };
 
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    setAuditError('');
+    try {
+      const data = await api.getAiCompetitorReportActions(50);
+      setAuditItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (e) {
+      setAuditError(e?.message || 'Ошибка загрузки журнала');
+      setAuditItems([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const toggleAudit = async () => {
+    const next = !auditOpen;
+    setAuditOpen(next);
+    if (next) {
+      await loadAudit();
+    }
+  };
+
   const metricsSorted = useMemo(() => {
     const list = Array.isArray(reportDetail?.metrics) ? reportDetail.metrics.slice() : [];
     list.sort((a, b) => {
@@ -434,8 +460,70 @@ export default function AiModule() {
             <button type="button" className="btn btn-warning btn-sm" onClick={requestRefresh} disabled={requesting}>
               Создать задачу на обновление (подтверждение)
             </button>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={toggleAudit} disabled={auditLoading}>
+              {auditLoading ? 'Загрузка…' : auditOpen ? 'Скрыть журнал обновлений' : 'Журнал обновлений'}
+            </button>
           </div>
         </div>
+
+        {auditOpen && (
+          <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+              <div style={{ fontWeight: 800 }}>Журнал обновлений отчёта</div>
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadAudit} disabled={auditLoading}>
+                Обновить список
+              </button>
+            </div>
+            {auditError ? (
+              <div className="alert alert-danger" style={{ marginTop: 0 }}>{auditError}</div>
+            ) : auditItems.length === 0 ? (
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>Пока нет записей (успешные/неуспешные обновления через Playwright попадут сюда).</div>
+            ) : (
+              <div className="table-wrapper" style={{ marginTop: 0 }}>
+                <table className="custom-table">
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Действие</th>
+                      <th>Результат</th>
+                      <th>report_id</th>
+                      <th>Сообщение</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditItems.map((a) => (
+                      <tr key={a.id}>
+                        <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                          {a.requested_at ? new Date(a.requested_at).toLocaleString('ru-RU') : '—'}
+                        </td>
+                        <td style={{ fontSize: 12 }}>{a.action || '—'}</td>
+                        <td>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              padding: '2px 8px',
+                              borderRadius: 999,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              background: a.result === 'ok' ? 'rgba(16,172,132,0.12)' : 'rgba(239,68,68,0.12)',
+                              color: a.result === 'ok' ? '#0f766e' : '#b91c1c',
+                            }}
+                          >
+                            {a.result || '—'}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 11, color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
+                          {a.report_id || '—'}
+                        </td>
+                        <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{a.error_message || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
 
         {detailOpen && (
           <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>

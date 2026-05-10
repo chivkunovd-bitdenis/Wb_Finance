@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import get_store_context
 from app.schemas.ai_module import (
+    AiCompetitorReportActionItem,
+    AiCompetitorReportActionListResponse,
     AiCompetitorReportDetailResponse,
     AiCompetitorReportImportRequest,
     AiCompetitorReportItem,
@@ -38,6 +40,7 @@ from app.services.ai_competitor_service import (
     get_report as get_competitor_report,
     get_latest_report as get_latest_competitor_report,
     import_competitor_report,
+    list_report_actions,
     list_report_metrics,
     list_reports as list_competitor_reports,
 )
@@ -301,23 +304,6 @@ def ai_competitor_reports_list(
     return AiCompetitorReportListResponse(items=[AiCompetitorReportItem.model_validate(x) for x in rows])
 
 
-@router.get("/competitor-reports/{report_id}", response_model=AiCompetitorReportDetailResponse)
-def ai_competitor_report_get(
-    report_id: str,
-    store_ctx: StoreContext = Depends(get_store_context),
-    db: Session = Depends(get_db),
-) -> AiCompetitorReportDetailResponse:
-    try:
-        rep = get_competitor_report(db=db, user_id=str(store_ctx.store_owner.id), report_id=report_id)
-    except CompetitorNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
-    metrics = list_report_metrics(db=db, report_id=str(rep.id))
-    return AiCompetitorReportDetailResponse(
-        report=AiCompetitorReportItem.model_validate(rep),
-        metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
-    )
-
-
 @router.get("/competitor-reports/status", response_model=AiCompetitorReportStatusResponse)
 def ai_competitor_report_status(
     period: str = "week",
@@ -341,6 +327,35 @@ def ai_competitor_report_status(
         report_date=rep.report_date,
         valid_until=rep.valid_until,
         last_error=(rep.last_error[:500] if rep.last_error else None),
+    )
+
+
+@router.get("/competitor-reports/actions", response_model=AiCompetitorReportActionListResponse)
+def ai_competitor_report_actions_list(
+    limit: int = 50,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiCompetitorReportActionListResponse:
+    rows = list_report_actions(db=db, user_id=str(store_ctx.store_owner.id), limit=limit)
+    return AiCompetitorReportActionListResponse(
+        items=[AiCompetitorReportActionItem.model_validate(r) for r in rows],
+    )
+
+
+@router.get("/competitor-reports/{report_id}", response_model=AiCompetitorReportDetailResponse)
+def ai_competitor_report_get(
+    report_id: str,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiCompetitorReportDetailResponse:
+    try:
+        rep = get_competitor_report(db=db, user_id=str(store_ctx.store_owner.id), report_id=report_id)
+    except CompetitorNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    metrics = list_report_metrics(db=db, report_id=str(rep.id))
+    return AiCompetitorReportDetailResponse(
+        report=AiCompetitorReportItem.model_validate(rep),
+        metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
     )
 
 

@@ -191,3 +191,18 @@ class AiCompetitorReportStatusResponse(BaseModel):
     valid_until: date | None = None
     last_error: str | None = None
 
+
+class AiCompetitorReportActionItem(BaseModel):
+    id: str
+    report_id: str | None
+    action: str
+    result: str
+    error_message: str | None
+    requested_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AiCompetitorReportActionListResponse(BaseModel):
+    items: list[AiCompetitorReportActionItem]
+
