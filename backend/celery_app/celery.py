@@ -19,6 +19,9 @@ celery_app.conf.enable_utc = True
 
 _DAILY_BRIEF_ENABLED = (os.getenv("DAILY_BRIEF_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 _ARCHIVE_BACKFILL_ENABLED = (os.getenv("ARCHIVE_BACKFILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+_AI_DAILY_ANALYTICS_BEAT_ENABLED = (
+    (os.getenv("AI_DAILY_ANALYTICS_BEAT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+)
 
 beat_schedule: dict = {
     # Ежедневные напоминания о платёжке.
@@ -52,6 +55,17 @@ if _ARCHIVE_BACKFILL_ENABLED:
             "archive-backfill-manager-every-10-min": {
                 "task": "archive_backfill_manager",
                 "schedule": crontab(minute="*/10"),
+            },
+        }
+    )
+
+if _AI_DAILY_ANALYTICS_BEAT_ENABLED:
+    beat_schedule.update(
+        {
+            # Ежедневный прогон AI-MVP3: ~07:15 МСК (04:15 UTC с enable_utc=True).
+            "ai-daily-analytics-beat-0715-msk": {
+                "task": "ai_daily_analytics_beat",
+                "schedule": crontab(hour=4, minute=15),
             },
         }
     )

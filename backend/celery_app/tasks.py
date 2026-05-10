@@ -225,6 +225,32 @@ def _log_action(db: Session, user_id: str, report_id: str | None, *, action: str
     db.commit()
 
 
+@celery_app.task(name="ai_daily_analytics_beat")
+def ai_daily_analytics_beat() -> dict:
+    """
+    Celery Beat: для активных пользователей с актуальным конкурентным отчётом
+    (см. `run_ai_daily_analytics_beat_cycle`) вызывает ежедневную аналитику.
+
+    Включается флагом `AI_DAILY_ANALYTICS_BEAT_ENABLED`. Период отчёта — `AI_DAILY_ANALYTICS_BEAT_PERIOD`
+    (week|month|quarter; по умолчанию week).
+    """
+    import os
+
+    from app.core.feature_flags import is_ai_daily_analytics_beat_enabled
+    from app.services.ai_daily_analytics_beat_service import run_ai_daily_analytics_beat_cycle
+
+    if not is_ai_daily_analytics_beat_enabled():
+        return {"ok": True, "enabled": False}
+
+    period = (os.getenv("AI_DAILY_ANALYTICS_BEAT_PERIOD") or "week").strip().lower()
+    db = SessionLocal()
+    try:
+        out = run_ai_daily_analytics_beat_cycle(db=db, today=date.today(), period=period)
+        return {"enabled": True, **out}
+    finally:
+        db.close()
+
+
 def _funnel_nm_ids(db, *, user_id: str, date_from: date, date_to: date) -> list[int]:
     """
     Список nm_id для запросов funnel.

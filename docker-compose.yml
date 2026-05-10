@@ -133,6 +133,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
       DAILY_BRIEF_ENABLED: "false"
+      AI_DAILY_ANALYTICS_BEAT_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy

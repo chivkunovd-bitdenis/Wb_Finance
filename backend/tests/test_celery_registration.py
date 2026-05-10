@@ -20,6 +20,7 @@ def test_celery_app_registers_main_tasks():
         "recalculate_pnl",
         "recalculate_sku_daily",
         "billing_send_reminders",
+        "ai_daily_analytics_beat",
     }
     registered = set(celery_app.tasks.keys())
     missing = expected - registered
