@@ -27,6 +27,8 @@ from app.models.offer_ai_message import OfferAiMessage
 from app.models.ai_task import AiTask
 from app.models.ai_hypothesis import AiHypothesis
 from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
+from app.models.ai_competitor_report import AiCompetitorComparisonReport
+from app.models.ai_competitor_metric import AiCompetitorMetric
 
 __all__ = [
     "Base",
@@ -58,4 +60,6 @@ __all__ = [
     "AiTask",
     "AiHypothesis",
     "AiHypothesisDailyLog",
+    "AiCompetitorComparisonReport",
+    "AiCompetitorMetric",
 ]

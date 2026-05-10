@@ -55,6 +55,42 @@ def _ensure_ai_module_schema() -> None:
         """,
         "CREATE INDEX IF NOT EXISTS ix_ai_hypothesis_daily_log_hypothesis_id ON ai_hypothesis_daily_log (hypothesis_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_hypothesis_daily_log_hyp_day ON ai_hypothesis_daily_log (hypothesis_id, day)",
+        # competitor reports (AI-MVP2)
+        """
+        CREATE TABLE IF NOT EXISTS ai_competitor_comparison_reports (
+            id UUID NOT NULL,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            report_date DATE NOT NULL,
+            period VARCHAR(16) NOT NULL DEFAULT 'unknown',
+            source VARCHAR(32) NOT NULL DEFAULT 'manual',
+            raw_payload JSONB NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT pk_ai_competitor_comparison_reports PRIMARY KEY (id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_comparison_reports_user_id ON ai_competitor_comparison_reports (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_comparison_reports_report_date ON ai_competitor_comparison_reports (report_date)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_competitor_report_user_date_period ON ai_competitor_comparison_reports (user_id, report_date, period)",
+        """
+        CREATE TABLE IF NOT EXISTS ai_competitor_metrics (
+            id UUID NOT NULL,
+            report_id UUID NOT NULL REFERENCES ai_competitor_comparison_reports(id) ON DELETE CASCADE,
+            nm_id INT NOT NULL,
+            metric_code VARCHAR(32) NOT NULL,
+            our_value NUMERIC(18,6) NULL,
+            competitor_median_value NUMERIC(18,6) NULL,
+            unit VARCHAR(16) NULL,
+            extra JSONB NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT pk_ai_competitor_metrics PRIMARY KEY (id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_report_id ON ai_competitor_metrics (report_id)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_nm_id ON ai_competitor_metrics (nm_id)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_metric_code ON ai_competitor_metrics (metric_code)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_comp_metric_report_nm_code ON ai_competitor_metrics (report_id, nm_id, metric_code)",
     ]
     with engine.begin() as conn:
         for stmt in ddl:
@@ -279,4 +315,71 @@ def test_ai_fingerprint_unique_per_user(client: TestClient) -> None:
     finally:
         db.rollback()
         db.close()
+
+
+def test_ai_competitor_report_import_list_and_get(client: TestClient) -> None:
+    body = {
+        "report_date": "2026-05-10",
+        "period": "week",
+        "source": "manual",
+        "raw_payload": {"note": "manual import"},
+        "items": [
+            {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+            {"nm_id": 123, "metric_code": "traffic", "our_value": 1000, "competitor_median_value": 1500},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+    assert r.json()["period"] == "week"
+
+    r2 = client.get("/ai/competitor-reports")
+    assert r2.status_code == 200
+    assert any(x["id"] == rep_id for x in r2.json()["items"])
+
+    r3 = client.get(f"/ai/competitor-reports/{rep_id}")
+    assert r3.status_code == 200
+    data = r3.json()
+    assert data["report"]["id"] == rep_id
+    metrics = data["metrics"]
+    assert len(metrics) == 2
+    assert any(m["metric_code"] == "ctr" for m in metrics)
+
+
+def test_ai_competitor_report_import_is_idempotent_by_date_and_period(client: TestClient) -> None:
+    base = {
+        "report_date": "2026-05-10",
+        "period": "week",
+        "source": "manual",
+        "items": [{"nm_id": 123, "metric_code": "ctr", "our_value": 1.0, "competitor_median_value": 2.0}],
+    }
+    r1 = client.post("/ai/competitor-reports/import", json=base)
+    assert r1.status_code == 200
+    rid1 = r1.json()["id"]
+
+    base2 = {
+        **base,
+        "items": [{"nm_id": 123, "metric_code": "ctr", "our_value": 5.0, "competitor_median_value": 6.0}],
+    }
+    r2 = client.post("/ai/competitor-reports/import", json=base2)
+    assert r2.status_code == 200
+    rid2 = r2.json()["id"]
+    assert rid2 == rid1
+
+    r3 = client.get(f"/ai/competitor-reports/{rid1}")
+    assert r3.status_code == 200
+    metrics = r3.json()["metrics"]
+    assert len(metrics) == 1
+    assert float(metrics[0]["our_value"]) == 5.0
+
+
+def test_ai_competitor_report_import_rejects_invalid_metric_code(client: TestClient) -> None:
+    body = {
+        "report_date": "2026-05-10",
+        "period": "week",
+        "source": "manual",
+        "items": [{"nm_id": 123, "metric_code": "bad", "our_value": 1}],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 400
 

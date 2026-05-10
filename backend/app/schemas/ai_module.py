@@ -95,3 +95,54 @@ class AiHypothesisDailyLogItem(BaseModel):
 class AiHypothesisDailyLogResponse(BaseModel):
     items: list[AiHypothesisDailyLogItem]
 
+
+class AiCompetitorMetricImportItem(BaseModel):
+    nm_id: int
+    metric_code: str = Field(..., description="ctr|traffic|funnel_cart|funnel_order")
+    our_value: float | None = None
+    competitor_median_value: float | None = None
+    unit: str | None = None
+    extra: dict[str, Any] | None = None
+
+
+class AiCompetitorReportImportRequest(BaseModel):
+    report_date: date
+    period: str = Field("unknown", description="week|month|quarter|unknown")
+    source: str = Field("manual", description="manual|playwright")
+    raw_payload: dict[str, Any] | None = None
+    items: list[AiCompetitorMetricImportItem] = Field(default_factory=list)
+
+
+class AiCompetitorReportItem(BaseModel):
+    id: str
+    report_date: date
+    period: str
+    source: str
+    created_at: datetime | None
+    updated_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AiCompetitorReportListResponse(BaseModel):
+    items: list[AiCompetitorReportItem]
+
+
+class AiCompetitorMetricItem(BaseModel):
+    id: str
+    nm_id: int
+    metric_code: str
+    our_value: float | None
+    competitor_median_value: float | None
+    unit: str | None
+    extra: dict[str, Any] | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AiCompetitorReportDetailResponse(BaseModel):
+    report: AiCompetitorReportItem
+    metrics: list[AiCompetitorMetricItem]
+
