@@ -32,16 +32,16 @@ ID: BUG-14
 - Недостаточно регрессионного теста на сочетание lifetime + ключ + отсутствие trial.
 
 ## Исправление (что сделали)
-В начале `start_trial_if_needed` добавлен ранний выход при `_is_lifetime`; вспомогательная `_is_lifetime` вынесена выше по файлу.
+В начале `start_trial_if_needed` добавлен ранний выход при `_is_lifetime`; вспомогательная `_is_lifetime` вынесена выше по файлу. Дополнительно: в `_upsert_license` запрещено понижение со статуса `lifetime` на любой другой (инвариант на уровне БД-апсерта). На фронте `loadBillingStatus` вызывается при смене маршрута, чтобы не залипать на старом ответе `/billing/status`.
 
 ## Профилактика (как не повторить)
-Unit-тест `test_start_trial_if_needed_skips_when_lifetime` в `backend/tests/test_billing_service.py`.
+Unit-тесты `test_start_trial_if_needed_skips_when_lifetime` и `test_upsert_license_never_downgrades_lifetime` в `backend/tests/test_billing_service.py`.
 
 ## Проверка
 - Команды: `ruff check .`, `mypy .`, `pytest`
 - Сценарии: после grant lifetime + WB key статус API `/billing/status` остаётся `subscription_status: lifetime`.
 
-Затронутые файлы: `backend/app/services/billing_service.py`, `backend/tests/test_billing_service.py`, `BUGLOG.md`
+Затронутые файлы: `backend/app/services/billing_service.py`, `backend/tests/test_billing_service.py`, `frontend/src/Layout.jsx`, `frontend/dist/*`, `BUGLOG.md`
 ---
 
 ---

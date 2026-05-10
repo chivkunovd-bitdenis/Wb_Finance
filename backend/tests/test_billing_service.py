@@ -5,10 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.models.license import License
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 from app.services.billing_service import (
+    _upsert_license,
     collect_due_reminders,
     create_checkout,
     get_billing_status,
@@ -204,6 +206,19 @@ def test_get_billing_status_days_left_ceil_for_active_period() -> None:
         out = get_billing_status(db, user)
     assert out["subscription_status"] == "active"
     assert out["days_left"] == 30
+
+
+def test_upsert_license_never_downgrades_lifetime() -> None:
+    """Регрессия: trial/active/expired не должны перетирать строку licenses.status=lifetime."""
+    db = MagicMock()
+    lic = License(user_id="u1", status="lifetime", valid_until=None, source="manual")
+    chain = MagicMock()
+    chain.filter.return_value.first.return_value = lic
+    db.query.return_value = chain
+    past = datetime.now(UTC) - timedelta(days=1)
+    out = _upsert_license(db, "u1", "expired", past, "subscription")
+    assert out is lic
+    assert lic.status == "lifetime"
 
 
 def test_start_trial_if_needed_skips_when_lifetime() -> None:

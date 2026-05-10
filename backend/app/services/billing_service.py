@@ -85,6 +85,16 @@ def utc_now() -> datetime:
 
 def _upsert_license(db: Session, user_id: str, status: str, valid_until: datetime | None, source: str | None) -> License:
     lic = db.query(License).filter(License.user_id == user_id).first()
+    if isinstance(lic, License) and lic.status == "lifetime" and status != "lifetime":
+        # Инвариант: ручной/promo lifetime не может быть снят апсертом trial/active/expired
+        # (например гонка require_access / оплата / старый код start_trial).
+        logger.info(
+            "license: keep lifetime user_id=%s (skip upsert to status=%s source=%s)",
+            user_id,
+            status,
+            source,
+        )
+        return lic
     if not isinstance(lic, License):
         lic = License(user_id=user_id, status=status, valid_until=valid_until, source=source)
         db.add(lic)

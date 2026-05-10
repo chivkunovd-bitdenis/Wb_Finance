@@ -314,7 +314,7 @@ export default function Layout() {
 
   useEffect(() => {
     loadBillingStatus();
-  }, [loadBillingStatus]);
+  }, [loadBillingStatus, location.pathname]);
 
   return (
     <div className="layout">
