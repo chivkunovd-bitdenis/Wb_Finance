@@ -159,6 +159,17 @@ def finish_hypothesis(
     return row
 
 
+def list_hypothesis_daily_logs(*, db: Session, user_id: str, hypothesis_id: str) -> list[AiHypothesisDailyLog]:
+    """Все строки дневного лога из `ai_hypothesis_daily_log` (владелец проверяется)."""
+    _ = get_hypothesis(db=db, user_id=user_id, hypothesis_id=hypothesis_id)
+    return (
+        db.query(AiHypothesisDailyLog)
+        .filter(AiHypothesisDailyLog.hypothesis_id == hypothesis_id)
+        .order_by(AiHypothesisDailyLog.day.asc())
+        .all()
+    )
+
+
 def upsert_hypothesis_daily_log(
     *,
     db: Session,

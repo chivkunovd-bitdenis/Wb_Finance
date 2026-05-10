@@ -329,6 +329,27 @@ def test_ai_hypothesis_daily_log_requires_running(client: TestClient) -> None:
     assert len(items2) == 1
     assert items2[0]["happened"] == "h2"
 
+    r_get = client.get(f"/ai/hypotheses/{hypothesis_id}/daily-log")
+    assert r_get.status_code == 200
+    get_items = r_get.json()["items"]
+    assert len(get_items) == 1
+    assert get_items[0]["day"] == "2026-05-10"
+    assert get_items[0]["happened"] == "h2"
+    assert get_items[0]["changed"] == "c2"
+
+
+def test_ai_hypothesis_daily_log_get_empty_for_draft(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    hypothesis_id = _seed_hypothesis(user_id)
+    r = client.get(f"/ai/hypotheses/{hypothesis_id}/daily-log")
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+def test_ai_hypothesis_daily_log_get_404_for_unknown(client: TestClient) -> None:
+    r = client.get("/ai/hypotheses/ffffffff-ffff-ffff-ffff-ffffffffffff/daily-log")
+    assert r.status_code == 404
+
 
 def test_ai_fingerprint_unique_per_user(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"

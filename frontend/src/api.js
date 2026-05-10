@@ -579,6 +579,18 @@ export async function finishAiHypothesis(hypothesisId, resultSummary) {
   return res.json();
 }
 
+export async function getAiHypothesisDailyLog(hypothesisId) {
+  const res = await apiFetch(`${API_BASE}/ai/hypotheses/${encodeURIComponent(hypothesisId)}/daily-log`, {
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { items: [...] }
+}
+
 export async function upsertAiHypothesisDailyLog(hypothesisId, { day, happened, changed, unchanged }) {
   const res = await apiFetch(`${API_BASE}/ai/hypotheses/${hypothesisId}/daily-log`, {
     method: 'POST',

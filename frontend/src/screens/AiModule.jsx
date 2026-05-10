@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 
@@ -177,12 +177,21 @@ function TasksTab() {
   );
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function HypothesesTab() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
   const [resultSummary, setResultSummary] = useState({});
+  const [logOpenId, setLogOpenId] = useState(null);
+  const [logItems, setLogItems] = useState({});
+  const [logLoadingId, setLogLoadingId] = useState(null);
+  const [logError, setLogError] = useState('');
+  const [logForm, setLogForm] = useState(() => ({ day: todayIso(), happened: '', changed: '', unchanged: '' }));
 
   const reload = async () => {
     setLoading(true);
@@ -224,8 +233,53 @@ function HypothesesTab() {
     try {
       await api.finishAiHypothesis(id, resultSummary[id] || null);
       await reload();
+      if (logOpenId === id) {
+        await fetchDailyLog(id);
+      }
     } catch (e) {
       setError(e?.message || 'Ошибка');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const fetchDailyLog = async (hypothesisId) => {
+    setLogLoadingId(hypothesisId);
+    setLogError('');
+    try {
+      const data = await api.getAiHypothesisDailyLog(hypothesisId);
+      const rows = Array.isArray(data?.items) ? data.items : [];
+      setLogItems((m) => ({ ...m, [hypothesisId]: rows }));
+    } catch (e) {
+      setLogError(e?.message || 'Ошибка загрузки дневного лога');
+      setLogItems((m) => ({ ...m, [hypothesisId]: [] }));
+    } finally {
+      setLogLoadingId(null);
+    }
+  };
+
+  const toggleDailyLog = async (h) => {
+    const id = h.id;
+    if (logOpenId === id) {
+      setLogOpenId(null);
+      setLogError('');
+      return;
+    }
+    setLogOpenId(id);
+    setLogError('');
+    setLogForm({ day: todayIso(), happened: '', changed: '', unchanged: '' });
+    await fetchDailyLog(id);
+  };
+
+  const saveDailyLog = async (hypothesisId) => {
+    setBusyId(hypothesisId);
+    setLogError('');
+    try {
+      await api.upsertAiHypothesisDailyLog(hypothesisId, logForm);
+      await fetchDailyLog(hypothesisId);
+      setLogForm((f) => ({ ...f, happened: '', changed: '', unchanged: '' }));
+    } catch (e) {
+      setLogError(e?.message || 'Не удалось сохранить запись');
     } finally {
       setBusyId('');
     }
@@ -257,38 +311,140 @@ function HypothesesTab() {
             </thead>
             <tbody>
               {sorted.map((h) => (
-                <tr key={h.id}>
-                  <td>{h.nm_id ?? '—'}</td>
-                  <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.hypothesis_type || '—'}</td>
-                  <td>
-                    <div style={{ fontWeight: 700 }}>{h.title}</div>
-                    {h.trigger_reason && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{h.trigger_reason}</div>}
-                  </td>
-                  <td>{statusBadge(h.status)}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {h.status === 'draft' && (
-                        <button type="button" className="btn btn-sm btn-primary" disabled={busyId === h.id} onClick={() => start(h.id)}>
-                          Запустить
+                <Fragment key={h.id}>
+                  <tr>
+                    <td>{h.nm_id ?? '—'}</td>
+                    <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.hypothesis_type || '—'}</td>
+                    <td>
+                      <div style={{ fontWeight: 700 }}>{h.title}</div>
+                      {h.trigger_reason && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{h.trigger_reason}</div>}
+                    </td>
+                    <td>{statusBadge(h.status)}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary"
+                          disabled={logLoadingId === h.id}
+                          onClick={() => toggleDailyLog(h)}
+                        >
+                          {logOpenId === h.id ? 'Скрыть дневной лог' : 'Дневной лог'}
                         </button>
-                      )}
-                      {h.status === 'running' && (
-                        <>
-                          <input
-                            className="form-control form-control-sm"
-                            style={{ width: 220 }}
-                            value={resultSummary[h.id] || ''}
-                            placeholder="Итог (коротко)"
-                            onChange={(e) => setResultSummary((m) => ({ ...m, [h.id]: e.target.value }))}
-                          />
-                          <button type="button" className="btn btn-sm btn-success" disabled={busyId === h.id} onClick={() => finish(h.id)}>
-                            Завершить
+                        {h.status === 'draft' && (
+                          <button type="button" className="btn btn-sm btn-primary" disabled={busyId === h.id} onClick={() => start(h.id)}>
+                            Запустить
                           </button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                        )}
+                        {h.status === 'running' && (
+                          <>
+                            <input
+                              className="form-control form-control-sm"
+                              style={{ width: 220 }}
+                              value={resultSummary[h.id] || ''}
+                              placeholder="Итог (коротко)"
+                              onChange={(e) => setResultSummary((m) => ({ ...m, [h.id]: e.target.value }))}
+                            />
+                            <button type="button" className="btn btn-sm btn-success" disabled={busyId === h.id} onClick={() => finish(h.id)}>
+                              Завершить
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {logOpenId === h.id && (
+                    <tr>
+                      <td colSpan={5} style={{ background: 'rgba(124,58,237,0.04)', verticalAlign: 'top' }}>
+                        {logError && <div className="alert alert-danger" style={{ marginBottom: 8 }}>{logError}</div>}
+                        {logLoadingId === h.id ? (
+                          <div style={{ color: 'var(--text-tertiary)', padding: 8 }}>Загрузка дневного лога…</div>
+                        ) : (
+                          <>
+                            <div style={{ fontWeight: 800, marginBottom: 8 }}>Записи по дням</div>
+                            {((logItems[h.id] || []).length === 0) ? (
+                              <div style={{ color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 10 }}>
+                                {h.status === 'draft'
+                                  ? 'После запуска гипотезы здесь можно вести дневные заметки.'
+                                  : 'Пока нет записей.'}
+                              </div>
+                            ) : (
+                              <div className="table-wrapper" style={{ marginBottom: 12 }}>
+                                <table className="custom-table">
+                                  <thead>
+                                    <tr>
+                                      <th>День</th>
+                                      <th>Произошло</th>
+                                      <th>Изменили</th>
+                                      <th>Не меняли</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {(logItems[h.id] || []).map((row) => (
+                                      <tr key={row.day}>
+                                        <td style={{ whiteSpace: 'nowrap' }}>{row.day ?? '—'}</td>
+                                        <td style={{ fontSize: 13 }}>{row.happened || '—'}</td>
+                                        <td style={{ fontSize: 13 }}>{row.changed || '—'}</td>
+                                        <td style={{ fontSize: 13 }}>{row.unchanged || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {h.status === 'running' && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 720 }}>
+                                <div style={{ fontWeight: 700, fontSize: 13 }}>Добавить / обновить день</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                                    Дата
+                                    <input
+                                      type="date"
+                                      className="form-control form-control-sm"
+                                      style={{ width: 160, marginLeft: 6 }}
+                                      value={logForm.day}
+                                      onChange={(e) => setLogForm((f) => ({ ...f, day: e.target.value }))}
+                                    />
+                                  </label>
+                                </div>
+                                <textarea
+                                  className="form-control form-control-sm"
+                                  rows={2}
+                                  placeholder="Что произошло за день"
+                                  value={logForm.happened}
+                                  onChange={(e) => setLogForm((f) => ({ ...f, happened: e.target.value }))}
+                                />
+                                <textarea
+                                  className="form-control form-control-sm"
+                                  rows={2}
+                                  placeholder="Что изменили"
+                                  value={logForm.changed}
+                                  onChange={(e) => setLogForm((f) => ({ ...f, changed: e.target.value }))}
+                                />
+                                <textarea
+                                  className="form-control form-control-sm"
+                                  rows={2}
+                                  placeholder="Что сознательно не трогали"
+                                  value={logForm.unchanged}
+                                  onChange={(e) => setLogForm((f) => ({ ...f, unchanged: e.target.value }))}
+                                />
+                                <div>
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary btn-sm"
+                                    disabled={busyId === h.id || !logForm.day}
+                                    onClick={() => saveDailyLog(h.id)}
+                                  >
+                                    Сохранить день
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

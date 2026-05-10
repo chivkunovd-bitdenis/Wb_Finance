@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -57,6 +58,7 @@ from app.services.ai_module_service import (
     get_hypothesis,
     get_task,
     list_hypotheses,
+    list_hypothesis_daily_logs,
     list_tasks,
     start_hypothesis,
     upsert_hypothesis_daily_log,
@@ -69,6 +71,7 @@ from app.services.ai_wb_credentials_service import (
 )
 from app.services.store_access_service import StoreContext
 from celery_app.tasks import ai_competitor_report_fetch_playwright
+from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
 from app.models.ai_task import AiTask
 
 logger = logging.getLogger(__name__)
@@ -207,6 +210,42 @@ def ai_hypothesis_finish(
     return AiHypothesisFinishResponse(status="ok")
 
 
+def _hypothesis_daily_log_response(rows: Sequence[AiHypothesisDailyLog]) -> AiHypothesisDailyLogResponse:
+    return AiHypothesisDailyLogResponse(
+        items=[
+            AiHypothesisDailyLogItem(
+                day=x.day,
+                happened=x.happened,
+                changed=x.changed,
+                unchanged=x.unchanged,
+                created_at=x.created_at,
+                updated_at=x.updated_at,
+            )
+            for x in rows
+        ],
+    )
+
+
+@router.get(
+    "/hypotheses/{hypothesis_id}/daily-log",
+    response_model=AiHypothesisDailyLogResponse,
+)
+def ai_hypothesis_daily_log_list(
+    hypothesis_id: str,
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> AiHypothesisDailyLogResponse:
+    try:
+        rows = list_hypothesis_daily_logs(
+            db=db,
+            user_id=str(store_ctx.store_owner.id),
+            hypothesis_id=hypothesis_id,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    return _hypothesis_daily_log_response(rows)
+
+
 @router.post(
     "/hypotheses/{hypothesis_id}/daily-log",
     response_model=AiHypothesisDailyLogResponse,
@@ -231,19 +270,7 @@ def ai_hypothesis_daily_log_upsert(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
-    return AiHypothesisDailyLogResponse(
-        items=[
-            AiHypothesisDailyLogItem(
-                day=x.day,
-                happened=x.happened,
-                changed=x.changed,
-                unchanged=x.unchanged,
-                created_at=x.created_at,
-                updated_at=x.updated_at,
-            )
-            for x in items
-        ],
-    )
+    return _hypothesis_daily_log_response(items)
 
 
 @router.post("/competitor-reports/import", response_model=AiCompetitorReportItem)
