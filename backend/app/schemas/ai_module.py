@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -74,4 +74,24 @@ class AiHypothesisFinishRequest(BaseModel):
 
 class AiHypothesisFinishResponse(BaseModel):
     status: str
+
+
+class AiHypothesisDailyLogUpsertRequest(BaseModel):
+    day: date
+    happened: str | None = None
+    changed: str | None = None
+    unchanged: str | None = None
+
+
+class AiHypothesisDailyLogItem(BaseModel):
+    day: date
+    happened: str | None
+    changed: str | None
+    unchanged: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+class AiHypothesisDailyLogResponse(BaseModel):
+    items: list[AiHypothesisDailyLogItem]
 

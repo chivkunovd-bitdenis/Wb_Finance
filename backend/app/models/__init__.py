@@ -26,6 +26,7 @@ from app.models.offer_ai_chat import OfferAiChat
 from app.models.offer_ai_message import OfferAiMessage
 from app.models.ai_task import AiTask
 from app.models.ai_hypothesis import AiHypothesis
+from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
 
 __all__ = [
     "Base",
@@ -56,4 +57,5 @@ __all__ = [
     "OfferAiMessage",
     "AiTask",
     "AiHypothesis",
+    "AiHypothesisDailyLog",
 ]

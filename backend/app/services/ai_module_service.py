@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
 from app.models.ai_hypothesis import AiHypothesis
+from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
 from app.models.ai_task import AiTask
 
 
@@ -132,4 +133,49 @@ def finish_hypothesis(
     db.commit()
     db.refresh(row)
     return row
+
+
+def upsert_hypothesis_daily_log(
+    *,
+    db: Session,
+    user_id: str,
+    hypothesis_id: str,
+    day: date,
+    happened: str | None,
+    changed: str | None,
+    unchanged: str | None,
+) -> list[AiHypothesisDailyLog]:
+    hyp = get_hypothesis(db=db, user_id=user_id, hypothesis_id=hypothesis_id)
+    if hyp.status != "running":
+        raise InvalidTransitionError("Daily log is allowed only for running hypotheses")
+
+    row = (
+        db.query(AiHypothesisDailyLog)
+        .filter(AiHypothesisDailyLog.hypothesis_id == hypothesis_id, AiHypothesisDailyLog.day == day)
+        .first()
+    )
+    if row is None:
+        row = AiHypothesisDailyLog(
+            hypothesis_id=hypothesis_id,
+            day=day,
+            happened=happened,
+            changed=changed,
+            unchanged=unchanged,
+        )
+        db.add(row)
+    else:
+        row.happened = happened
+        row.changed = changed
+        row.unchanged = unchanged
+        db.add(row)
+
+    db.commit()
+
+    items = (
+        db.query(AiHypothesisDailyLog)
+        .filter(AiHypothesisDailyLog.hypothesis_id == hypothesis_id)
+        .order_by(AiHypothesisDailyLog.day.asc())
+        .all()
+    )
+    return items
 

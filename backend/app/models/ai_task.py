@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.models.base import Base, uuid_gen
@@ -29,6 +29,9 @@ class AiTask(Base):
     current_value = Column(JSONB, nullable=True)
     competitor_median_value = Column(JSONB, nullable=True)
 
+    # For idempotent creation by analytics (AI-MVP3): stable key to prevent duplicates.
+    fingerprint = Column(String(80), nullable=True, index=True)
+
     priority = Column(Integer, nullable=False, default=0)  # higher = more important
     status = Column(String(16), nullable=False, default="new")  # new|in_progress|completed|cancelled
 
@@ -44,5 +47,6 @@ class AiTask(Base):
             name="ck_ai_tasks_status",
         ),
         CheckConstraint("priority >= 0", name="ck_ai_tasks_priority_nonneg"),
+        UniqueConstraint("user_id", "fingerprint", name="uq_ai_tasks_user_fingerprint"),
     )
 

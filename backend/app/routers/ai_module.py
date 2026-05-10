@@ -9,6 +9,9 @@ from app.db import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.ai_module import (
+    AiHypothesisDailyLogResponse,
+    AiHypothesisDailyLogUpsertRequest,
+    AiHypothesisDailyLogItem,
     AiHypothesisFinishRequest,
     AiHypothesisFinishResponse,
     AiHypothesisItem,
@@ -27,6 +30,7 @@ from app.services.ai_module_service import (
     list_hypotheses,
     list_tasks,
     start_hypothesis,
+    upsert_hypothesis_daily_log,
     update_task_status,
 )
 
@@ -129,4 +133,43 @@ def ai_hypothesis_finish(
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
     return AiHypothesisFinishResponse(status="ok")
+
+
+@router.post(
+    "/hypotheses/{hypothesis_id}/daily-log",
+    response_model=AiHypothesisDailyLogResponse,
+)
+def ai_hypothesis_daily_log_upsert(
+    hypothesis_id: str,
+    body: AiHypothesisDailyLogUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AiHypothesisDailyLogResponse:
+    try:
+        items = upsert_hypothesis_daily_log(
+            db=db,
+            user_id=str(current_user.id),
+            hypothesis_id=hypothesis_id,
+            day=body.day,
+            happened=body.happened,
+            changed=body.changed,
+            unchanged=body.unchanged,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
+    return AiHypothesisDailyLogResponse(
+        items=[
+            AiHypothesisDailyLogItem(
+                day=x.day,
+                happened=x.happened,
+                changed=x.changed,
+                unchanged=x.unchanged,
+                created_at=x.created_at,
+                updated_at=x.updated_at,
+            )
+            for x in items
+        ],
+    )
 

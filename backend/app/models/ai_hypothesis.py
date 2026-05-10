@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.models.base import Base, uuid_gen
@@ -29,6 +29,9 @@ class AiHypothesis(Base):
     competitor_median_metrics = Column(JSONB, nullable=True)
     expected_effect = Column(JSONB, nullable=True)
 
+    # For idempotent creation by analytics (AI-MVP3): stable key to prevent duplicates.
+    fingerprint = Column(String(80), nullable=True, index=True)
+
     test_period_days = Column(Integer, nullable=True)
 
     status = Column(String(16), nullable=False, default="draft")  # draft|running|finished|cancelled
@@ -48,5 +51,6 @@ class AiHypothesis(Base):
             name="ck_ai_hypotheses_status",
         ),
         CheckConstraint("test_period_days is null or test_period_days > 0", name="ck_ai_hypotheses_period_pos"),
+        UniqueConstraint("user_id", "fingerprint", name="uq_ai_hypotheses_user_fingerprint"),
     )
 
