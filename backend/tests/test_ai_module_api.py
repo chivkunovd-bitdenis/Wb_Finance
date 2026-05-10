@@ -483,6 +483,56 @@ def _seed_sku_daily_logistics_spike(user_id: str, nm_id: int) -> None:
         db.close()
 
 
+def _seed_sku_daily_logistics_spike_avg7d(user_id: str, nm_id: int) -> None:
+    """
+    Creates 8 days: previous 7 days logistics=100, today=140 -> +40% vs avg7d.
+    """
+    db = SessionLocal()
+    try:
+        base_day = date.fromisoformat("2026-05-10")
+        start_day = base_day - timedelta(days=7)
+        db.query(SkuDaily).filter(
+            SkuDaily.user_id == user_id,
+            SkuDaily.nm_id == nm_id,
+            SkuDaily.date >= start_day,
+            SkuDaily.date <= base_day,
+        ).delete()
+        db.commit()
+
+        for i in range(7):
+            d = base_day - timedelta(days=i + 1)
+            db.add(
+                SkuDaily(
+                    user_id=user_id,
+                    date=d,
+                    nm_id=nm_id,
+                    logistics=100,
+                    revenue=1000,
+                    margin=200,
+                    ads_spend=50,
+                    open_count=100,
+                    order_count=10,
+                )
+            )
+        db.add(
+            SkuDaily(
+                user_id=user_id,
+                date=base_day,
+                nm_id=nm_id,
+                logistics=140,
+                revenue=1000,
+                margin=200,
+                ads_spend=50,
+                open_count=100,
+                order_count=10,
+            )
+        )
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+
 def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"
 
@@ -546,6 +596,41 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     assert data2["created_task_ids"] == []
     assert data2["created_hypothesis_ids"] == []
 
+
+def test_ai_daily_analytics_logistics_rule_uses_avg7d_when_available(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+
+    report_date = "2026-05-10"
+    period = "week"
+    body = {
+        "report_date": report_date,
+        "period": period,
+        "source": "manual",
+        "items": [
+            {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    # Cleanup deterministic fingerprints for logistics tasks (so test is repeatable)
+    db = SessionLocal()
+    try:
+        for task_type in ("check_measurements", "check_ktr"):
+            fp = f"task:{task_type}:123:{report_date}:2026-05-10"
+            db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    _seed_sku_daily_logistics_spike_avg7d(user_id, 123)
+
+    r2 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10"})
+    assert r2.status_code == 200
+    created = r2.json()["created_task_ids"]
+    assert len(created) >= 2
 
 def test_ai_daily_analytics_task_dedupe_updates_open_and_creates_after_close(client: TestClient) -> None:
     """

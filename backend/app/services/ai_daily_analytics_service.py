@@ -438,14 +438,15 @@ def _upsert_hypothesis(
 
 def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_date: date) -> list[str]:
     """
-    Rule: logistics increase 20%+ day-to-day -> tasks:
+    Rule: logistics increase 20%+ vs avg7d (fallback: day-to-day if history is insufficient) -> tasks:
     - check_measurements
     - check_ktr
     """
     d_prev = date_for - timedelta(days=1)
+    d_from = date_for - timedelta(days=7)
     rows: list[SkuDaily] = (
         db.query(SkuDaily)
-        .filter(SkuDaily.user_id == user_id, SkuDaily.date.in_([d_prev, date_for]))
+        .filter(SkuDaily.user_id == user_id, SkuDaily.date >= d_from, SkuDaily.date <= date_for)
         .order_by(SkuDaily.date.asc())
         .all()
     )
@@ -459,20 +460,44 @@ def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_da
     created: list[str] = []
     for nm_id, rr in by_nm.items():
         cur = rr.get(date_for)
-        prev = rr.get(d_prev)
-        if cur is None or prev is None:
+        if cur is None:
             continue
         cur_log = _to_float(cur.logistics)
-        prev_log = _to_float(prev.logistics)
-        if prev_log == 0.0:
+
+        # Prefer avg7d (previous 7 days excluding current), fallback to prev-day.
+        history_vals: list[float] = []
+        for i in range(1, 8):
+            d = date_for - timedelta(days=i)
+            row = rr.get(d)
+            if row is None:
+                continue
+            v = _to_float(row.logistics)
+            if v > 0.0:
+                history_vals.append(v)
+
+        baseline_kind: str
+        baseline_value: float | None
+        if len(history_vals) >= 3:
+            baseline_kind = "avg7d"
+            baseline_value = sum(history_vals) / len(history_vals)
+        else:
+            prev = rr.get(d_prev)
+            if prev is None:
+                continue
+            baseline_kind = "prev_day"
+            baseline_value = _to_float(prev.logistics)
+
+        if not baseline_value or baseline_value == 0.0:
             continue
-        delta_pct = (cur_log - prev_log) / abs(prev_log) * 100.0
+
+        delta_pct = (cur_log - baseline_value) / abs(baseline_value) * 100.0
         if delta_pct < _LOGISTICS_DELTA_THRESHOLD_PCT:
             continue
 
         current = {
             "logistics_today": round(cur_log, 2),
-            "logistics_prev_day": round(prev_log, 2),
+            "logistics_baseline_kind": baseline_kind,
+            "logistics_baseline_value": round(float(baseline_value), 2),
             "delta_pct": round(delta_pct, 1),
         }
         thr = {"logistics_delta_pct": _LOGISTICS_DELTA_THRESHOLD_PCT}
