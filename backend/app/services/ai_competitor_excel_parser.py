@@ -51,16 +51,20 @@ def parse_wb_competitor_excel(
     def _norm(v: object) -> str:
         return str(v or "").strip().lower().replace(" ", "_")
 
-    header_row = None
-    for r in sheet.iter_rows(min_row=1, max_row=20, values_only=True):
+    header_row: list[str] | None = None
+    header_row_idx: int | None = None
+    for i, r in enumerate(sheet.iter_rows(min_row=1, max_row=40, values_only=True), start=1):
         if not r:
             continue
         nn = [_norm(x) for x in r]
         if "nm_id" in nn or "артикул" in nn:
             header_row = nn
+            header_row_idx = i
             break
     if header_row is None:
         raise ParseError("Excel header row not found")
+    if header_row_idx is None:
+        raise ParseError("Excel header row index not found")
 
     # Map columns
     col_index: dict[str, int] = {name: i for i, name in enumerate(header_row) if name}
@@ -84,8 +88,8 @@ def parse_wb_competitor_excel(
 
     items: list[dict[str, Any]] = []
 
-    # Data starts after header; in MVP we assume header is on row 1.
-    for r in sheet.iter_rows(min_row=2, values_only=True):
+    # Data starts after the detected header row.
+    for r in sheet.iter_rows(min_row=header_row_idx + 1, values_only=True):
         if not r:
             continue
         try:

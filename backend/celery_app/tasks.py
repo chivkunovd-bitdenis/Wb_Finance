@@ -80,7 +80,9 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
     Safety contract:
     - This task MUST be enqueued only after explicit user confirmation (UI action /ai/tasks/{id}/execute).
     """
+    import os
     from datetime import date as date_type, timedelta as td
+    from app.models.ai_competitor_report import AiCompetitorComparisonReport
     from app.services.ai_wb_credentials_service import decrypt_credentials, mark_error, mark_verified
     from app.services.ai_competitor_excel_parser import ParseError, parse_wb_competitor_excel
     from app.services.ai_competitor_service import import_competitor_report
@@ -100,23 +102,71 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
             login, password = decrypt_credentials(db=db, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
+            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
             return {"ok": False, "error": "missing_credentials"}
 
         report_date = date_type.today()
+        # Single "today+period" report row: created/updated as running before fetch.
+        rep_row = (
+            db.query(AiCompetitorComparisonReport)
+            .filter(
+                AiCompetitorComparisonReport.user_id == user_id,
+                AiCompetitorComparisonReport.report_date == report_date,
+                AiCompetitorComparisonReport.period == period,
+            )
+            .first()
+        )
+        if rep_row is None:
+            rep_row = AiCompetitorComparisonReport(
+                user_id=user_id,
+                report_date=report_date,
+                period=period,
+                source="playwright",
+                valid_until=report_date + td(days=3),
+                status="running",
+                cost_or_limit_spent=True,  # user explicitly confirmed a potentially paid action
+                last_error=None,
+                raw_payload=None,
+            )
+        else:
+            rep_row.source = "playwright"
+            rep_row.valid_until = report_date + td(days=3)
+            rep_row.status = "running"
+            rep_row.last_error = None
+            rep_row.cost_or_limit_spent = True
+        db.add(rep_row)
+        db.commit()
+        db.refresh(rep_row)
 
         try:
             excel_bytes, raw_meta = fetch_comparison_excel_bytes(login=login, password=password, period=period)
         except PlaywrightAuthError as exc:
             mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
-            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            rep_row.status = "error"
+            rep_row.last_error = str(exc)[:900]
+            db.add(rep_row)
+            db.commit()
+            _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=str(exc))
             return {"ok": False, "error": "auth_failed"}
         except PlaywrightBlockedError as exc:
-            mark_error(db=db, user_id=user_id, status="needs_reauth", message=str(exc))
-            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            # "Blocked" can be either operator config (disabled/no selector) or auth/captcha/2fa.
+            # Only mark credentials disabled when the feature flag is off; otherwise keep creds status unchanged.
+            enabled = (os.getenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+            if not enabled:
+                mark_error(db=db, user_id=user_id, status="disabled", message=str(exc))
+            rep_row.status = "error"
+            rep_row.last_error = str(exc)[:900]
+            db.add(rep_row)
+            db.commit()
+            _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=str(exc))
             return {"ok": False, "error": "blocked"}
         except Exception as exc:  # noqa: BLE001
             mark_error(db=db, user_id=user_id, status="needs_reauth", message=str(exc))
-            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+            rep_row.status = "error"
+            rep_row.last_error = str(exc)[:900]
+            db.add(rep_row)
+            db.commit()
+            _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=str(exc))
             return {"ok": False, "error": "playwright_error"}
 
         try:
@@ -127,7 +177,12 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                 raw_payload={"playwright": raw_meta},
             )
         except ParseError as exc:
-            _log_action(db, user_id, None, action="refresh", ok=False, err=exc.message)
+            rep_row.status = "error"
+            rep_row.last_error = exc.message[:900]
+            rep_row.raw_payload = {"playwright": raw_meta, "parse_error": exc.message}
+            db.add(rep_row)
+            db.commit()
+            _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=exc.message)
             return {"ok": False, "error": "excel_parse_failed", "detail": exc.message}
 
         rep = import_competitor_report(

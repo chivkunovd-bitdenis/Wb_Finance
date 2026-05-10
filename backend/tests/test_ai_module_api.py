@@ -717,3 +717,120 @@ def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: Tes
     assert r2.status_code == 200
     assert r2.json()["status"] == "ok"
 
+
+def test_competitor_excel_parser_header_not_first_row() -> None:
+    """
+    Regression: WB excel may have title rows before header.
+    Parser must detect header row and start data after it.
+    """
+    from datetime import date as date_type
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    from app.services.ai_competitor_excel_parser import parse_wb_competitor_excel
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Report"
+    ws.append(["Some title"])
+    ws.append(["Another line"])
+    ws.append([])
+    ws.append(["Generated:", "2026-05-10"])
+    ws.append(["nm_id", "ctr", "ctr_median"])
+    ws.append([123, 3.1, 4.2])
+
+    buf = BytesIO()
+    wb.save(buf)
+    content = buf.getvalue()
+
+    payload = parse_wb_competitor_excel(
+        content=content,
+        report_date=date_type.fromisoformat("2026-05-10"),
+        period="week",
+        raw_payload={"x": 1},
+    )
+    assert payload["period"] == "week"
+    assert payload["source"] == "playwright"
+    assert any(x["nm_id"] == 123 and x["metric_code"] == "ctr" for x in payload["items"])
+
+
+def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: TestClient, monkeypatch) -> None:
+    from datetime import date as date_type
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from sqlalchemy.orm import Session
+
+    from app.db import SessionLocal
+    from app.models.ai_competitor_report import AiCompetitorComparisonReport
+    from app.models.ai_competitor_report_action import AiCompetitorReportAction
+    from app.services.ai_wb_credentials_service import upsert_credentials
+
+    # crypto key for credentials
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "1")
+
+    # Seed credentials
+    user_id = "00000000-0000-0000-0000-000000000111"
+    db: Session = SessionLocal()
+    try:
+        upsert_credentials(db=db, user_id=user_id, wb_login="u", wb_password="p")
+    finally:
+        db.close()
+
+    # Build minimal workbook bytes for parser
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["nm_id", "ctr", "ctr_median"])
+    ws.append([123, 3.1, 4.2])
+    buf = BytesIO()
+    wb.save(buf)
+    excel_bytes = buf.getvalue()
+
+    # Monkeypatch Playwright fetch to avoid network and selectors
+    import app.services.ai_competitor_playwright as pw
+
+    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str):
+        assert login == "u"
+        assert password == "p"
+        assert period == "week"
+        return excel_bytes, {"stub": True, "period": period}
+
+    monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _fake_fetch_comparison_excel_bytes)
+
+    from celery_app.tasks import ai_competitor_report_fetch_playwright
+
+    res = ai_competitor_report_fetch_playwright(user_id, "week")
+    assert res["ok"] is True
+
+    db2: Session = SessionLocal()
+    try:
+        today = date_type.today()
+        rep = (
+            db2.query(AiCompetitorComparisonReport)
+            .filter(
+                AiCompetitorComparisonReport.user_id == user_id,
+                AiCompetitorComparisonReport.report_date == today,
+                AiCompetitorComparisonReport.period == "week",
+            )
+            .first()
+        )
+        assert rep is not None
+        assert rep.status == "ready"
+        assert rep.last_error is None
+
+        act = (
+            db2.query(AiCompetitorReportAction)
+            .filter(AiCompetitorReportAction.user_id == user_id, AiCompetitorReportAction.report_id == str(rep.id))
+            .order_by(AiCompetitorReportAction.requested_at.desc())
+            .first()
+        )
+        assert act is not None
+        assert act.action == "refresh"
+        assert act.result == "ok"
+    finally:
+        db2.close()
+
