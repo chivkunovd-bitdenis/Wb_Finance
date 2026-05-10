@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-14
+Дата: 2026-05-10
+Статус: fixed
+Автоматизация: да (pytest: `test_start_trial_if_needed_skips_when_lifetime`)
+
+## Бизнес-описание
+Пользователю с вручную выданным пожизненным доступом (например `test@test.ru`) на странице «Подписка» показывалось «Истекла» / 0 дней и баннеры об окончании демо, хотя в БД лицензия была `lifetime`.
+
+## Процесс / сценарий
+1) Админ/скрипт выставляет `licenses.status = lifetime` для пользователя.
+2) У пользователя задан WB API key, `trial_started_at` ещё не проставлен.
+3) При следующем запросе биллинга вызывается `start_trial_if_needed`.
+4) Ожидание: статус остаётся lifetime, UI показывает бессрочный доступ.
+5) Факт (до фикса): `_upsert_license(..., "trial", ...)` перезаписывал лицензию на trial с истёкшим сроком → UI «Истекла».
+
+## Техническое описание
+В `billing_service.start_trial_if_needed` при отсутствии триала и наличии ключа вызывался `_upsert_license` со статусом `trial` без проверки, что лицензия уже `lifetime`.
+
+## Root cause (почему произошло)
+- Недоучтён порядок: ленивый старт триала не должен иметь приоритета над явным `lifetime`.
+- Недостаточно регрессионного теста на сочетание lifetime + ключ + отсутствие trial.
+
+## Исправление (что сделали)
+В начале `start_trial_if_needed` добавлен ранний выход при `_is_lifetime`; вспомогательная `_is_lifetime` вынесена выше по файлу.
+
+## Профилактика (как не повторить)
+Unit-тест `test_start_trial_if_needed_skips_when_lifetime` в `backend/tests/test_billing_service.py`.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest`
+- Сценарии: после grant lifetime + WB key статус API `/billing/status` остаётся `subscription_status: lifetime`.
+
+Затронутые файлы: `backend/app/services/billing_service.py`, `backend/tests/test_billing_service.py`, `BUGLOG.md`
+---
+
+---
 ID: BUG-13
 Дата: 2026-05-04
 Статус: fixed
