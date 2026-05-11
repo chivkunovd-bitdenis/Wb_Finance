@@ -27,6 +27,71 @@ def _storage_state_path() -> str | None:
     return p or None
 
 
+def _env(name: str) -> str:
+    return (os.getenv(name) or "").strip()
+
+
+def _list_url() -> str:
+    url = _env("WB_COMPETITOR_LIST_URL")
+    if not url:
+        raise PlaywrightBlockedError("WB competitor list URL is not configured (WB_COMPETITOR_LIST_URL)")
+    return url
+
+
+def _row_text() -> str:
+    t = _env("WB_COMPETITOR_ROW_TEXT")
+    if not t:
+        raise PlaywrightBlockedError("WB competitor row text is not configured (WB_COMPETITOR_ROW_TEXT)")
+    return t
+
+
+def _row_click_selector() -> str:
+    """
+    Selector for a clickable element inside the row that navigates to report detail page.
+    We keep it configurable because WB DOM is volatile.
+    """
+    s = _env("WB_COMPETITOR_ROW_CLICK_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor row click selector is not configured (WB_COMPETITOR_ROW_CLICK_SELECTOR)")
+    return s
+
+
+def _period_dropdown_selector() -> str:
+    s = _env("WB_COMPETITOR_PERIOD_DROPDOWN_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor period dropdown selector is not configured (WB_COMPETITOR_PERIOD_DROPDOWN_SELECTOR)")
+    return s
+
+
+def _period_option_text(period: str) -> str:
+    key = f"WB_COMPETITOR_PERIOD_OPTION_TEXT_{period.upper()}"
+    t = _env(key)
+    if not t:
+        raise PlaywrightBlockedError(f"WB competitor period option text is not configured ({key})")
+    return t
+
+
+def _generate_selector() -> str:
+    s = _env("WB_COMPETITOR_GENERATE_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor generate button selector is not configured (WB_COMPETITOR_GENERATE_SELECTOR)")
+    return s
+
+
+def _export_menu_selector() -> str:
+    s = _env("WB_COMPETITOR_EXPORT_MENU_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor export menu selector is not configured (WB_COMPETITOR_EXPORT_MENU_SELECTOR)")
+    return s
+
+
+def _export_excel_selector() -> str:
+    s = _env("WB_COMPETITOR_EXPORT_EXCEL_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor export excel selector is not configured (WB_COMPETITOR_EXPORT_EXCEL_SELECTOR)")
+    return s
+
+
 def _new_context_kwargs() -> dict[str, Any]:
     """
     Build kwargs for browser.new_context without importing Playwright types.
@@ -40,6 +105,36 @@ def _new_context_kwargs() -> dict[str, Any]:
             )
         kw["storage_state"] = p
     return kw
+
+
+def _select_period(*, page: Any, period: str) -> None:
+    """
+    Select period inside report detail page via dropdown.
+    """
+    dd = _period_dropdown_selector()
+    page.locator(dd).first.click(timeout=15_000)
+    option_text = _period_option_text(period)
+    # Broad strategy: click element that has text. Keep simple and robust.
+    page.get_by_text(option_text, exact=True).click(timeout=15_000)
+
+
+def _open_report_from_list(*, page: Any) -> None:
+    """
+    Navigate to list URL, find row by text, click to open report detail.
+    """
+    page.goto(_list_url(), wait_until="domcontentloaded", timeout=60_000)
+    row_text = _row_text()
+    click_sel = _row_click_selector()
+
+    # Find the row container by text, then click a stable clickable element inside it.
+    row = page.get_by_text(row_text).first
+    if row.count() == 0:
+        raise PlaywrightBlockedError(f"WB competitor row not found by text: {row_text!r}")
+    container = row.locator("xpath=ancestor-or-self::*[self::tr or self::div][1]")
+    if container.count() == 0:
+        container = row
+    container.locator(click_sel).first.click(timeout=20_000)
+    page.wait_for_load_state("domcontentloaded", timeout=60_000)
 
 
 def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> tuple[bytes, dict[str, Any]]:
@@ -100,21 +195,17 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
             else:
                 meta["auth_mode"] = "storage_state" if _storage_state_path() else "existing_session"
 
-            # Navigate to competitor comparison page.
-            # WB deep links can change; keep as env override.
-            report_url = (os.getenv("WB_COMPETITOR_REPORT_URL") or "").strip() or "https://seller.wildberries.ru/"
-            page.goto(report_url, wait_until="domcontentloaded", timeout=60_000)
+            # Flow: list -> open report -> choose period -> generate -> export menu -> download excel
+            _open_report_from_list(page=page)
+            _select_period(page=page, period=period)
+            page.locator(_generate_selector()).first.click(timeout=20_000)
 
-            # Download excel: require explicit URL in env for now.
-            # This makes behavior deterministic for deployments: operator sets correct URL once.
-            download_btn_selector = (os.getenv("WB_COMPETITOR_REPORT_DOWNLOAD_SELECTOR") or "").strip()
-            if not download_btn_selector:
-                raise PlaywrightBlockedError(
-                    "WB competitor download selector is not configured (WB_COMPETITOR_REPORT_DOWNLOAD_SELECTOR)"
-                )
+            # Wait until export menu is available (acts as "report ready" signal).
+            page.locator(_export_menu_selector()).first.wait_for(state="visible", timeout=180_000)
+            page.locator(_export_menu_selector()).first.click(timeout=20_000)
 
-            with page.expect_download(timeout=90_000) as dl_info:
-                page.locator(download_btn_selector).first.click()
+            with page.expect_download(timeout=180_000) as dl_info:
+                page.locator(_export_excel_selector()).first.click(timeout=20_000)
             download = dl_info.value
             content = download.path().read_bytes()  # type: ignore[union-attr]
             if not content:
