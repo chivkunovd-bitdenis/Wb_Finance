@@ -23,6 +23,7 @@ backend/.env
 
 # Playwright WB session snapshot (secret)
 backend/wb_storage_state.json
+backend/data/playwright_debug/
 frontend/test-results/
 npm-debug.log*
 yarn-debug.log*
