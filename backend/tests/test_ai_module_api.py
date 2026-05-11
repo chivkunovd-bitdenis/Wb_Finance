@@ -921,6 +921,7 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
 
     monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
     monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "1")
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_FETCH_PERIODS", "week,month")
 
     # Seed credentials
     user_id = "00000000-0000-0000-0000-000000000111"
@@ -945,7 +946,7 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str):
         assert login == "u"
         assert password == "p"
-        assert period == "week"
+        assert period in {"week", "month"}
         return excel_bytes, {"stub": True, "period": period}
 
     monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _fake_fetch_comparison_excel_bytes)
@@ -954,32 +955,35 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
 
     res = ai_competitor_report_fetch_playwright(user_id, "week")
     assert res["ok"] is True
+    assert isinstance(res.get("reports"), list)
+    assert {x.get("period") for x in res["reports"]} >= {"week", "month"}
 
     db2: Session = SessionLocal()
     try:
         today = date_type.today()
-        rep = (
-            db2.query(AiCompetitorComparisonReport)
-            .filter(
-                AiCompetitorComparisonReport.user_id == user_id,
-                AiCompetitorComparisonReport.report_date == today,
-                AiCompetitorComparisonReport.period == "week",
+        for p in ("week", "month"):
+            rep = (
+                db2.query(AiCompetitorComparisonReport)
+                .filter(
+                    AiCompetitorComparisonReport.user_id == user_id,
+                    AiCompetitorComparisonReport.report_date == today,
+                    AiCompetitorComparisonReport.period == p,
+                )
+                .first()
             )
-            .first()
-        )
-        assert rep is not None
-        assert rep.status == "ready"
-        assert rep.last_error is None
+            assert rep is not None
+            assert rep.status == "ready"
+            assert rep.last_error is None
 
-        act = (
-            db2.query(AiCompetitorReportAction)
-            .filter(AiCompetitorReportAction.user_id == user_id, AiCompetitorReportAction.report_id == str(rep.id))
-            .order_by(AiCompetitorReportAction.requested_at.desc())
-            .first()
-        )
-        assert act is not None
-        assert act.action == "refresh"
-        assert act.result == "ok"
+            act = (
+                db2.query(AiCompetitorReportAction)
+                .filter(AiCompetitorReportAction.user_id == user_id, AiCompetitorReportAction.report_id == str(rep.id))
+                .order_by(AiCompetitorReportAction.requested_at.desc())
+                .first()
+            )
+            assert act is not None
+            assert act.action == "refresh"
+            assert act.result == "ok"
     finally:
         db2.close()
 
