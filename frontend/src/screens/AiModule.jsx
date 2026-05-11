@@ -67,8 +67,9 @@ function InfoRow({ label, children }) {
   );
 }
 
-function ModalShell({ open, title, onClose, children, footer }) {
+function ModalShell({ open, title, onClose, children, footer, width }) {
   if (!open) return null;
+  const w = width || 'min(860px, 100%)';
   return (
     <div
       role="dialog"
@@ -89,7 +90,8 @@ function ModalShell({ open, title, onClose, children, footer }) {
     >
       <div
         style={{
-          width: 'min(860px, 100%)',
+          width: w,
+          maxWidth: '100%',
           background: '#fff',
           borderRadius: 12,
           border: '1px solid rgba(2,6,23,0.08)',
@@ -944,6 +946,21 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
   );
 }
 
+const COMPETITOR_METRIC_LABELS = {
+  ctr: 'CTR',
+  traffic: 'Показы',
+  funnel_cart: 'Добавления в корзину (кол-во)',
+  funnel_order: 'Заказы (кол-во)',
+};
+
+function formatMetricCell(v) {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  if (Math.abs(n - Math.round(n)) < 1e-6) return String(Math.round(n));
+  return n.toFixed(2);
+}
+
 function HypothesesTab({ selectedNmId }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -951,6 +968,45 @@ function HypothesesTab({ selectedNmId }) {
   const [busyId, setBusyId] = useState('');
   const [resultSummary, setResultSummary] = useState({});
   const [openItem, setOpenItem] = useState(null);
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState('');
+  const [sourceDetail, setSourceDetail] = useState(null);
+
+  useEffect(() => {
+    if (!sourceModalOpen) return undefined;
+    let cancelled = false;
+    (async () => {
+      setSourceLoading(true);
+      setSourceError('');
+      setSourceDetail(null);
+      try {
+        const st = await api.getAiCompetitorReportStatus('week');
+        const rid = st?.report_id;
+        if (!rid) {
+          throw new Error('Отчёт сравнения ещё не загружен. Сначала получите выгрузку из кабинета WB.');
+        }
+        const detail = await api.getAiCompetitorReportDetail(rid);
+        if (!cancelled) setSourceDetail(detail);
+      } catch (e) {
+        if (!cancelled) setSourceError(e?.message || 'Ошибка загрузки');
+      } finally {
+        if (!cancelled) setSourceLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceModalOpen]);
+
+  const sourceRows = useMemo(() => {
+    const metrics = Array.isArray(sourceDetail?.metrics) ? sourceDetail.metrics : [];
+    const sel = selectedNmId == null ? null : Number(selectedNmId);
+    const filtered = sel == null ? metrics : metrics.filter((m) => Number(m?.nm_id) === sel);
+    const copy = filtered.slice();
+    copy.sort((a, b) => Number(a?.nm_id) - Number(b?.nm_id) || String(a?.metric_code).localeCompare(String(b?.metric_code)));
+    return copy;
+  }, [sourceDetail, selectedNmId]);
 
   const reload = async () => {
     setLoading(true);
@@ -1007,7 +1063,102 @@ function HypothesesTab({ selectedNmId }) {
   };
 
   return (
-    <DataTable title="Гипотезы" tag="ИИ модуль">
+    <DataTable
+      title="Гипотезы"
+      tag="ИИ модуль"
+      headRight={(
+        <button
+          type="button"
+          className="btn btn-outline-secondary btn-sm"
+          onClick={() => setSourceModalOpen(true)}
+        >
+          Данные сравнения (Excel)
+        </button>
+      )}
+    >
+      <ModalShell
+        open={sourceModalOpen}
+        title="Последний импорт: сравнение с конкурентами"
+        width="min(960px, 100%)"
+        onClose={() => setSourceModalOpen(false)}
+      >
+        {sourceLoading ? (
+          <div style={{ padding: 8, color: 'var(--text-tertiary)' }}>Загрузка…</div>
+        ) : sourceError ? (
+          <div className="alert alert-danger" style={{ margin: 0 }}>{sourceError}</div>
+        ) : sourceDetail ? (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Ниже — то, что система сохранила из последней выгрузки Excel отчёта «Сравнение карточек» WB
+              (батч <code style={{ fontSize: 12 }}>{String(sourceDetail?.report?.latest_import_batch_id || '').slice(0, 8)}…</code>
+              {sourceDetail?.report?.report_date ? `, дата отчёта ${sourceDetail.report.report_date}` : ''}
+              {sourceDetail?.report?.period ? `, период ${sourceDetail.report.period}` : ''}).
+              {' '}
+              <strong>Важно:</strong> для листа «Показатели» поля вроде «Добавления в корзину» и «Заказы» — это
+              <strong> количества (шт) за период</strong>, а не процент воронки до 100%.
+              Отклонение в тексте гипотезы — это сравнение с медианой конкурентов по этим же числам, не «CR карточки».
+            </div>
+            {selectedNmId == null ? (
+              <div className="alert alert-warning" style={{ margin: 0, fontSize: 13 }}>
+                Товар не выбран — показаны все артикулы из последнего импорта. Выберите товар сверху, чтобы сузить таблицу.
+              </div>
+            ) : null}
+            <div style={{ overflow: 'auto', maxHeight: 'min(50vh, 420px)', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 8 }}>
+              <table className="table table-sm table-striped" style={{ margin: 0, fontSize: 12, whiteSpace: 'nowrap' }}>
+                <thead>
+                  <tr>
+                    <th style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>nm_id</th>
+                    <th style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>Показатель</th>
+                    <th style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>Наши</th>
+                    <th style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>Медиана конкурентов</th>
+                    <th style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>Ед.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sourceRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ padding: 12, color: 'var(--text-tertiary)' }}>
+                        Нет строк для выбранного артикула в последнем батче импорта.
+                      </td>
+                    </tr>
+                  ) : (
+                    sourceRows.map((m) => (
+                      <tr key={`${m.nm_id}-${m.metric_code}-${m.import_batch_id}`}>
+                        <td>{m.nm_id}</td>
+                        <td>
+                          {COMPETITOR_METRIC_LABELS[m.metric_code] || m.metric_code}
+                        </td>
+                        <td>{formatMetricCell(m.our_value)}</td>
+                        <td>{formatMetricCell(m.competitor_median_value)}</td>
+                        <td>{m.unit || '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <details>
+              <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
+                Служебный JSON импорта (raw_payload)
+              </summary>
+              <pre
+                style={{
+                  marginTop: 10,
+                  maxHeight: 220,
+                  overflow: 'auto',
+                  fontSize: 11,
+                  padding: 10,
+                  background: 'rgba(2,6,23,0.04)',
+                  borderRadius: 8,
+                  border: '1px solid rgba(2,6,23,0.08)',
+                }}
+              >
+                {JSON.stringify(sourceDetail.raw_payload ?? null, null, 2)}
+              </pre>
+            </details>
+          </div>
+        ) : null}
+      </ModalShell>
       {loading ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Загрузка…</div>
       ) : error ? (

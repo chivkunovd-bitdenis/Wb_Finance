@@ -206,7 +206,10 @@ def _trigger_reason_for_metric(m: AiCompetitorMetric | None) -> str | None:
     if med == 0.0:
         return None
     delta_pct = round((ours - med) / abs(med) * 100.0, 1)
-    return f"{m.metric_code}: {ours} vs median {med} ({delta_pct}%)"
+    unit = (m.unit or "").strip()
+    # funnel_cart / funnel_order from WB «Показатели» are usually counts (шт), not conversion %.
+    suffix = f", {unit}" if unit else ""
+    return f"{m.metric_code}{suffix}: наши {ours} vs медиана конкурентов {med} (отклонение {delta_pct}%)"
 
 
 def _trigger_reason_for_funnels(mm: dict[str, AiCompetitorMetric]) -> str | None:

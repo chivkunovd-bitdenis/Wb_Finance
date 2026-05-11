@@ -147,6 +147,8 @@ class AiCompetitorMetricItem(BaseModel):
 class AiCompetitorReportDetailResponse(BaseModel):
     report: AiCompetitorReportItem
     metrics: list[AiCompetitorMetricItem]
+    # Same object stored on import (Playwright meta, parser hints, etc.); not returned in list endpoint.
+    raw_payload: dict[str, Any] | None = None
 
 
 class AiDailyAnalyticsRunRequest(BaseModel):

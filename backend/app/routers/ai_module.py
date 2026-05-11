@@ -588,9 +588,11 @@ def ai_competitor_report_get(
     except CompetitorNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     metrics = list_report_metrics(db=db, report_id=str(rep.id), metrics_scope=metrics_scope)
+    raw_payload = rep.raw_payload if isinstance(getattr(rep, "raw_payload", None), dict) else None
     return AiCompetitorReportDetailResponse(
         report=AiCompetitorReportItem.model_validate(rep),
         metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
+        raw_payload=raw_payload,
     )
 
 

@@ -492,6 +492,7 @@ def test_ai_competitor_report_import_list_and_get(client: TestClient) -> None:
     assert r3.status_code == 200
     data = r3.json()
     assert data["report"]["id"] == rep_id
+    assert data.get("raw_payload") == {"note": "manual import"}
     metrics = data["metrics"]
     assert len(metrics) == 2
     assert any(m["metric_code"] == "ctr" for m in metrics)
