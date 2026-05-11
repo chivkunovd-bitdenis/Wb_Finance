@@ -267,6 +267,32 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
             rep.last_error = None
             db.add(rep)
             db.commit()
+            db.refresh(rep)
+
+            analytics_out: dict = {"ok": False, "created_task_ids": [], "created_hypothesis_ids": []}
+            try:
+                from app.services.ai_daily_analytics_service import run_daily_analytics
+
+                ar = run_daily_analytics(
+                    db=db,
+                    user_id=user_id,
+                    report_id=str(rep.id),
+                    date_for=report_date,
+                    stock_days_left=None,
+                    social=None,
+                )
+                analytics_out = {
+                    "ok": True,
+                    "created_task_ids": ar.created_task_ids,
+                    "created_hypothesis_ids": ar.created_hypothesis_ids,
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "ai_competitor_report_fetch_playwright: run_daily_analytics failed user=%s report=%s",
+                    user_id,
+                    rep.id,
+                )
+                analytics_out = {"ok": False, "error": str(exc)[:500]}
 
             results.append(
                 {
@@ -274,6 +300,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                     "report_id": str(rep.id),
                     "report_date": report_date.isoformat(),
                     "valid_until": rep.valid_until.isoformat() if rep.valid_until else None,
+                    "analytics": analytics_out,
                 }
             )
             _log_action(db, user_id, str(rep.id), action="refresh", ok=True, err=None)

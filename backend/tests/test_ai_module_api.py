@@ -686,9 +686,33 @@ def _seed_sku_daily_logistics_spike_avg7d(user_id: str, nm_id: int) -> None:
 def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"
 
-    # Import competitor report for nm_id=123 with bad funnels + bad ctr
     report_date = "2026-05-10"
     period = "week"
+
+    # Clean up first so open dedupe_keys do not block new hypothesis inserts (import accumulates metric batches).
+    db = SessionLocal()
+    try:
+        for fp in (
+            f"hyp:content_change:123:{report_date}:{period}",
+            f"hyp:ab_test:123:{report_date}:{period}",
+            f"task:self_buyouts:123:{report_date}:{period}",
+            "task:restock:123:2026-05-10",
+            f"task:check_measurements:123:{report_date}:2026-05-10",
+            f"task:check_ktr:123:{report_date}:2026-05-10",
+        ):
+            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete(
+                synchronize_session=False
+            )
+            db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete(synchronize_session=False)
+        for dk in ("hyp:ab_test:123", "hyp:content_change:123"):
+            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.dedupe_key == dk).delete(
+                synchronize_session=False
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    # Import competitor report for nm_id=123 with bad funnels + bad ctr
     body = {
         "report_date": report_date,
         "period": period,
@@ -701,24 +725,6 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     r = client.post("/ai/competitor-reports/import", json=body)
     assert r.status_code == 200
     rep_id = r.json()["id"]
-
-    # Clean up potential leftovers from previous runs (fingerprint is deterministic)
-    db = SessionLocal()
-    try:
-        for fp in (
-            f"hyp:content_change:123:{report_date}:{period}",
-            f"hyp:ab_test:123:{report_date}:{period}",
-            f"task:self_buyouts:123:{report_date}:{period}",
-            "task:restock:123:2026-05-10",
-            f"task:check_measurements:123:{report_date}:2026-05-10",
-            f"task:check_ktr:123:{report_date}:2026-05-10",
-        ):
-            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete()
-            db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp).delete()
-        db.commit()
-    finally:
-        db.rollback()
-        db.close()
 
     _seed_sku_daily_logistics_spike(user_id, 123)
 
@@ -1126,6 +1132,12 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     db: Session = SessionLocal()
     try:
         upsert_credentials(db=db, user_id=user_id, wb_login="u", wb_password="p")
+        # Clear open dedupe keys for stub nm_id=123 (second period reuses same dedupe_key -> no new ids).
+        for dk in ("hyp:ab_test:123", "hyp:content_change:123"):
+            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.dedupe_key == dk).delete(
+                synchronize_session=False
+            )
+        db.commit()
     finally:
         db.close()
 
@@ -1162,6 +1174,12 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     assert res["ok"] is True
     assert isinstance(res.get("reports"), list)
     assert {x.get("period") for x in res["reports"]} >= {"week", "month"}
+    for rpt in res["reports"]:
+        an = rpt.get("analytics") or {}
+        assert an.get("ok") is True
+    # week creates new hypothesis id; month hits same dedupe_key -> updates row, often empty created_*.
+    total_new_hyps = sum(len((x.get("analytics") or {}).get("created_hypothesis_ids") or []) for x in res["reports"])
+    assert total_new_hyps >= 1
 
     db2: Session = SessionLocal()
     try:
@@ -1237,6 +1255,7 @@ def test_ai_competitor_report_worker_can_run_with_storage_state_without_creds(cl
     user_id = "00000000-0000-0000-0000-000000000222"
     res = ai_competitor_report_fetch_playwright(user_id, "week")
     assert res["ok"] is True
+    assert res.get("reports") and res["reports"][0].get("analytics", {}).get("ok") is True
 
     db2: Session = SessionLocal()
     try:
