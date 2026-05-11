@@ -144,9 +144,33 @@ def _open_report_from_list(*, page: Any) -> None:
     else:
         nm = _row_nm_id()
         if nm:
-            row = page.get_by_text(str(nm), exact=False).first
-            if row.count() == 0:
+            target = str(nm).strip()
+            if not target.isdigit():
+                raise PlaywrightBlockedError(f"WB competitor nm_id must be digits: {nm!r}")
+
+            def _pick() -> Any | None:
+                loc = page.get_by_text(target, exact=False)
+                if loc.count() == 0:
+                    return None
+                # If there are multiple matches while scrolling/virtualization, pick the last one:
+                # WB list is usually sorted by recency (top is newest); virtualization can render chunks.
+                return loc.last
+
+            found = _pick()
+            if found is None:
+                # Virtualized table: scroll down in steps until nm_id appears.
+                # We keep this deterministic (bounded attempts) and avoid relying on fragile selectors.
+                max_steps = int((_env("WB_COMPETITOR_SCROLL_STEPS") or "30") or "30")
+                step_px = int((_env("WB_COMPETITOR_SCROLL_PX") or "900") or "900")
+                for _ in range(max_steps):
+                    page.mouse.wheel(0, step_px)
+                    page.wait_for_timeout(200)
+                    found = _pick()
+                    if found is not None:
+                        break
+            if found is None:
                 raise PlaywrightBlockedError(f"WB competitor row not found by nm_id: {nm!r}")
+            row = found
         else:
             row_text = _row_text()
             row = page.get_by_text(row_text).first
