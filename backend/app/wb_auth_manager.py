@@ -14,6 +14,7 @@ from app.services.ai_wb_access_service import user_storage_state_path
 
 
 app = FastAPI(title="WB Auth Manager", version="1.0.0")
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -74,12 +75,28 @@ async def start(
         with contextlib.suppress(Exception):
             await existing.playwright.stop()
 
+    # Ensure no stale chromium windows remain on the shared Xvfb display.
+    # Best-effort: if pkill is unavailable, we proceed anyway.
+    with contextlib.suppress(Exception):
+        proc = await asyncio.create_subprocess_exec("pkill", "-f", "chromium", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await proc.wait()
+
     # Lazy import to keep startup light.
     from playwright.async_api import async_playwright  # type: ignore[import-not-found]
 
     # Must run headed on virtual display (Xvfb provides DISPLAY inside container).
     p = await async_playwright().start()
-    browser = await p.chromium.launch(headless=False)
+    browser = await p.chromium.launch(
+        headless=False,
+        args=[
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-dev-shm-usage",
+            "--window-position=0,0",
+            "--window-size=1440,900",
+            "--new-window",
+        ],
+    )
     context = await browser.new_context()
     page = await context.new_page()
     await page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
@@ -87,13 +104,13 @@ async def start(
     with contextlib.suppress(Exception):
         await page.bring_to_front()
     try:
-        logger.info("wb_auth start: user_id=%s url=%s", user_id, page.url)
+        logger.info("wb_auth start: user_id=%s url=%s pages=%s", user_id, page.url, len(context.pages))
     except Exception:
         pass
 
     async with _lock:
         _sessions[user_id] = _Session(playwright=p, browser=browser, context=context, page=page)
-    return {"status": "ok"}
+    return {"status": "ok", "url": page.url}
 
 
 @app.post("/save")
