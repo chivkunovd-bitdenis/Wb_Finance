@@ -45,6 +45,16 @@ def _row_text() -> str:
     return t
 
 
+def _row_nm_id() -> str | None:
+    raw = _env("WB_COMPETITOR_ROW_NM_ID")
+    return raw or None
+
+
+def _row_selector() -> str | None:
+    s = _env("WB_COMPETITOR_ROW_SELECTOR")
+    return s or None
+
+
 def _row_click_selector() -> str:
     """
     Selector for a clickable element inside the row that navigates to report detail page.
@@ -120,16 +130,29 @@ def _select_period(*, page: Any, period: str) -> None:
 
 def _open_report_from_list(*, page: Any) -> None:
     """
-    Navigate to list URL, find row by text, click to open report detail.
+    Navigate to list URL, find row by selector or nm_id/text, click to open report detail.
     """
     page.goto(_list_url(), wait_until="domcontentloaded", timeout=60_000)
-    row_text = _row_text()
     click_sel = _row_click_selector()
 
-    # Find the row container by text, then click a stable clickable element inside it.
-    row = page.get_by_text(row_text).first
-    if row.count() == 0:
-        raise PlaywrightBlockedError(f"WB competitor row not found by text: {row_text!r}")
+    row = None
+    sel = _row_selector()
+    if sel:
+        row = page.locator(sel).first
+        if row.count() == 0:
+            raise PlaywrightBlockedError(f"WB competitor row not found by selector: {sel!r}")
+    else:
+        nm = _row_nm_id()
+        if nm:
+            row = page.get_by_text(str(nm), exact=False).first
+            if row.count() == 0:
+                raise PlaywrightBlockedError(f"WB competitor row not found by nm_id: {nm!r}")
+        else:
+            row_text = _row_text()
+            row = page.get_by_text(row_text).first
+            if row.count() == 0:
+                raise PlaywrightBlockedError(f"WB competitor row not found by text: {row_text!r}")
+
     container = row.locator("xpath=ancestor-or-self::*[self::tr or self::div][1]")
     if container.count() == 0:
         container = row

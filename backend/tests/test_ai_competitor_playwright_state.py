@@ -10,6 +10,8 @@ from app.services.ai_competitor_playwright import (
     _list_url,
     _period_dropdown_selector,
     _row_click_selector,
+    _row_nm_id,
+    _row_selector,
     _row_text,
 )
 
@@ -40,6 +42,8 @@ def test_new_context_kwargs_raises_when_missing_file(monkeypatch: pytest.MonkeyP
 def test_config_validators_raise_on_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WB_COMPETITOR_LIST_URL", raising=False)
     monkeypatch.delenv("WB_COMPETITOR_ROW_TEXT", raising=False)
+    monkeypatch.delenv("WB_COMPETITOR_ROW_SELECTOR", raising=False)
+    monkeypatch.delenv("WB_COMPETITOR_ROW_NM_ID", raising=False)
     monkeypatch.delenv("WB_COMPETITOR_ROW_CLICK_SELECTOR", raising=False)
     monkeypatch.delenv("WB_COMPETITOR_PERIOD_DROPDOWN_SELECTOR", raising=False)
     with pytest.raises(PlaywrightBlockedError):
@@ -50,4 +54,11 @@ def test_config_validators_raise_on_missing(monkeypatch: pytest.MonkeyPatch) -> 
         _ = _row_click_selector()
     with pytest.raises(PlaywrightBlockedError):
         _ = _period_dropdown_selector()
+
+
+def test_row_selector_and_nm_id_are_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WB_COMPETITOR_ROW_SELECTOR", raising=False)
+    monkeypatch.delenv("WB_COMPETITOR_ROW_NM_ID", raising=False)
+    assert _row_selector() is None
+    assert _row_nm_id() is None
 
