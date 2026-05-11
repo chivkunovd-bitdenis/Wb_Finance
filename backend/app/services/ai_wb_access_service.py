@@ -41,6 +41,14 @@ def interactive_grant_wb_access(*, user_id: str) -> dict[str, Any]:
     if not enabled:
         raise InteractiveAuthDisabledError("Interactive WB auth is disabled (AI_WB_INTERACTIVE_AUTH_ENABLED=0)")
 
+    # Docker on mac/linux typically has no X server; headed mode will crash.
+    # Prefer uploading a "access file" (storage_state) in such environments.
+    if Path("/.dockerenv").exists() or not (os.getenv("DISPLAY") or "").strip():
+        raise InteractiveAuthDisabledError(
+            "Interactive WB auth is not available in this environment (no display). "
+            "Use storage_state upload flow instead."
+        )
+
     # Lazy import: Playwright is heavy and optional.
     from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
 

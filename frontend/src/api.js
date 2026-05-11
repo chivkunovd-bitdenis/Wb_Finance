@@ -705,6 +705,26 @@ export async function grantAiWbAccessInteractive() {
   return res.json();
 }
 
+export async function uploadAiWbAccessFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await apiFetch(`${API_BASE}/ai/wb-access/storage-state`, {
+    method: 'POST',
+    headers: (() => {
+      const h = headers();
+      delete h['Content-Type'];
+      return h;
+    })(),
+    body: form,
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function updateWbApiKey(wbApiKey) {
   const res = await apiFetch(`${API_BASE}/auth/wb-key`, {
     method: 'PUT',

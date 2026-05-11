@@ -239,11 +239,15 @@ function ProductPickerModal({ open, onClose, onSelectNmId }) {
 function WbAccessModal({ open, onClose, onGranted }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setError('');
     setSaving(false);
+    setFile(null);
+    setUploading(false);
   }, [open]);
 
   const submit = async () => {
@@ -260,6 +264,23 @@ function WbAccessModal({ open, onClose, onGranted }) {
     }
   };
 
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      await api.uploadAiWbAccessFile(file);
+      onGranted?.();
+      onClose?.();
+    } catch (e) {
+      setError(e?.message || 'Не удалось загрузить файл доступа');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const showUpload = String(error || '').toLowerCase().includes('no display') || String(error || '').toLowerCase().includes('storage_state');
+
   return (
     <ModalShell
       open={open}
@@ -268,7 +289,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
       footer={(
         <>
           <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>Отмена</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving}>
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving || uploading}>
             {saving ? 'Открываю окно…' : 'Выдать доступ'}
           </button>
         </>
@@ -279,6 +300,25 @@ function WbAccessModal({ open, onClose, onGranted }) {
         после успешного входа окно закроется автоматически.
       </div>
       {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
+
+      {showUpload && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            В локальном Docker окно браузера открыть нельзя. Загрузите “файл доступа” (JSON), который создаётся после входа в кабинет WB.
+          </div>
+          <input
+            type="file"
+            accept=".json,application/json"
+            className="form-control"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+          />
+          <div>
+            <button type="button" className="btn btn-outline-primary" disabled={!file || uploading || saving} onClick={upload}>
+              {uploading ? 'Загружаю…' : 'Загрузить файл доступа'}
+            </button>
+          </div>
+        </div>
+      )}
     </ModalShell>
   );
 }

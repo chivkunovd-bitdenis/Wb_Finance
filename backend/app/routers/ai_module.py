@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Sequence
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -393,6 +394,38 @@ def ai_wb_access_grant(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.message) from exc
     except InteractiveAuthFailedError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Не удалось выдать доступ: {exc.message}") from exc
+
+
+@router.post("/wb-access/storage-state")
+def ai_wb_access_storage_state_upload(
+    file: UploadFile,
+    store_ctx: StoreContext = Depends(get_store_context),
+) -> dict:
+    """
+    Upload Playwright storage_state JSON (auth cookies/state) for WB cabinet.
+
+    This is a fallback for environments where interactive headed auth cannot run (e.g. Docker without X server).
+    """
+    from app.services.ai_wb_access_service import user_storage_state_path
+
+    name = (file.filename or "").lower()
+    if not name.endswith(".json"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нужен файл .json")
+    raw = file.file.read()  # type: ignore[no-untyped-call]
+    if not raw or len(raw) > 2_000_000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл пустой или слишком большой")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный JSON") from exc
+
+    if not isinstance(payload, dict) or "cookies" not in payload or "origins" not in payload:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Это не похоже на файл доступа")
+
+    p = user_storage_state_path(user_id=str(store_ctx.store_owner.id))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(raw)
+    return {"status": "ok"}
 
 
 @router.get("/competitor-reports", response_model=AiCompetitorReportListResponse)
