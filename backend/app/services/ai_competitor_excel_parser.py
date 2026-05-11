@@ -27,9 +27,9 @@ def parse_wb_competitor_excel(
     Semantics (лист «Показатели», колонки «Артикул WB …» — один из артикулов это наш товар).
     **Только эти подписи в первой колонке** (без альтернатив и «похожих» строк):
     - **Показы** → `traffic`: абсолют; по конкурентам — **среднее арифметическое** (нули среди конкурентов не берём).
-    - **Конверсия в корзину, %** → `funnel_cart`: в ячейке число без «%» = процентные пункты; по конкурентам — **медиана** процентов (нули не берём).
+    - **Конверсия в корзину, %** → `funnel_cart`: в ячейке число без «%» = процентные пункты; по конкурентам — **медиана** (нули не берём).
     - **Конверсия в заказ, %** → `funnel_order`: то же.
-    Опционально строка **CTR** → `ctr`: п.п.; по конкурентам — медиана (нули не берём).
+    - **CTR** → `ctr`: как у конверсий — в БД **процентные пункты** (`unit` = «%»). Если в ячейке **доля** (строго между 0 и 1), умножаем на 100; иначе считаем, что уже п.п. По конкурентам — **медиана** (нули не берём).
 
     NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
@@ -132,6 +132,15 @@ def parse_wb_competitor_excel(
                 others = _competitor_values_excluding(target_nm, values_by_nm, exclude_zero=True)
                 return float(mean(others)) if others else None
 
+            def _ctr_cell_to_percent_points(v: float | None) -> float | None:
+                """CTR в Excel: либо уже п.п. (3.1), либо доля (0.031) — тогда ×100 → п.п."""
+                if v is None:
+                    return None
+                fv = float(v)
+                if 0.0 < fv < 1.0:
+                    return fv * 100.0
+                return fv
+
             def _items_for_row(
                 *,
                 row_norm: str,
@@ -143,6 +152,8 @@ def parse_wb_competitor_excel(
                 if r_idx is None:
                     return []
                 by_nm = _cells_for_nm(_read_metric_row(r_idx))
+                if metric_code == "ctr":
+                    by_nm = {nm: _ctr_cell_to_percent_points(val) for nm, val in by_nm.items()}
                 out: list[dict[str, Any]] = []
                 for nm_id, _c in nm_cols:
                     our = by_nm.get(nm_id)
@@ -164,7 +175,7 @@ def parse_wb_competitor_excel(
                     )
                 return out
 
-            # Ровно три обязательные строки WB (подпись в колонке A после нормализации).
+            # Ровно четыре обязательные строки WB (подпись в колонке A после нормализации).
             row_shows = _norm("Показы")
             row_cart = _norm("Конверсия в корзину, %")
             row_order = _norm("Конверсия в заказ, %")
@@ -173,6 +184,7 @@ def parse_wb_competitor_excel(
                 (row_shows, "Показы"),
                 (row_cart, "Конверсия в корзину, %"),
                 (row_order, "Конверсия в заказ, %"),
+                (row_ctr, "CTR"),
             )
             for key, human in required:
                 if key not in row_by_norm:
@@ -182,8 +194,7 @@ def parse_wb_competitor_excel(
             items.extend(_items_for_row(row_norm=row_shows, metric_code="traffic", unit="шт", aggregate="mean"))
             items.extend(_items_for_row(row_norm=row_cart, metric_code="funnel_cart", unit="%", aggregate="median"))
             items.extend(_items_for_row(row_norm=row_order, metric_code="funnel_order", unit="%", aggregate="median"))
-            if row_ctr in row_by_norm:
-                items.extend(_items_for_row(row_norm=row_ctr, metric_code="ctr", unit="%", aggregate="median"))
+            items.extend(_items_for_row(row_norm=row_ctr, metric_code="ctr", unit="%", aggregate="median"))
 
             if not items:
                 raise ParseError("Показатели: no metrics parsed")

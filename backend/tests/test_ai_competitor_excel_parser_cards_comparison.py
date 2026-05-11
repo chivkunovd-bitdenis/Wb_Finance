@@ -98,6 +98,26 @@ def test_parse_pokazateli_conversion_strict_row_labels_import_values_as_given() 
     assert cart.get("extra", {}).get("competitor_aggregate") == "median"
 
 
+def test_parse_pokazateli_ctr_fraction_cells_become_percent_points() -> None:
+    """CTR: значения строго между 0 и 1 считаем долей и умножаем на 100 (п.п.)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 10", "Артикул WB 20"])
+    ws.append(["Показы", 1000, 2000])
+    ws.append(["CTR", 0.031, 0.04])
+    ws.append(["Конверсия в корзину, %", 8.0, 12.0])
+    ws.append(["Конверсия в заказ, %", 2.0, 3.0])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    ctr10 = next(i for i in out["items"] if i["nm_id"] == 10 and i["metric_code"] == "ctr")
+    assert ctr10["our_value"] == pytest.approx(3.1)
+    assert ctr10["competitor_median_value"] == pytest.approx(4.0)
+
+
 def test_parse_pokazateli_traffic_competitor_aggregate_is_mean() -> None:
     """«Показы»: по конкурентам — среднее (четыре артикула)."""
     wb = Workbook()

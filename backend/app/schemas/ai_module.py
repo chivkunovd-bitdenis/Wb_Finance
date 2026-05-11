@@ -103,7 +103,7 @@ class AiCompetitorMetricImportItem(BaseModel):
         description=(
             "ctr|traffic|funnel_cart|funnel_order — из Excel «Показатели»: "
             "Показы (абсолют) — по конкурентам среднее; "
-            "Конверсия в корзину/заказ, % и CTR — п.п. как в ячейке WB, по конкурентам медиана."
+            "CTR и конверсии — процентные пункты (CTR: доля 0–1 в ячейке → ×100), по конкурентам медиана."
         ),
     )
     our_value: float | None = None
