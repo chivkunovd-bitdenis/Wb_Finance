@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
-from statistics import median
+from statistics import median, mean
 from typing import Any
 
 from openpyxl import load_workbook
@@ -24,13 +24,12 @@ def parse_wb_competitor_excel(
     """
     Parse WB «Сравнение карточек» Excel into canonical payload for `import_competitor_report`.
 
-    Semantics (лист «Показатели», колонки «Артикул WB …» — один из артикулов это наш товар):
-    - **traffic** («Показы»): абсолютные числа; сравнение «наши vs медиана конкурентов» — по абсолютам.
-    - **ctr**, **funnel_cart**, **funnel_order**: конверсии/CTR; в файле часто **без знака %**, но это уже
-      процентные пункты (например `12.3` означает 12.3%). Сравнение с медианой — «конверсия к конверсии».
-      **funnel_cart** / **funnel_order** — строки отчёта WB вроде **«Конверсия в корзину, %»** / **«Конверсия в заказ, %»**
-      (в ячейках число без знака «%», смысл — процентные пункты). Медиана конкурентов считается по остальным
-      карточкам; значения **0** среди конкурентов в медиану **не включаем** (только ненулевые).
+    Semantics (лист «Показатели», колонки «Артикул WB …» — один из артикулов это наш товар).
+    **Только эти подписи в первой колонке** (без альтернатив и «похожих» строк):
+    - **Показы** → `traffic`: абсолют; по конкурентам — **среднее арифметическое** (нули среди конкурентов не берём).
+    - **Конверсия в корзину, %** → `funnel_cart`: в ячейке число без «%» = процентные пункты; по конкурентам — **медиана** процентов (нули не берём).
+    - **Конверсия в заказ, %** → `funnel_order`: то же.
+    Опционально строка **CTR** → `ctr`: п.п.; по конкурентам — медиана (нули не берём).
 
     NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
@@ -110,106 +109,81 @@ def parse_wb_competitor_excel(
                     out[nm_id] = _to_float_or_none(row_vals[c_idx] if c_idx < len(row_vals) else None)
                 return out
 
+            def _competitor_values_excluding(
+                target_nm: int, values_by_nm: dict[int, float | None], *, exclude_zero: bool
+            ) -> list[float]:
+                out: list[float] = []
+                for nm, v in values_by_nm.items():
+                    if nm == target_nm or v is None:
+                        continue
+                    fv = float(v)
+                    if exclude_zero and fv == 0.0:
+                        continue
+                    out.append(fv)
+                return out
+
             def _median_excluding(target_nm: int, values_by_nm: dict[int, float | None]) -> float | None:
-                """Медиана по конкурентам; None и 0 не участвуют (0 — выбрасываем из набора)."""
-                others = [
-                    float(v)
-                    for nm, v in values_by_nm.items()
-                    if nm != target_nm and v is not None and float(v) != 0.0
-                ]
+                """Медиана процентов по конкурентам; None и (опционально) 0 не участвуют."""
+                others = _competitor_values_excluding(target_nm, values_by_nm, exclude_zero=True)
                 return float(median(others)) if others else None
 
-            def _funnel_items_from_percent_row(
+            def _mean_excluding(target_nm: int, values_by_nm: dict[int, float | None]) -> float | None:
+                """Среднее по конкурентам для «Показы»; None и 0 не участвуют."""
+                others = _competitor_values_excluding(target_nm, values_by_nm, exclude_zero=True)
+                return float(mean(others)) if others else None
+
+            def _items_for_row(
                 *,
-                row_norm_candidates: tuple[str, ...],
+                row_norm: str,
                 metric_code: str,
+                unit: str,
+                aggregate: str,
             ) -> list[dict[str, Any]]:
-                r_idx = None
-                for key in row_norm_candidates:
-                    if key in row_by_norm:
-                        r_idx = row_by_norm[key]
-                        break
+                r_idx = row_by_norm.get(row_norm)
                 if r_idx is None:
                     return []
-                # WB пишет проценты числом без «%» — сохраняем как есть (процентные пункты).
-                pct_by_nm = _cells_for_nm(_read_metric_row(r_idx))
-                # Если в строке есть значения > 100, это почти наверняка не «конверсия, %» (часто штуки/ошибочная строка).
-                _vals = [abs(float(v)) for v in pct_by_nm.values() if v is not None]
-                if _vals and max(_vals) > 100.0:
-                    return []
+                by_nm = _cells_for_nm(_read_metric_row(r_idx))
                 out: list[dict[str, Any]] = []
                 for nm_id, _c in nm_cols:
-                    our = pct_by_nm.get(nm_id)
+                    our = by_nm.get(nm_id)
                     if our is None:
                         continue
-                    comp = _median_excluding(nm_id, pct_by_nm)
+                    if aggregate == "mean":
+                        comp = _mean_excluding(nm_id, by_nm)
+                    else:
+                        comp = _median_excluding(nm_id, by_nm)
                     out.append(
                         {
                             "nm_id": nm_id,
                             "metric_code": metric_code,
                             "our_value": float(our),
                             "competitor_median_value": comp,
-                            "unit": "%",
-                            "extra": {"source": "excel_row"},
+                            "unit": unit,
+                            "extra": {"source": "excel_row", "competitor_aggregate": aggregate},
                         }
                     )
                 return out
 
-            # Трафик — абсолют («Показы»). CTR — как в WB: в ячейке часто число без «%», это процентные пункты.
-            row_map_simple: dict[str, tuple[str, str]] = {
-                "показы": ("traffic", "шт"),
-                "ctr": ("ctr", "%"),
-            }
-            metric_rows: dict[str, int] = {}
-            for name, r_idx in row_by_norm.items():
-                if name in row_map_simple:
-                    metric_rows[row_map_simple[name][0]] = r_idx
-
-            if "ctr" not in metric_rows and "traffic" not in metric_rows:
-                raise ParseError("Показатели: metric rows not found")
+            # Ровно три обязательные строки WB (подпись в колонке A после нормализации).
+            row_shows = _norm("Показы")
+            row_cart = _norm("Конверсия в корзину, %")
+            row_order = _norm("Конверсия в заказ, %")
+            row_ctr = _norm("CTR")
+            required = (
+                (row_shows, "Показы"),
+                (row_cart, "Конверсия в корзину, %"),
+                (row_order, "Конверсия в заказ, %"),
+            )
+            for key, human in required:
+                if key not in row_by_norm:
+                    raise ParseError(f"Показатели: нет строки «{human}» (ожидается точное название поля).")
 
             items: list[dict[str, Any]] = []
-            for metric_code, r_idx in metric_rows.items():
-                row_vals = _read_metric_row(r_idx)
-                unit = next((u for (k, u) in row_map_simple.values() if k == metric_code), None)
-                for nm_id, c_idx in nm_cols:
-                    our = _to_float_or_none(row_vals[c_idx] if c_idx < len(row_vals) else None)
-                    others: list[float] = []
-                    for nm2, c2 in nm_cols:
-                        if nm2 == nm_id:
-                            continue
-                        v2 = _to_float_or_none(row_vals[c2] if c2 < len(row_vals) else None)
-                        if v2 is not None and float(v2) != 0.0:
-                            others.append(float(v2))
-                    comp = float(median(others)) if others else None
-                    items.append(
-                        {
-                            "nm_id": nm_id,
-                            "metric_code": metric_code,
-                            "our_value": our,
-                            "competitor_median_value": comp,
-                            "unit": unit,
-                            "extra": None,
-                        }
-                    )
-
-            # funnel_cart / funnel_order: строки как в стандартном отчёте WB («Конверсия …, %» в первой колонке).
-            # _norm("Конверсия в корзину, %") -> "конверсия_в_корзину,_%" при пробеле после запятой;
-            # без пробела после запятой -> "конверсия_в_корзину,%".
-            # Только явные строки «…, %» / «…,%» или официальное «из показов» — без коротких ключей вроде
-            # «конверсия_в_корзину», иначе легко сматчить не ту строку (шт) и получить «медиана 200» при наших 40.
-            cr_cart_norms = (
-                "конверсия_в_корзину,_%",
-                "конверсия_в_корзину,%",
-                "конверсия_из_показов_в_корзину",
-            )
-            cr_order_norms = (
-                "конверсия_в_заказ,_%",
-                "конверсия_в_заказ,%",
-                "конверсия_из_показов_в_заказ",
-            )
-            items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_cart_norms, metric_code="funnel_cart"))
-            items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_order_norms, metric_code="funnel_order"))
+            items.extend(_items_for_row(row_norm=row_shows, metric_code="traffic", unit="шт", aggregate="mean"))
+            items.extend(_items_for_row(row_norm=row_cart, metric_code="funnel_cart", unit="%", aggregate="median"))
+            items.extend(_items_for_row(row_norm=row_order, metric_code="funnel_order", unit="%", aggregate="median"))
+            if row_ctr in row_by_norm:
+                items.extend(_items_for_row(row_norm=row_ctr, metric_code="ctr", unit="%", aggregate="median"))
 
             if not items:
                 raise ParseError("Показатели: no metrics parsed")

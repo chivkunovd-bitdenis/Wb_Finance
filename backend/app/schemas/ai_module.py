@@ -100,7 +100,11 @@ class AiCompetitorMetricImportItem(BaseModel):
     nm_id: int
     metric_code: str = Field(
         ...,
-        description="ctr|traffic|funnel_cart|funnel_order — CTR/конверсии: процентные пункты как в WB (часто без «%» в ячейке); traffic: абсолют (показы).",
+        description=(
+            "ctr|traffic|funnel_cart|funnel_order — из Excel «Показатели»: "
+            "Показы (абсолют) — по конкурентам среднее; "
+            "Конверсия в корзину/заказ, % и CTR — п.п. как в ячейке WB, по конкурентам медиана."
+        ),
     )
     our_value: float | None = None
     competitor_median_value: float | None = None

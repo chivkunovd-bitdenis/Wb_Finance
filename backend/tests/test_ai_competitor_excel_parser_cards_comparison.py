@@ -58,7 +58,8 @@ def test_parse_cards_comparison_pokazateli_sheet() -> None:
     assert ctr_111["competitor_median_value"] == 15.0
     traffic_222 = next(i for i in items if i["nm_id"] == 222 and i["metric_code"] == "traffic")
     assert traffic_222["our_value"] == 300.0
-    assert traffic_222["competitor_median_value"] == 100.0
+    assert traffic_222["competitor_median_value"] == 100.0  # поле по смыслу: среднее по конкурентам для «Показы»
+    assert traffic_222.get("extra", {}).get("competitor_aggregate") == "mean"
 
     # Конверсии — только из строк «Конверсия …» в Excel (п.п.; строки «…, шт» в импорт конверсий не идут).
     cart_111 = next(i for i in items if i["nm_id"] == 111 and i["metric_code"] == "funnel_cart")
@@ -76,8 +77,8 @@ def test_parse_cards_comparison_pokazateli_sheet() -> None:
     assert ord_222["competitor_median_value"] == 2.0
 
 
-def test_parse_pokazateli_skips_conversion_row_if_any_cell_over_100() -> None:
-    """Строка «Конверсия …, %» с числами >100 — не импортируем (обычно не проценты, а шт/ошибка)."""
+def test_parse_pokazateli_conversion_strict_row_labels_import_values_as_given() -> None:
+    """Строго строка «Конверсия в корзину, %» — импортируем числа как в Excel (контроль качества — в аналитике)."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Показатели"
@@ -86,11 +87,36 @@ def test_parse_pokazateli_skips_conversion_row_if_any_cell_over_100() -> None:
     ws.append(["Показы", 1000, 2000])
     ws.append(["CTR", 3.0, 4.0])
     ws.append(["Конверсия в корзину, %", 40.0, 200.0])
+    ws.append(["Конверсия в заказ, %", 1.0, 2.0])
     buf = BytesIO()
     wb.save(buf)
 
     out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
-    assert not any(i["metric_code"] == "funnel_cart" for i in out["items"])
+    cart = next(i for i in out["items"] if i["nm_id"] == 10 and i["metric_code"] == "funnel_cart")
+    assert cart["our_value"] == 40.0
+    assert cart["competitor_median_value"] == 200.0
+    assert cart.get("extra", {}).get("competitor_aggregate") == "median"
+
+
+def test_parse_pokazateli_traffic_competitor_aggregate_is_mean() -> None:
+    """«Показы»: по конкурентам — среднее (четыре артикула)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 1", "Артикул WB 2", "Артикул WB 3", "Артикул WB 4"])
+    ws.append(["Показы", 100, 300, 500, 900])
+    ws.append(["CTR", 1.0, 2.0, 3.0, 4.0])
+    ws.append(["Конверсия в корзину, %", 1.0, 2.0, 3.0, 4.0])
+    ws.append(["Конверсия в заказ, %", 1.0, 2.0, 3.0, 4.0])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    t1 = next(i for i in out["items"] if i["nm_id"] == 1 and i["metric_code"] == "traffic")
+    assert t1["our_value"] == 100.0
+    assert t1["competitor_median_value"] == pytest.approx((300 + 500 + 900) / 3)
+    assert t1.get("extra", {}).get("competitor_aggregate") == "mean"
 
 
 def test_parse_pokazateli_median_excludes_zero_competitor_values() -> None:
@@ -103,6 +129,7 @@ def test_parse_pokazateli_median_excludes_zero_competitor_values() -> None:
     ws.append(["Показы", 100, 200, 150, 0])
     ws.append(["CTR", 5.0, 6.0, 4.0, 0])
     ws.append(["Конверсия в корзину, %", 10.0, 0.0, 8.0, 0])
+    ws.append(["Конверсия в заказ, %", 1.0, 1.0, 1.0, 0])
     buf = BytesIO()
     wb.save(buf)
 
