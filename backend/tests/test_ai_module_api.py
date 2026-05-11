@@ -791,6 +791,29 @@ def test_ai_wb_credentials_upsert_and_status(client: TestClient, monkeypatch) ->
     assert r2.json()["status"] == "active"
 
 
+def test_ai_tasks_list_auto_creates_wb_access_task_when_missing(client: TestClient) -> None:
+    """
+    UX contract: when WB credentials are missing, AI module should expose a single
+    human-readable task prompting the user to grant access.
+    """
+    # Test isolation: other tests may have set WB creds; enforce missing state here.
+    from app.models.ai_wb_cabinet_credential import AiWbCabinetCredential
+
+    user_id = "00000000-0000-0000-0000-000000000111"
+    db = SessionLocal()
+    try:
+        db.query(AiWbCabinetCredential).filter(AiWbCabinetCredential.user_id == user_id).delete()
+        db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+    r = client.get("/ai/tasks")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert any(x.get("task_type") == "wb_access_grant" and x.get("status") in {"new", "in_progress"} for x in items)
+
+
 def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: TestClient, monkeypatch) -> None:
     from cryptography.fernet import Fernet
 

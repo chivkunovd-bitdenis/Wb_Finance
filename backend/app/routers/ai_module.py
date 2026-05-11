@@ -84,7 +84,41 @@ def ai_tasks_list(
     store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ) -> AiTaskListResponse:
-    items = list_tasks(db=db, user_id=str(store_ctx.store_owner.id))
+    user_id = str(store_ctx.store_owner.id)
+
+    # UX: if WB cabinet access is not granted yet, ensure there's a single open
+    # "human" task prompting the user to grant access (no technical fields on UI).
+    creds = get_creds_status(db=db, user_id=user_id)
+    if (creds.get("status") or "").strip().lower() == "missing":
+        dedupe_key = "task:wb_access_grant"
+        existing = (
+            db.query(AiTask)
+            .filter(
+                AiTask.user_id == user_id,
+                AiTask.dedupe_key == dedupe_key,
+                AiTask.status.in_(["new", "in_progress"]),
+            )
+            .order_by(AiTask.created_at.desc())
+            .first()
+        )
+        if existing is None:
+            row = AiTask(
+                user_id=user_id,
+                nm_id=None,
+                task_type="wb_access_grant",
+                title="Дать доступ к кабинету WB",
+                description="Нужно один раз авторизоваться, чтобы система могла получать отчёт сравнения с конкурентами.",
+                reason=None,
+                current_value=None,
+                priority=100,
+                status="new",
+                fingerprint=None,
+                dedupe_key=dedupe_key,
+            )
+            db.add(row)
+            db.commit()
+
+    items = list_tasks(db=db, user_id=user_id)
     return AiTaskListResponse(items=[AiTaskItem.model_validate(x) for x in items])
 
 
@@ -309,6 +343,24 @@ def ai_wb_credentials_upsert(
         )
     except CredsInvalidPayloadError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+
+    # UX: after successful access grant, auto-complete the "grant access" task (if present).
+    user_id = str(store_ctx.store_owner.id)
+    open_row = (
+        db.query(AiTask)
+        .filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == "task:wb_access_grant",
+            AiTask.status.in_(["new", "in_progress"]),
+        )
+        .order_by(AiTask.created_at.desc())
+        .first()
+    )
+    if open_row is not None:
+        open_row.status = "completed"
+        db.add(open_row)
+        db.commit()
+
     st = get_creds_status(db=db, user_id=str(store_ctx.store_owner.id))
     return AiWbCredentialsStatusResponse(**st)
 

@@ -2,6 +2,17 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 
+const LS_SELECTED_NM_ID = 'ai_module_selected_nm_id';
+const LS_HIDE_COMPARISON_CALLOUT = 'ai_module_hide_comparison_callout';
+
+function lsGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* ignore */ }
+}
+
 function statusBadge(status) {
   const s = String(status || '');
   const map = {
@@ -55,7 +66,328 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
-function TasksTab() {
+function ModalShell({ open, title, onClose, children, footer }) {
+  if (!open) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(2,6,23,0.55)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
+    >
+      <div
+        style={{
+          width: 'min(860px, 100%)',
+          background: '#fff',
+          borderRadius: 12,
+          border: '1px solid rgba(2,6,23,0.08)',
+          boxShadow: '0 20px 60px rgba(2,6,23,0.25)',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ padding: 14, borderBottom: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontWeight: 900 }}>{title}</div>
+          <button type="button" className="btn btn-sm btn-outline-secondary" onClick={onClose} style={{ marginLeft: 'auto' }}>
+            Закрыть
+          </button>
+        </div>
+        <div style={{ padding: 14 }}>
+          {children}
+        </div>
+        {footer && (
+          <div style={{ padding: 14, borderTop: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductPickerModal({ open, onClose, onSelectNmId }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [q, setQ] = useState('');
+  const [selected, setSelected] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.getArticles();
+      setItems(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e?.message || 'Не удалось загрузить товары');
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelected(null);
+    setQ('');
+    load();
+  }, [open, load]);
+
+  const filtered = useMemo(() => {
+    const query = (q || '').trim().toLowerCase();
+    const list = Array.isArray(items) ? items : [];
+    if (!query) return list.slice(0, 200);
+    return list
+      .filter((x) => {
+        const nm = String(x?.nm_id ?? '').toLowerCase();
+        const name = String(x?.name ?? '').toLowerCase();
+        const vendor = String(x?.vendor_code ?? '').toLowerCase();
+        return nm.includes(query) || name.includes(query) || vendor.includes(query);
+      })
+      .slice(0, 200);
+  }, [items, q]);
+
+  return (
+    <ModalShell
+      open={open}
+      title="Выбор товара"
+      onClose={onClose}
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose}>Отмена</button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!selected}
+            onClick={() => {
+              if (!selected) return;
+              onSelectNmId?.(Number(selected));
+              onClose?.();
+            }}
+          >
+            ОК / Выбрать
+          </button>
+        </>
+      )}
+    >
+      {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <input
+          className="form-control"
+          value={q}
+          placeholder="Поиск по артикулу или названию"
+          onChange={(e) => setQ(e.target.value)}
+          style={{ flex: '1 1 320px' }}
+        />
+        <button type="button" className="btn btn-outline-secondary" onClick={load} disabled={loading}>
+          {loading ? 'Загрузка…' : 'Обновить'}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Товары не найдены</div>
+      ) : (
+        <div className="table-wrapper" style={{ marginTop: 0 }}>
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th />
+                <th>Артикул</th>
+                <th>Название</th>
+                <th style={{ width: 220 }}>Код</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((x) => {
+                const nm = Number(x?.nm_id);
+                const isSel = selected === nm;
+                return (
+                  <tr
+                    key={String(x?.nm_id)}
+                    onClick={() => setSelected(nm)}
+                    style={{ cursor: 'pointer', background: isSel ? 'rgba(124,58,237,0.06)' : undefined }}
+                  >
+                    <td style={{ width: 1 }}>
+                      <input type="radio" checked={isSel} onChange={() => setSelected(nm)} />
+                    </td>
+                    <td style={{ fontWeight: 800 }}>{x?.nm_id ?? '—'}</td>
+                    <td style={{ color: 'var(--text-secondary)' }}>{x?.name || '—'}</td>
+                    <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{x?.vendor_code || '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+function WbAccessModal({ open, onClose, onGranted }) {
+  const [form, setForm] = useState({ wb_login: '', wb_password: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setForm({ wb_login: '', wb_password: '' });
+    setError('');
+    setSaving(false);
+  }, [open]);
+
+  const submit = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      await api.upsertAiWbCredentials(form);
+      onGranted?.();
+      onClose?.();
+    } catch (e) {
+      setError(e?.message || 'Не удалось выдать доступ');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      open={open}
+      title="Выдать доступ к кабинету WB"
+      onClose={onClose}
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>Отмена</button>
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving || !form.wb_login || !form.wb_password}>
+            {saving ? 'Сохраняю…' : 'Выдать доступ'}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
+        Нужно один раз авторизоваться, чтобы система могла получать отчёт сравнения с конкурентами.
+      </div>
+      {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
+      <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+        <input
+          className="form-control"
+          value={form.wb_login}
+          placeholder="WB логин"
+          onChange={(e) => setForm((m) => ({ ...m, wb_login: e.target.value }))}
+        />
+        <input
+          className="form-control"
+          value={form.wb_password}
+          placeholder="WB пароль"
+          type="password"
+          onChange={(e) => setForm((m) => ({ ...m, wb_password: e.target.value }))}
+        />
+      </div>
+    </ModalShell>
+  );
+}
+
+function SelectedProductCard({ nmId, onChange }) {
+  return (
+    <div
+      style={{
+        border: '1px solid rgba(2,6,23,0.08)',
+        borderRadius: 12,
+        background: '#fff',
+        padding: 12,
+        display: 'flex',
+        gap: 12,
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Сейчас вы работаете с карточкой:</div>
+        <div style={{ fontWeight: 900, fontSize: 16 }}>Артикул {nmId}</div>
+      </div>
+      <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onChange}>
+        Сменить товар
+      </button>
+    </div>
+  );
+}
+
+function EmptyState({ onPick }) {
+  return (
+    <div
+      style={{
+        border: '1px solid rgba(2,6,23,0.08)',
+        borderRadius: 12,
+        background: '#fff',
+        padding: 18,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        alignItems: 'flex-start',
+      }}
+    >
+      <div style={{ fontWeight: 900, fontSize: 18 }}>AI-модуль развития карточек</div>
+      <div style={{ color: 'var(--text-secondary)', maxWidth: 760 }}>
+        <div>Выберите товар, с которым хотите работать.</div>
+        <div>Система будет анализировать карточку, сравнивать её с конкурентами и создавать задачи и гипотезы для роста продаж.</div>
+      </div>
+      <button type="button" className="btn btn-primary" onClick={onPick}>
+        Выбрать товар
+      </button>
+    </div>
+  );
+}
+
+function ComparisonCallout({ visible, onConfirmCreated, onLater, onCreateTechnicalTask, busy, errorText }) {
+  if (!visible) return null;
+  return (
+    <div
+      style={{
+        border: '1px solid rgba(124,58,237,0.22)',
+        borderRadius: 12,
+        background: 'rgba(124,58,237,0.06)',
+        padding: 14,
+      }}
+    >
+      <div style={{ fontWeight: 900, marginBottom: 6 }}>Чтобы начать анализ, создайте сравнение с конкурентами</div>
+      <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10, maxWidth: 880 }}>
+        Для работы AI-модуля нужно сравнить вашу карточку с четырьмя конкурентами.
+        Откройте сравнение карточек в кабинете WB, добавьте ваш товар и 4 товара конкурентов, затем нажмите “Готово”.
+      </div>
+      {errorText && (
+        <div className="alert alert-danger" style={{ margin: '0 0 10px 0' }}>
+          {errorText}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary btn-sm" onClick={onConfirmCreated} disabled={busy}>
+          {busy ? 'Проверяю…' : 'Я создал сравнение'}
+        </button>
+        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onLater} disabled={busy}>
+          Позже
+        </button>
+        <button type="button" className="btn btn-warning btn-sm" onClick={onCreateTechnicalTask} disabled={busy}>
+          Запросить обновление отчёта (требует подтверждения)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TasksTab({ selectedNmId, onGrantWbAccess }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -78,11 +410,21 @@ function TasksTab() {
     reload();
   }, []);
 
+  const visibleItems = useMemo(() => {
+    const list = Array.isArray(items) ? items : [];
+    const sel = selectedNmId == null ? null : Number(selectedNmId);
+    return list.filter((t) => {
+      const nm = t?.nm_id == null ? null : Number(t.nm_id);
+      if (sel == null) return nm == null; // until product selected show only global tasks
+      return nm == null || nm === sel;
+    });
+  }, [items, selectedNmId]);
+
   const sorted = useMemo(() => {
-    const list = Array.isArray(items) ? items.slice() : [];
+    const list = Array.isArray(visibleItems) ? visibleItems.slice() : [];
     list.sort((a, b) => String(b?.created_at || '').localeCompare(String(a?.created_at || '')));
     return list;
-  }, [items]);
+  }, [visibleItems]);
 
   const setStatus = async (taskId, status) => {
     setBusyId(taskId);
@@ -126,9 +468,7 @@ function TasksTab() {
           <table className="custom-table">
             <thead>
               <tr>
-                <th>Артикул</th>
-                <th>Тип</th>
-                <th>Заголовок</th>
+                <th>Задача</th>
                 <th>Статус</th>
                 <th style={{ width: 260 }}>Действия</th>
               </tr>
@@ -136,15 +476,18 @@ function TasksTab() {
             <tbody>
               {sorted.map((t) => (
                 <tr key={t.id}>
-                  <td>{t.nm_id ?? '—'}</td>
-                  <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{t.task_type || '—'}</td>
                   <td>
                     <div style={{ fontWeight: 700 }}>{t.title}</div>
-                    {t.reason && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t.reason}</div>}
+                    {t.description && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t.description}</div>}
                   </td>
                   <td>{statusBadge(t.status)}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {t.task_type === 'wb_access_grant' && t.status !== 'completed' && (
+                        <button type="button" className="btn btn-sm btn-primary" disabled={busyId === t.id} onClick={() => onGrantWbAccess?.()}>
+                          Выдать доступ
+                        </button>
+                      )}
                       {t.task_type === 'competitor_report_refresh' && t.status === 'new' && (
                         <button type="button" className="btn btn-sm btn-warning" disabled={busyId === t.id} onClick={() => execute(t.id)}>
                           Подтвердить и обновить
@@ -181,7 +524,7 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function HypothesesTab() {
+function HypothesesTab({ selectedNmId }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -210,11 +553,18 @@ function HypothesesTab() {
     reload();
   }, []);
 
+  const visibleItems = useMemo(() => {
+    const list = Array.isArray(items) ? items : [];
+    const sel = selectedNmId == null ? null : Number(selectedNmId);
+    if (sel == null) return [];
+    return list.filter((h) => Number(h?.nm_id) === sel);
+  }, [items, selectedNmId]);
+
   const sorted = useMemo(() => {
-    const list = Array.isArray(items) ? items.slice() : [];
+    const list = Array.isArray(visibleItems) ? visibleItems.slice() : [];
     list.sort((a, b) => String(b?.created_at || '').localeCompare(String(a?.created_at || '')));
     return list;
-  }, [items]);
+  }, [visibleItems]);
 
   const start = async (id) => {
     setBusyId(id);
@@ -302,8 +652,6 @@ function HypothesesTab() {
           <table className="custom-table">
             <thead>
               <tr>
-                <th>Артикул</th>
-                <th>Тип</th>
                 <th>Гипотеза</th>
                 <th>Статус</th>
                 <th style={{ width: 360 }}>Действия</th>
@@ -313,8 +661,6 @@ function HypothesesTab() {
               {sorted.map((h) => (
                 <Fragment key={h.id}>
                   <tr>
-                    <td>{h.nm_id ?? '—'}</td>
-                    <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.hypothesis_type || '—'}</td>
                     <td>
                       <div style={{ fontWeight: 700 }}>{h.title}</div>
                       {h.trigger_reason && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{h.trigger_reason}</div>}
@@ -354,7 +700,7 @@ function HypothesesTab() {
                   </tr>
                   {logOpenId === h.id && (
                     <tr>
-                      <td colSpan={5} style={{ background: 'rgba(124,58,237,0.04)', verticalAlign: 'top' }}>
+                      <td colSpan={3} style={{ background: 'rgba(124,58,237,0.04)', verticalAlign: 'top' }}>
                         {logError && <div className="alert alert-danger" style={{ marginBottom: 8 }}>{logError}</div>}
                         {logLoadingId === h.id ? (
                           <div style={{ color: 'var(--text-tertiary)', padding: 8 }}>Загрузка дневного лога…</div>
@@ -456,39 +802,28 @@ function HypothesesTab() {
 
 export default function AiModule() {
   const [tab, setTab] = useState('tasks');
-  const [period, setPeriod] = useState('week');
-  const [reportStatus, setReportStatus] = useState(null);
-  const [reportDetail, setReportDetail] = useState(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState('');
+  const [selectedNmId, setSelectedNmId] = useState(() => {
+    const v = (lsGet(LS_SELECTED_NM_ID) || '').trim();
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [wbModalOpen, setWbModalOpen] = useState(false);
+
   const [credsStatus, setCredsStatus] = useState(null);
-  const [reportError, setReportError] = useState('');
-  const [credsForm, setCredsForm] = useState({ wb_login: '', wb_password: '' });
-  const [savingCreds, setSavingCreds] = useState(false);
-  const [requesting, setRequesting] = useState(false);
-  const [auditOpen, setAuditOpen] = useState(false);
-  const [auditItems, setAuditItems] = useState([]);
-  const [auditLoading, setAuditLoading] = useState(false);
-  const [auditError, setAuditError] = useState('');
+  const [reportStatus, setReportStatus] = useState(null);
+  const [comparisonBusy, setComparisonBusy] = useState(false);
+  const [comparisonError, setComparisonError] = useState('');
 
   const loadReport = useCallback(async () => {
-    setReportError('');
+    setComparisonError('');
     try {
-      const st = await api.getAiCompetitorReportStatus(period);
+      const st = await api.getAiCompetitorReportStatus('week');
       setReportStatus(st);
-      // If report changed, reset detail cache
-      const rid = String(st?.report_id || '');
-      const currentRid = String(reportDetail?.report?.id || '');
-      if (rid && currentRid && rid !== currentRid) {
-        setReportDetail(null);
-        setDetailError('');
-        setDetailOpen(false);
-      }
     } catch (e) {
-      setReportError(e?.message || 'Ошибка загрузки статуса отчёта');
+      setComparisonError(e?.message || 'Ошибка загрузки статуса');
     }
-  }, [period, reportDetail]);
+  }, []);
 
   const loadCreds = useCallback(async () => {
     try {
@@ -504,281 +839,122 @@ export default function AiModule() {
     loadCreds();
   }, [loadReport, loadCreds]);
 
-  const saveCreds = async () => {
-    setSavingCreds(true);
-    setReportError('');
+  const calloutHidden = useMemo(() => (lsGet(LS_HIDE_COMPARISON_CALLOUT) || '') === '1', []);
+  const showComparisonCallout = useMemo(() => {
+    if (!selectedNmId) return false;
+    if (calloutHidden) return false;
+    const st = (reportStatus?.status || '').toLowerCase();
+    return st === 'missing' || st === 'stale';
+  }, [selectedNmId, reportStatus, calloutHidden]);
+
+  const onConfirmCreated = async () => {
+    setComparisonBusy(true);
+    setComparisonError('');
     try {
-      const st = await api.upsertAiWbCredentials(credsForm);
-      setCredsStatus(st);
-      setCredsForm({ wb_login: '', wb_password: '' });
+      const st = await api.getAiCompetitorReportStatus('week');
+      setReportStatus(st);
+      const statusTxt = (st?.status || '').toLowerCase();
+      if (statusTxt === 'missing') {
+        setComparisonError('Отчёт пока не найден. Проверьте, что вы добавили ваш товар и 4 конкурента в сравнение, затем попробуйте ещё раз.');
+      }
     } catch (e) {
-      setReportError(e?.message || 'Ошибка сохранения учётки WB');
+      setComparisonError(e?.message || 'Не удалось проверить отчёт');
     } finally {
-      setSavingCreds(false);
+      setComparisonBusy(false);
     }
   };
 
-  const requestRefresh = async () => {
-    setRequesting(true);
-    setReportError('');
+  const onLater = () => {
+    lsSet(LS_HIDE_COMPARISON_CALLOUT, '1');
+    setComparisonError('');
+    // force rerender for memoized flag
+    setReportStatus((x) => ({ ...(x || {}) }));
+  };
+
+  const onCreateTechnicalTask = async () => {
+    setComparisonBusy(true);
+    setComparisonError('');
     try {
-      await api.requestAiCompetitorReportRefresh(period);
+      await api.requestAiCompetitorReportRefresh('week');
+      await loadReport();
+      setTab('tasks');
     } catch (e) {
-      setReportError(e?.message || 'Ошибка создания задачи');
+      setComparisonError(e?.message || 'Не удалось создать задачу');
     } finally {
-      setRequesting(false);
+      setComparisonBusy(false);
     }
   };
-
-  const loadDetail = async () => {
-    const rid = String(reportStatus?.report_id || '').trim();
-    if (!rid) return;
-    setDetailLoading(true);
-    setDetailError('');
-    try {
-      const data = await api.getAiCompetitorReportDetail(rid);
-      setReportDetail(data);
-      setDetailOpen(true);
-    } catch (e) {
-      setDetailError(e?.message || 'Ошибка загрузки отчёта');
-      setDetailOpen(true);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
-
-  const loadAudit = async () => {
-    setAuditLoading(true);
-    setAuditError('');
-    try {
-      const data = await api.getAiCompetitorReportActions(50);
-      setAuditItems(Array.isArray(data?.items) ? data.items : []);
-    } catch (e) {
-      setAuditError(e?.message || 'Ошибка загрузки журнала');
-      setAuditItems([]);
-    } finally {
-      setAuditLoading(false);
-    }
-  };
-
-  const toggleAudit = async () => {
-    const next = !auditOpen;
-    setAuditOpen(next);
-    if (next) {
-      await loadAudit();
-    }
-  };
-
-  const metricsSorted = useMemo(() => {
-    const list = Array.isArray(reportDetail?.metrics) ? reportDetail.metrics.slice() : [];
-    list.sort((a, b) => {
-      const an = Number(a?.nm_id || 0);
-      const bn = Number(b?.nm_id || 0);
-      if (an !== bn) return an - bn;
-      return String(a?.metric_code || '').localeCompare(String(b?.metric_code || ''));
-    });
-    return list;
-  }, [reportDetail]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <DataTable title="Отчёт конкурентов WB" tag="ИИ модуль">
-        {reportError && <div className="alert alert-danger" style={{ margin: 12 }}>{reportError}</div>}
-        <div style={{ padding: 12, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <div style={{ fontWeight: 700 }}>Период:</div>
-            <select className="form-select form-select-sm" style={{ width: 160 }} value={period} onChange={(e) => setPeriod(e.target.value)}>
-              <option value="week">Неделя</option>
-              <option value="month">Месяц</option>
-              <option value="quarter">Квартал</option>
-            </select>
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <div style={{ fontWeight: 700 }}>Статус:</div>
-            <span style={{ color: 'var(--text-tertiary)' }}>{reportStatus?.status || '—'}</span>
-            {reportStatus?.valid_until && (
-              <span style={{ color: 'var(--text-tertiary)' }}>до {String(reportStatus.valid_until)}</span>
-            )}
-          </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadReport}>
-              Обновить статус
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline-primary btn-sm"
-              onClick={loadDetail}
-              disabled={!reportStatus?.report_id || detailLoading}
-              title={!reportStatus?.report_id ? 'Нет актуального report_id' : ''}
-            >
-              {detailLoading ? 'Загрузка…' : 'Показать метрики'}
-            </button>
-            <button type="button" className="btn btn-warning btn-sm" onClick={requestRefresh} disabled={requesting}>
-              Создать задачу на обновление (подтверждение)
-            </button>
-            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={toggleAudit} disabled={auditLoading}>
-              {auditLoading ? 'Загрузка…' : auditOpen ? 'Скрыть журнал обновлений' : 'Журнал обновлений'}
-            </button>
-          </div>
-        </div>
+      {!selectedNmId ? (
+        <EmptyState onPick={() => setPickerOpen(true)} />
+      ) : (
+        <>
+          <SelectedProductCard nmId={selectedNmId} onChange={() => setPickerOpen(true)} />
 
-        {auditOpen && (
-          <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-              <div style={{ fontWeight: 800 }}>Журнал обновлений отчёта</div>
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadAudit} disabled={auditLoading}>
-                Обновить список
+          {(credsStatus?.status || '').toLowerCase() === 'missing' && (
+            <div
+              style={{
+                border: '1px solid rgba(2,6,23,0.08)',
+                borderRadius: 12,
+                background: '#fff',
+                padding: 14,
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontWeight: 900 }}>Нужно дать доступ к кабинету WB</div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                  Это требуется, чтобы система могла получать отчёт сравнения с конкурентами.
+                </div>
+              </div>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => setWbModalOpen(true)}>
+                Выдать доступ
               </button>
             </div>
-            {auditError ? (
-              <div className="alert alert-danger" style={{ marginTop: 0 }}>{auditError}</div>
-            ) : auditItems.length === 0 ? (
-              <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>Пока нет записей (успешные/неуспешные обновления через Playwright попадут сюда).</div>
-            ) : (
-              <div className="table-wrapper" style={{ marginTop: 0 }}>
-                <table className="custom-table">
-                  <thead>
-                    <tr>
-                      <th>Время</th>
-                      <th>Действие</th>
-                      <th>Результат</th>
-                      <th>report_id</th>
-                      <th>Сообщение</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {auditItems.map((a) => (
-                      <tr key={a.id}>
-                        <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                          {a.requested_at ? new Date(a.requested_at).toLocaleString('ru-RU') : '—'}
-                        </td>
-                        <td style={{ fontSize: 12 }}>{a.action || '—'}</td>
-                        <td>
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              padding: '2px 8px',
-                              borderRadius: 999,
-                              fontSize: 11,
-                              fontWeight: 700,
-                              background: a.result === 'ok' ? 'rgba(16,172,132,0.12)' : 'rgba(239,68,68,0.12)',
-                              color: a.result === 'ok' ? '#0f766e' : '#b91c1c',
-                            }}
-                          >
-                            {a.result || '—'}
-                          </span>
-                        </td>
-                        <td style={{ fontSize: 11, color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
-                          {a.report_id || '—'}
-                        </td>
-                        <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{a.error_message || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
+          )}
 
-        {detailOpen && (
-          <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ fontWeight: 800 }}>Метрики отчёта</div>
-              <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
-                report_id: {reportStatus?.report_id || '—'}
-              </div>
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-                <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setDetailOpen(false)}>
-                  Скрыть
-                </button>
-              </div>
-            </div>
-
-            {detailError ? (
-              <div className="alert alert-danger" style={{ marginTop: 10 }}>{detailError}</div>
-            ) : !reportDetail ? (
-              <div style={{ paddingTop: 10, color: 'var(--text-tertiary)' }}>Нет данных</div>
-            ) : metricsSorted.length === 0 ? (
-              <div style={{ paddingTop: 10, color: 'var(--text-tertiary)' }}>Метрики пустые</div>
-            ) : (
-              <div className="table-wrapper" style={{ marginTop: 10 }}>
-                <table className="custom-table">
-                  <thead>
-                    <tr>
-                      <th>Артикул</th>
-                      <th>Метрика</th>
-                      <th>Наша</th>
-                      <th>Медиана конкурентов</th>
-                      <th>Δ%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {metricsSorted.map((m) => {
-                      const our = m?.our_value;
-                      const med = m?.competitor_median_value;
-                      let delta = null;
-                      const ourN = Number(our);
-                      const medN = Number(med);
-                      if (Number.isFinite(ourN) && Number.isFinite(medN) && medN !== 0) {
-                        delta = ((ourN - medN) / medN) * 100;
-                      }
-                      const deltaTxt = delta === null ? '—' : `${delta.toFixed(1)}%`;
-                      const deltaColor = delta === null ? 'var(--text-tertiary)' : (delta >= 0 ? '#0f766e' : '#b91c1c');
-                      return (
-                        <tr key={m.id}>
-                          <td>{m.nm_id ?? '—'}</td>
-                          <td style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{m.metric_code || '—'}</td>
-                          <td>{our ?? '—'}{m.unit ? ` ${m.unit}` : ''}</td>
-                          <td>{med ?? '—'}{m.unit ? ` ${m.unit}` : ''}</td>
-                          <td style={{ color: deltaColor, fontWeight: 800 }}>{deltaTxt}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div style={{ padding: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-          <div style={{ fontWeight: 800, marginBottom: 6 }}>Учётка WB для Playwright</div>
-          <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
-            Пароль хранится зашифрованно. Операция обновления отчёта может быть платной/лимитной — запуск только по подтверждению.
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              className="form-control form-control-sm"
-              style={{ width: 240 }}
-              value={credsForm.wb_login}
-              placeholder="WB логин"
-              onChange={(e) => setCredsForm((m) => ({ ...m, wb_login: e.target.value }))}
-            />
-            <input
-              className="form-control form-control-sm"
-              style={{ width: 240 }}
-              value={credsForm.wb_password}
-              placeholder="WB пароль"
-              type="password"
-              onChange={(e) => setCredsForm((m) => ({ ...m, wb_password: e.target.value }))}
-            />
-            <button type="button" className="btn btn-primary btn-sm" onClick={saveCreds} disabled={savingCreds}>
-              Сохранить
-            </button>
-            <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
-              status: {credsStatus?.status || 'missing'}
-              {credsStatus?.last_error ? `; error: ${credsStatus.last_error}` : ''}
-            </span>
-          </div>
-        </div>
-      </DataTable>
+          <ComparisonCallout
+            visible={showComparisonCallout}
+            onConfirmCreated={onConfirmCreated}
+            onLater={onLater}
+            onCreateTechnicalTask={onCreateTechnicalTask}
+            busy={comparisonBusy}
+            errorText={comparisonError}
+          />
+        </>
+      )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <TabButton active={tab === 'tasks'} onClick={() => setTab('tasks')}>Задачи</TabButton>
         <TabButton active={tab === 'hypotheses'} onClick={() => setTab('hypotheses')}>Гипотезы</TabButton>
       </div>
-      {tab === 'tasks' ? <TasksTab /> : <HypothesesTab />}
+      {tab === 'tasks'
+        ? <TasksTab selectedNmId={selectedNmId} onGrantWbAccess={() => setWbModalOpen(true)} />
+        : <HypothesesTab selectedNmId={selectedNmId} />}
+
+      <ProductPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSelectNmId={(nm) => {
+          setSelectedNmId(nm);
+          lsSet(LS_SELECTED_NM_ID, String(nm));
+          lsSet(LS_HIDE_COMPARISON_CALLOUT, '');
+          setComparisonError('');
+        }}
+      />
+      <WbAccessModal
+        open={wbModalOpen}
+        onClose={() => setWbModalOpen(false)}
+        onGranted={() => {
+          loadCreds();
+        }}
+      />
     </div>
   );
 }
