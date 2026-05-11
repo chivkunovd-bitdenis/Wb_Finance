@@ -28,8 +28,9 @@ def parse_wb_competitor_excel(
     - **traffic** («Показы»): абсолютные числа; сравнение «наши vs медиана конкурентов» — по абсолютам.
     - **ctr**, **funnel_cart**, **funnel_order**: конверсии/CTR; в файле часто **без знака %**, но это уже
       процентные пункты (например `12.3` означает 12.3%). Сравнение с медианой — «конверсия к конверсии».
-      **funnel_cart** / **funnel_order** берутся только из соответствующих строк отчёта WB (см. список
-      синонимов имён строк в коде), без пересчёта из «шт» и «Показы».
+      **funnel_cart** / **funnel_order** — строки отчёта WB вроде **«Конверсия в корзину, %»** / **«Конверсия в заказ, %»**
+      (в ячейках число без знака «%», смысл — процентные пункты). Медиана конкурентов считается по остальным
+      карточкам; значения **0** среди конкурентов в медиану **не включаем** (только ненулевые).
 
     NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
@@ -110,7 +111,12 @@ def parse_wb_competitor_excel(
                 return out
 
             def _median_excluding(target_nm: int, values_by_nm: dict[int, float | None]) -> float | None:
-                others = [v for nm, v in values_by_nm.items() if nm != target_nm and v is not None]
+                """Медиана по конкурентам; None и 0 не участвуют (0 — выбрасываем из набора)."""
+                others = [
+                    float(v)
+                    for nm, v in values_by_nm.items()
+                    if nm != target_nm and v is not None and float(v) != 0.0
+                ]
                 return float(median(others)) if others else None
 
             def _funnel_items_from_percent_row(
@@ -169,8 +175,8 @@ def parse_wb_competitor_excel(
                         if nm2 == nm_id:
                             continue
                         v2 = _to_float_or_none(row_vals[c2] if c2 < len(row_vals) else None)
-                        if v2 is not None:
-                            others.append(v2)
+                        if v2 is not None and float(v2) != 0.0:
+                            others.append(float(v2))
                     comp = float(median(others)) if others else None
                     items.append(
                         {
@@ -183,17 +189,21 @@ def parse_wb_competitor_excel(
                         }
                     )
 
-            # funnel_cart / funnel_order: только строки конверсии из Excel (п.п., в ячейке часто без «%»).
+            # funnel_cart / funnel_order: строки как в стандартном отчёте WB («Конверсия …, %» в первой колонке).
+            # _norm("Конверсия в корзину, %") -> "конверсия_в_корзину,_%" при пробеле после запятой;
+            # без пробела после запятой -> "конверсия_в_корзину,%".
             cr_cart_norms = (
-                "конверсия_в_корзину",
+                "конверсия_в_корзину,_%",
                 "конверсия_в_корзину,%",
+                "конверсия_в_корзину",
                 "конверсия_из_показов_в_корзину",
                 "cr_в_корзину",
                 "cr_корзина",
             )
             cr_order_norms = (
-                "конверсия_в_заказ",
+                "конверсия_в_заказ,_%",
                 "конверсия_в_заказ,%",
+                "конверсия_в_заказ",
                 "конверсия_из_показов_в_заказ",
                 "cr_в_заказ",
                 "cr_заказ",
