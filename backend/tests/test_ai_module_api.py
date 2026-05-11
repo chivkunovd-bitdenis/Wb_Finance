@@ -856,6 +856,29 @@ def test_ai_competitor_report_status_path_not_shadowed_by_report_id_route(client
     assert data["status"] in {"missing", "ready", "stale", "running", "error"}
 
 
+def test_ai_competitor_report_status_falls_back_to_any_period_if_requested_missing(client: TestClient) -> None:
+    """
+    Regression/UX: UI requests period=week, but user may already have a report saved under another period.
+    In that case we should NOT show "missing".
+    """
+    body = {
+        "report_date": "2026-05-10",
+        "period": "month",
+        "source": "manual",
+        "items": [
+            {"nm_id": 123, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+        ],
+    }
+    r0 = client.post("/ai/competitor-reports/import", json=body)
+    assert r0.status_code == 200
+
+    r = client.get("/ai/competitor-reports/status", params={"period": "week"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] in {"ready", "stale", "running", "error"}
+    assert data.get("report_id")
+
+
 def test_ai_competitor_report_actions_list_returns_store_owner_rows(client: TestClient) -> None:
     from app.models.ai_competitor_report_action import AiCompetitorReportAction
     from app.models.base import uuid_gen

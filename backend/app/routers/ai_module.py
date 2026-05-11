@@ -498,9 +498,22 @@ def ai_competitor_report_status(
     db: Session = Depends(get_db),
 ) -> AiCompetitorReportStatusResponse:
     p = (period or "week").strip().lower()
-    rep = get_latest_competitor_report(db=db, user_id=str(store_ctx.store_owner.id), period=p)
+    user_id = str(store_ctx.store_owner.id)
+    rep = get_latest_competitor_report(db=db, user_id=user_id, period=p)
     if rep is None:
-        return AiCompetitorReportStatusResponse(status="missing")
+        # UX: if the UI requests "week" but the latest available report is stored
+        # under another period (month/quarter), we still consider the report present.
+        # This avoids a false "missing" state when the user already has a report in the system.
+        from app.models.ai_competitor_report import AiCompetitorComparisonReport
+
+        rep = (
+            db.query(AiCompetitorComparisonReport)
+            .filter(AiCompetitorComparisonReport.user_id == user_id)
+            .order_by(AiCompetitorComparisonReport.report_date.desc(), AiCompetitorComparisonReport.created_at.desc())
+            .first()
+        )
+        if rep is None:
+            return AiCompetitorReportStatusResponse(status="missing")
     # Treat expired as stale
     st = rep.status
     if rep.valid_until is not None:
