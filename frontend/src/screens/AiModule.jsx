@@ -508,23 +508,22 @@ function WbAccessModal({ open, onClose, onGranted }) {
 function aiDetailsForTask(t) {
   const type = String(t?.task_type || '');
   const title = String(t?.title || 'Задача');
+  const desc = String(t?.description || '').trim();
+  const reason = String(t?.reason || '').trim();
+  const humanBody = [desc, reason].filter(Boolean).join('\n\n');
+
   const base = {
     title,
-    what: t?.description || 'Задача от AI-модуля для улучшения карточки товара.',
-    why: 'Помогает системно улучшать карточку и проверять шаги, которые повышают продажи.',
-    business: 'Рост продаж за счёт улучшения качества карточки и конкурентности.',
-    hypothesis: 'Если выполнить задачу, метрики карточки улучшатся.',
+    humanBody: humanBody || 'Задача от AI-модуля для улучшения карточки товара.',
     userAction: 'Выполните задачу и нажмите “Готово” (или “Отменить”, если задача неактуальна).',
-    result: 'Статус задачи изменится, и вы сможете видеть прогресс по списку.',
   };
 
   if (type === 'wb_access_grant') {
     return {
       ...base,
       title: 'Дать доступ к кабинету WB',
-      what: 'Нужно выдать доступ к кабинету WB для получения отчётов и данных сравнения.',
+      humanBody: 'Нужно выдать доступ к кабинету WB для получения отчётов и данных сравнения.',
       userAction: 'Нажмите “Выдать доступ” в шаге 2 и авторизуйтесь.',
-      result: 'После успешной авторизации onboarding-плашка исчезнет.',
     };
   }
 
@@ -532,9 +531,8 @@ function aiDetailsForTask(t) {
     return {
       ...base,
       title: title || 'Обновить отчёт сравнения',
-      what: 'Нужно обновить отчёт сравнения карточек с конкурентами.',
+      humanBody: humanBody || 'Нужно обновить отчёт сравнения карточек с конкурентами.',
       userAction: 'Создайте/обновите сравнение в кабинете WB (ваш товар + 4 конкурента), затем нажмите “Я создал сравнение”.',
-      result: 'Статус отчёта станет актуальным, AI сможет создавать корректные задачи/гипотезы.',
     };
   }
 
@@ -545,15 +543,11 @@ function aiDetailsForHypothesis(h) {
   const title = String(h?.title || 'Гипотеза');
   const trigger = String(h?.trigger_reason || '').trim();
   const desc = String(h?.description || '').trim();
-  const hypothesisBody = [desc, trigger].filter(Boolean).join('\n\n');
+  const humanBody = [desc, trigger].filter(Boolean).join('\n\n');
   return {
     title,
-    what: 'Гипотеза — это проверка идеи, которая потенциально улучшит метрики карточки.',
-    why: 'Фокусирует усилия на проверяемых действиях вместо случайных изменений.',
-    business: 'Быстрее найти работающие улучшения и масштабировать их.',
-    hypothesis: hypothesisBody || 'Если выполнить действия по гипотезе, метрики карточки улучшатся.',
+    humanBody: humanBody || 'Если выполнить действия по гипотезе, метрики карточки улучшатся.',
     userAction: 'Запустите гипотезу, выполняйте действия, фиксируйте результат и завершите её.',
-    result: 'После завершения гипотеза попадёт в “Готово” и сохранится итог.',
   };
 }
 
@@ -608,18 +602,11 @@ function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionL
           )}
         </div>
         <div style={{ ...softCardStyle(), padding: 12 }}>
-          <InfoRow label="Что это">{details.what}</InfoRow>
-          <InfoRow label="Зачем">{details.why}</InfoRow>
-          <InfoRow label="Бизнес-смысл">{details.business}</InfoRow>
-          <InfoRow label="Гипотеза">{details.hypothesis}</InfoRow>
-          <InfoRow label="Что сделать">{details.userAction}</InfoRow>
-          <div style={{ paddingTop: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 800, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
-              Как понять результат
-            </div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: 13, whiteSpace: 'pre-wrap', marginTop: 6 }}>
-              {details.result}
-            </div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+            {details.humanBody}
+          </div>
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(2,6,23,0.06)' }}>
+            <InfoRow label="Что сделать">{details.userAction}</InfoRow>
           </div>
         </div>
       </div>
@@ -881,8 +868,13 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
                         <div style={{ marginLeft: 'auto' }}>{statusBadge(t.status)}</div>
                       </div>
                       {t.description && (
-                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
                           {t.description}
+                        </div>
+                      )}
+                      {t.reason && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
+                          {t.reason}
                         </div>
                       )}
                     </button>
@@ -916,19 +908,15 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
                 <div style={{ marginLeft: 'auto' }}>{statusBadge(t.status)}</div>
               </div>
               {t.description && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
                   {t.description}
                 </div>
               )}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
-                {(t.status === 'new' || t.status === 'in_progress') && (
-                  <>
-                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Действия:</span>
-                    <span style={{ fontSize: 12, color: '#166534', fontWeight: 800 }}>Готово</span>
-                    <span style={{ fontSize: 12, color: '#991b1b', fontWeight: 800 }}>Отменить</span>
-                  </>
-                )}
-              </div>
+              {t.reason && (
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
+                  {t.reason}
+                </div>
+              )}
             </button>
           ))}
         </div>
@@ -1228,18 +1216,14 @@ function HypothesesTab({ selectedNmId }) {
                   </div>
                 )}
                 {h.status === 'running' && (
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 2 }}>
+                  <div style={{ marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
                     <input
                       className="form-control form-control-sm"
-                      style={{ width: 260 }}
+                      style={{ width: '100%', maxWidth: 320 }}
                       value={resultSummary[h.id] || ''}
-                      placeholder="Итог (коротко)"
+                      placeholder="Коротко: что сделали и какой эффект"
                       onChange={(e) => setResultSummary((m) => ({ ...m, [h.id]: e.target.value }))}
-                      onClick={(e) => e.stopPropagation()}
                     />
-                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                      Откройте карточку, чтобы завершить
-                    </span>
                   </div>
                 )}
               </button>

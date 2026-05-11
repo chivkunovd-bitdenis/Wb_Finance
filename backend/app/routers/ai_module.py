@@ -625,7 +625,7 @@ def ai_competitor_report_request_refresh(
             task_type="competitor_report_refresh",
             title="Обновить отчёт сравнения с конкурентами",
             description="Операция может быть платной/лимитной — требуется подтверждение",
-            reason="competitor_report_validity_3d",
+            reason="Сравнение устарело или вы запросили обновление — перед запуском нужно ваше подтверждение.",
             current_value={"period": period},
             priority=50,
             status="new",
@@ -641,6 +641,7 @@ def ai_competitor_report_request_refresh(
     existing.current_value = {"period": period}
     existing.title = "Обновить отчёт сравнения с конкурентами"
     existing.description = "Операция может быть платной/лимитной — требуется подтверждение"
+    existing.reason = "Сравнение устарело или вы запросили обновление — перед запуском нужно ваше подтверждение."
     db.add(existing)
     db.commit()
     db.refresh(existing)
