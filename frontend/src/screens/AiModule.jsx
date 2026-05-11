@@ -559,6 +559,8 @@ function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionL
   const isHyp = openItem.kind === 'hypothesis';
   const details = isTask ? aiDetailsForTask(openItem.data) : aiDetailsForHypothesis(openItem.data);
   const status = openItem?.data?.status;
+  const taskType = String(openItem?.data?.task_type || '');
+  const isWbAccessTask = isTask && taskType === 'wb_access_grant';
   return (
     <ModalShell
       open={Boolean(openItem)}
@@ -572,7 +574,7 @@ function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionL
               {busy ? '...' : primaryActionLabel}
             </button>
           )}
-          {(isTask && (status === 'new' || status === 'in_progress')) && (
+          {(isTask && !isWbAccessTask && (status === 'new' || status === 'in_progress')) && (
             <>
               <button type="button" className="btn" style={{ background: 'rgba(22,163,74,0.12)', border: '1px solid rgba(22,163,74,0.18)', color: '#166534', fontWeight: 800 }} onClick={() => openItem.onSetStatus?.('completed')} disabled={busy}>
                 Готово
@@ -758,7 +760,7 @@ function ActionsLogModal({ open, onClose }) {
   );
 }
 
-function TasksTab({ selectedNmId }) {
+function TasksTab({ selectedNmId, onGrantAccess }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -864,6 +866,12 @@ function TasksTab({ selectedNmId }) {
       <AiItemDetailsModal
         openItem={openItem}
         onClose={() => setOpenItem(null)}
+        primaryActionLabel={openItem?.kind === 'task' && String(openItem?.data?.task_type || '') === 'wb_access_grant' ? 'Выдать доступ' : ''}
+        onPrimaryAction={() => {
+          if (openItem?.kind === 'task' && String(openItem?.data?.task_type || '') === 'wb_access_grant') {
+            onGrantAccess?.();
+          }
+        }}
         busy={Boolean(busyId)}
       />
     </DataTable>
@@ -1101,11 +1109,12 @@ export default function AiModule() {
   const remoteSessionActive = useMemo(() => Boolean(remoteStatus?.active), [remoteStatus]);
   const hasSavedAccess = useMemo(() => Boolean(accessStatus?.has_storage_state), [accessStatus]);
   const needsWbAccess = useMemo(() => {
-    // If access is already saved OR remote session is active, do not block the screen.
+    // Blocking rule: only block when access is not saved and remote session is not active.
+    // Credentials presence is not a reliable signal (storage_state is).
     if (hasSavedAccess) return false;
     if (remoteSessionActive) return false;
-    return (credsStatus?.status || '').toLowerCase() === 'missing';
-  }, [credsStatus, remoteSessionActive, hasSavedAccess]);
+    return true;
+  }, [remoteSessionActive, hasSavedAccess]);
   const onboardingStep = useMemo(() => {
     if (!onboardingConfirmed) return 1;
     if (needsWbAccess) return 2;
@@ -1189,7 +1198,7 @@ export default function AiModule() {
           />
 
           <div style={{ display: 'grid', gap: 12 }}>
-            <TasksTab selectedNmId={selectedNmId} />
+            <TasksTab selectedNmId={selectedNmId} onGrantAccess={() => setWbModalOpen(true)} />
             <HypothesesTab selectedNmId={selectedNmId} />
           </div>
         </>

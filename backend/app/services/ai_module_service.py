@@ -50,6 +50,17 @@ def update_task_status(*, db: Session, user_id: str, task_id: str, status: str) 
     if prev == status:
         return row
 
+    if row.task_type == "wb_access_grant" and status == "completed":
+        # This "task" is a UX wrapper around "access is saved" (storage_state exists).
+        # Do not allow completing it manually before access is actually granted,
+        # otherwise the list will immediately re-create it.
+        from app.services.ai_wb_access_service import user_storage_state_path
+
+        p = user_storage_state_path(user_id=user_id)
+        has_access = p.is_file() and p.stat().st_size >= 50
+        if not has_access:
+            raise InvalidTransitionError("WB access is not granted yet — нажмите «Выдать доступ» и сохраните сессию")
+
     # Minimal, predictable transitions for MVP-1
     allowed: set[tuple[str, str]] = {
         ("new", "completed"),

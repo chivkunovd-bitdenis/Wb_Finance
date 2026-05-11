@@ -260,6 +260,48 @@ def test_ai_task_can_complete_from_new(client: TestClient) -> None:
     assert r.json()["completed_at"] is not None
 
 
+def test_wb_access_grant_task_cannot_complete_without_storage_state(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    db = SessionLocal()
+    try:
+        # Ensure no open wb_access_grant task exists (other tests may have created it).
+        db.query(AiTask).filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == "task:wb_access_grant",
+            AiTask.status.in_(["new", "in_progress"]),
+        ).delete()
+        db.commit()
+
+        t = AiTask(
+            user_id=user_id,
+            nm_id=None,
+            task_type="wb_access_grant",
+            title="Дать доступ к кабинету WB",
+            description="test",
+            reason=None,
+            priority=100,
+            status="new",
+            fingerprint=None,
+            dedupe_key="task:wb_access_grant",
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        task_id = str(t.id)
+    finally:
+        db.rollback()
+        db.close()
+
+    from app.services.ai_wb_access_service import user_storage_state_path
+
+    p = user_storage_state_path(user_id=user_id)
+    if p.is_file():
+        p.unlink()
+
+    r = client.patch(f"/ai/tasks/{task_id}", json={"status": "completed"})
+    assert r.status_code == 409
+
+
 def test_ai_task_invalid_transition_returns_409(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"
     task_id = _seed_task(user_id)
@@ -835,20 +877,15 @@ def test_ai_wb_access_remote_status_proxies_internal_manager(client: TestClient,
 
 def test_ai_tasks_list_auto_creates_wb_access_task_when_missing(client: TestClient) -> None:
     """
-    UX contract: when WB credentials are missing, AI module should expose a single
+    UX contract: when WB access (storage_state) is missing, AI module should expose a single
     human-readable task prompting the user to grant access.
     """
-    # Test isolation: other tests may have set WB creds; enforce missing state here.
-    from app.models.ai_wb_cabinet_credential import AiWbCabinetCredential
-
     user_id = "00000000-0000-0000-0000-000000000111"
-    db = SessionLocal()
-    try:
-        db.query(AiWbCabinetCredential).filter(AiWbCabinetCredential.user_id == user_id).delete()
-        db.commit()
-    finally:
-        db.rollback()
-        db.close()
+    from app.services.ai_wb_access_service import user_storage_state_path
+
+    p = user_storage_state_path(user_id=user_id)
+    if p.is_file():
+        p.unlink()
 
     r = client.get("/ai/tasks")
     assert r.status_code == 200
