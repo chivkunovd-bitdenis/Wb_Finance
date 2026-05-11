@@ -52,6 +52,7 @@ def update_task_status(*, db: Session, user_id: str, task_id: str, status: str) 
 
     # Minimal, predictable transitions for MVP-1
     allowed: set[tuple[str, str]] = {
+        ("new", "completed"),
         ("new", "in_progress"),
         ("new", "cancelled"),
         ("in_progress", "completed"),

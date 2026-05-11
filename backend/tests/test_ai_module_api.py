@@ -249,11 +249,25 @@ def test_ai_tasks_list_and_patch(client: TestClient) -> None:
     assert r3.json()["completed_at"] is not None
 
 
+def test_ai_task_can_complete_from_new(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    task_id = _seed_task(user_id)
+
+    r = client.patch(f"/ai/tasks/{task_id}", json={"status": "completed"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "completed"
+    assert r.json()["started_at"] is not None
+    assert r.json()["completed_at"] is not None
+
+
 def test_ai_task_invalid_transition_returns_409(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"
     task_id = _seed_task(user_id)
 
-    # new -> completed is not allowed in MVP-1
+    # new -> in_progress is required before cancelled -> completed (invalid)
+    r1 = client.patch(f"/ai/tasks/{task_id}", json={"status": "cancelled"})
+    assert r1.status_code == 200
+
     r = client.patch(f"/ai/tasks/{task_id}", json={"status": "completed"})
     assert r.status_code == 409
 
