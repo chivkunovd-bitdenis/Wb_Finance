@@ -241,6 +241,8 @@ function WbAccessModal({ open, onClose, onGranted }) {
   const [error, setError] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [remoteBusy, setRemoteBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -248,19 +250,34 @@ function WbAccessModal({ open, onClose, onGranted }) {
     setSaving(false);
     setFile(null);
     setUploading(false);
+    setRemoteOpen(false);
+    setRemoteBusy(false);
   }, [open]);
 
-  const submit = async () => {
-    setSaving(true);
+  const startRemote = async () => {
+    setRemoteBusy(true);
     setError('');
     try {
-      await api.grantAiWbAccessInteractive();
+      await api.startAiWbRemoteAuth();
+      setRemoteOpen(true);
+    } catch (e) {
+      setError(e?.message || 'Не удалось открыть окно авторизации');
+    } finally {
+      setRemoteBusy(false);
+    }
+  };
+
+  const finishRemote = async () => {
+    setRemoteBusy(true);
+    setError('');
+    try {
+      await api.saveAiWbRemoteAuth();
       onGranted?.();
       onClose?.();
     } catch (e) {
-      setError(e?.message || 'Не удалось выдать доступ');
+      setError(e?.message || 'Не удалось сохранить доступ');
     } finally {
-      setSaving(false);
+      setRemoteBusy(false);
     }
   };
 
@@ -289,17 +306,30 @@ function WbAccessModal({ open, onClose, onGranted }) {
       footer={(
         <>
           <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>Отмена</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving || uploading}>
-            {saving ? 'Открываю окно…' : 'Выдать доступ'}
+          <button type="button" className="btn btn-outline-primary" onClick={startRemote} disabled={saving || uploading || remoteBusy}>
+            {remoteBusy ? 'Открываю…' : 'Открыть окно'}
+          </button>
+          <button type="button" className="btn btn-primary" onClick={finishRemote} disabled={!remoteOpen || saving || uploading || remoteBusy}>
+            {remoteBusy ? 'Сохраняю…' : 'Я вошёл'}
           </button>
         </>
       )}
     >
       <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
-        Нажмите “Выдать доступ” — откроется окно кабинета WB. Введите логин/пароль (и код, если попросит WB),
-        после успешного входа окно закроется автоматически.
+        Нажмите “Открыть окно” — откроется встроенное окно кабинета WB. Введите логин/пароль (и код, если попросит WB).
+        После успешного входа нажмите “Я вошёл”, чтобы сохранить доступ.
       </div>
       {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
+
+      {remoteOpen && (
+        <div style={{ border: '1px solid rgba(2,6,23,0.10)', borderRadius: 12, overflow: 'hidden', height: 520 }}>
+          <iframe
+            title="WB remote login"
+            src="/wb-auth/vnc.html?autoconnect=1&resize=scale"
+            style={{ width: '100%', height: '100%', border: 0 }}
+          />
+        </div>
+      )}
 
       {showUpload && (
         <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>

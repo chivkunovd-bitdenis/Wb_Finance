@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Playwright browsers + deps (chromium).
+RUN python -m playwright install-deps chromium && python -m playwright install chromium
+
+# Virtual display + lightweight WM + VNC + noVNC for remote interactive login.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb x11vnc fluxbox novnc websockify \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+EXPOSE 6080 8081
+
+CMD ["/app/docker_entrypoint_wb_auth.sh"]
+

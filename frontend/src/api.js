@@ -725,6 +725,32 @@ export async function uploadAiWbAccessFile(file) {
   return res.json();
 }
 
+export async function startAiWbRemoteAuth() {
+  const res = await apiFetch(`${API_BASE}/ai/wb-access/remote/start`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function saveAiWbRemoteAuth() {
+  const res = await apiFetch(`${API_BASE}/ai/wb-access/remote/save`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function updateWbApiKey(wbApiKey) {
   const res = await apiFetch(`${API_BASE}/auth/wb-key`, {
     method: 'PUT',

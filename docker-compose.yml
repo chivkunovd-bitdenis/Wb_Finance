@@ -168,6 +168,38 @@ services:
       - caddy_config:/config
     depends_on:
       - api
+      - wb_auth
+
+  wb_auth:
+    restart: unless-stopped
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.wb_auth
+    env_file:
+      - ./backend/.env
+    environment:
+      PYTHONPATH: /app
+      WB_PLAYWRIGHT_STORAGE_STATE_DIR: /app/data/wb_storage_states
+      # Internal-only auth between api -> wb_auth manager
+      WB_AUTH_INTERNAL_TOKEN: ${WB_AUTH_INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/data:/app/data
+    expose:
+      - "6080"
+      - "8081"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 30s
 
 volumes:
   postgres_data:
