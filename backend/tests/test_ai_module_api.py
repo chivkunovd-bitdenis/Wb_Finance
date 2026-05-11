@@ -1296,3 +1296,51 @@ def test_ai_competitor_report_worker_can_run_with_storage_state_without_creds(cl
     finally:
         db2.close()
 
+
+def test_ai_daily_analytics_does_not_trigger_content_change_on_funnel_median_ceiling_100(
+    client: TestClient,
+) -> None:
+    """Медиана конкурентов ровно 100 п.п. по конверсии — подозрительный кэп; правило content_change не срабатывает."""
+    user_id = "00000000-0000-0000-0000-000000000111"
+    report_date = "2026-05-12"
+    period = "week"
+    nm_id = 55501
+    fp = f"hyp:content_change:{nm_id}:{report_date}:{period}"
+
+    db = SessionLocal()
+    try:
+        db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete(
+            synchronize_session=False
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    body = {
+        "report_date": report_date,
+        "period": period,
+        "source": "manual",
+        "items": [
+            {
+                "nm_id": nm_id,
+                "metric_code": "funnel_order",
+                "our_value": 15.0,
+                "competitor_median_value": 100.0,
+            },
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    r2 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": report_date})
+    assert r2.status_code == 200
+    data = r2.json()
+    assert data.get("created_hypothesis_ids") == []
+
+    db2 = SessionLocal()
+    try:
+        assert db2.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).first() is None
+    finally:
+        db2.close()
+

@@ -36,7 +36,8 @@ class AnalyticsResult:
 _COMP_DELTA_THRESHOLD_PCT = 20.0
 _LOGISTICS_DELTA_THRESHOLD_PCT = 20.0
 _RESTOCK_DAYS_THRESHOLD = 14
-# Конверсии в отчёте WB — процентные пункты; значения > 100 почти всегда означают «не та строка» (шт и т.п.).
+# Конверсии в отчёте WB — процентные пункты; значения >= 100 часто кэп/мусор в выгрузке (как раньше «медиана 200»).
+# Граница «строго меньше 100»: ровно 100.0 не считаем достоверной медианой для правил/текста гипотезы.
 _FUNNEL_CONVERSION_PP_MAX = 100.0
 
 
@@ -55,7 +56,7 @@ def run_daily_analytics(
     Inputs:
     - **WB «Сравнение карточек»** (импортированный отчёт): строки «Показы», «CTR», «Конверсия в корзину, %», «Конверсия в заказ, %».
       Показы — абсолют; по конкурентам — **среднее** показов. CTR и конверсии — в БД **процентные пункты** (доля 0–1 в ячейке CTR → ×100);
-      по конкурентам — **медиана** (нули не берём).
+      по конкурентам — **медиана** (нули не берём). Для правил по воронке значения **строго < 100** п.п. считаются достоверными (ровно 100 — кэп/мусор, правило не стреляет).
     - **Наши финансы / операционка**: `sku_daily` — логистика и правила роста логистики vs база (не из Excel WB).
     - optional stock/social maps for rules that depend on data not stored in DB yet.
     """
@@ -181,7 +182,7 @@ def _funnel_conversion_plausible(m: object | None) -> bool:
     med = _to_float(getattr(m, "competitor_median_value", None))
     if med <= 0.0:
         return False
-    return ours <= _FUNNEL_CONVERSION_PP_MAX and med <= _FUNNEL_CONVERSION_PP_MAX
+    return ours < _FUNNEL_CONVERSION_PP_MAX and med < _FUNNEL_CONVERSION_PP_MAX
 
 
 def _ctr_plausible(m: object | None) -> bool:
