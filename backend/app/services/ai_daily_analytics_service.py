@@ -81,9 +81,9 @@ def run_daily_analytics(
                 fingerprint=f"hyp:content_change:{nm_id}:{rep.report_date}:{rep.period}",
                 nm_id=nm_id,
                 hypothesis_type="content_change",
-                title="Поменять внутренний контент карточки",
-                description="Воронка ниже медианы конкурентов на 20%+",
-                trigger_reason=_trigger_reason_for_funnels(mm),
+                title="Обновить текст и медиа внутри карточки",
+                description="Конверсии в корзину или в заказ заметно слабее, чем у карточек в сравнении — имеет смысл переработать описание, характеристики и внутренний контент.",
+                trigger_reason=_human_funnel_trigger(mm),
                 competitor_median_metrics=_competitor_metrics_payload(mm),
             )
             if h is not None:
@@ -99,7 +99,7 @@ def run_daily_analytics(
                     task_type="self_buyouts",
                     title="Сделать самовыкупы",
                     description="Воронка ниже конкурентов и социальная сила карточки недостаточна",
-                    reason="funnel_below_median && (reviews<13 || rating<4.4)",
+                    reason="Низкие конверсии при малом числе отзывов или низком рейтинге",
                     competitor_median_value=_competitor_median_value_payload(mm),
                 )
                 if t is not None:
@@ -113,9 +113,9 @@ def run_daily_analytics(
                 fingerprint=f"hyp:ab_test:{nm_id}:{rep.report_date}:{rep.period}",
                 nm_id=nm_id,
                 hypothesis_type="ab_test",
-                title="Провести A/B-тест",
-                description="CTR ниже медианы конкурентов на 20%+",
-                trigger_reason=_trigger_reason_for_metric(mm.get("ctr")),
+                title="Проверить главное фото и инфографику (A/B)",
+                description="CTR заметно слабее, чем у карточек в сравнении — логично начать с визуала в поиске и карточке.",
+                trigger_reason=_human_ctr_trigger(mm.get("ctr")),
                 competitor_median_metrics=_competitor_metrics_payload(mm),
             )
             if h is not None:
@@ -200,7 +200,8 @@ def _competitor_median_value_payload(mm: dict[str, AiCompetitorMetric]) -> dict[
     return {code: (_to_float(m.competitor_median_value) if m.competitor_median_value is not None else None) for code, m in mm.items()}
 
 
-def _trigger_reason_for_metric(m: AiCompetitorMetric | None) -> str | None:
+def _human_ctr_trigger(m: AiCompetitorMetric | None) -> str | None:
+    """Понятное пользователю объяснение по CTR (без кодов метрик)."""
     if m is None:
         return None
     ours = _to_float(m.our_value)
@@ -208,19 +209,42 @@ def _trigger_reason_for_metric(m: AiCompetitorMetric | None) -> str | None:
     if med == 0.0:
         return None
     delta_pct = round((ours - med) / abs(med) * 100.0, 1)
-    unit = (m.unit or "").strip()
-    suffix = f", {unit}" if unit else ""
-    return f"{m.metric_code}{suffix}: наши {ours} vs медиана конкурентов {med} (отклонение {delta_pct}%)"
+    worse = abs(delta_pct)
+    return (
+        "Рекомендуется начать с главного фото и инфографики: CTR вашей карточки ниже, "
+        f"чем у конкурентов в этом сравнении примерно на {worse:.0f}% "
+        f"(у вас {ours:.1f}, у конкурентов по медиане {med:.1f}). "
+        "Имеет смысл прогнать A/B-тест по визиту."
+    )
 
 
-def _trigger_reason_for_funnels(mm: dict[str, AiCompetitorMetric]) -> str | None:
-    parts: list[str] = []
-    for code in ("funnel_cart", "funnel_order"):
-        if code in mm:
-            tr = _trigger_reason_for_metric(mm[code])
-            if tr:
-                parts.append(tr)
-    return "; ".join(parts) if parts else None
+def _human_funnel_trigger(mm: dict[str, AiCompetitorMetric]) -> str | None:
+    """Понятное объяснение по конверсиям в корзину/заказ (только сработавшие правила)."""
+    chunks: list[str] = []
+    for code, label in (
+        ("funnel_cart", "конверсия в корзину"),
+        ("funnel_order", "конверсия в заказ"),
+    ):
+        m = mm.get(code)
+        if m is None or not _below_competitor_threshold(m):
+            continue
+        ours = _to_float(m.our_value)
+        med = _to_float(m.competitor_median_value)
+        if med == 0.0:
+            continue
+        delta_pct = round((ours - med) / abs(med) * 100.0, 1)
+        worse = abs(delta_pct)
+        chunks.append(
+            f"{label} — ниже, чем у конкурентов в сравнении примерно на {worse:.0f}% "
+            f"(у вас {ours:.1f}, по медиане конкурентов {med:.1f})"
+        )
+    if not chunks:
+        return None
+    return (
+        "Рекомендуется обновить наполнение карточки (описание, характеристики, внутренние фото и видео), потому что "
+        + "; ".join(chunks)
+        + "."
+    )
 
 
 def _needs_self_buyouts(*, social: dict[int, dict] | None, nm_id: int) -> bool:
@@ -515,8 +539,8 @@ def _run_logistics_rules(*, db: Session, user_id: str, date_for: date, report_da
                 nm_id=nm_id,
                 task_type=task_type,
                 title=title,
-                description="Затраты на логистику выросли на 20%+ относительно предыдущего дня",
-                reason="logistics_delta_pct >= 20",
+                description="Логистика заметно выше обычного уровня за последние дни — проверьте обмеры и КТР.",
+                reason="Рост логистики более чем на 20% к базе",
                 current_value=current,
                 threshold=thr,
                 priority=5,

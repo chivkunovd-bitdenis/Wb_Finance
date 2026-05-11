@@ -544,12 +544,14 @@ function aiDetailsForTask(t) {
 function aiDetailsForHypothesis(h) {
   const title = String(h?.title || 'Гипотеза');
   const trigger = String(h?.trigger_reason || '').trim();
+  const desc = String(h?.description || '').trim();
+  const hypothesisBody = [desc, trigger].filter(Boolean).join('\n\n');
   return {
     title,
     what: 'Гипотеза — это проверка идеи, которая потенциально улучшит метрики карточки.',
     why: 'Фокусирует усилия на проверяемых действиях вместо случайных изменений.',
     business: 'Быстрее найти работающие улучшения и масштабировать их.',
-    hypothesis: trigger || 'Если выполнить действия по гипотезе, метрики карточки улучшатся.',
+    hypothesis: hypothesisBody || 'Если выполнить действия по гипотезе, метрики карточки улучшатся.',
     userAction: 'Запустите гипотезу, выполняйте действия, фиксируйте результат и завершите её.',
     result: 'После завершения гипотеза попадёт в “Готово” и сохранится итог.',
   };
@@ -1215,8 +1217,13 @@ function HypothesesTab({ selectedNmId }) {
                   <div style={{ fontWeight: 900, fontSize: 13, color: 'var(--text-primary)' }}>{h.title}</div>
                   <div style={{ marginLeft: 'auto' }}>{statusBadge(h.status)}</div>
                 </div>
+                {h.description && (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                    {h.description}
+                  </div>
+                )}
                 {h.trigger_reason && (
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
                     {h.trigger_reason}
                   </div>
                 )}
