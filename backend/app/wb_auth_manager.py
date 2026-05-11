@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import os
-import threading
+import asyncio
+import contextlib
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,12 +35,13 @@ class SaveRequest(BaseModel):
 
 @dataclass
 class _Session:
+    playwright: Any
     browser: Any
     context: Any
     page: Any
 
 
-_lock = threading.Lock()
+_lock = asyncio.Lock()
 _sessions: dict[str, _Session] = {}
 
 
@@ -49,7 +51,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/start")
-def start(
+async def start(
     req: StartRequest,
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> dict[str, str]:
@@ -61,40 +63,38 @@ def start(
     # Robustness: always recreate the session. Users can open new tabs or navigate away,
     # and Playwright may end up controlling a non-visible page. Recreate guarantees a single
     # visible window on WB login root.
-    with _lock:
+    async with _lock:
         existing = _sessions.pop(user_id, None)
 
     if existing is not None:
-        try:
-            existing.context.close()
-        except Exception:
-            pass
-        try:
-            existing.browser.close()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            await existing.context.close()
+        with contextlib.suppress(Exception):
+            await existing.browser.close()
+        with contextlib.suppress(Exception):
+            await existing.playwright.stop()
 
     # Lazy import to keep startup light.
-    from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
+    from playwright.async_api import async_playwright  # type: ignore[import-not-found]
 
     # Must run headed on virtual display (Xvfb provides DISPLAY inside container).
-    p = sync_playwright().start()
-    browser = p.chromium.launch(headless=False)
-    context = browser.new_context()
-    page = context.new_page()
-    page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
+    p = await async_playwright().start()
+    browser = await p.chromium.launch(headless=False)
+    context = await browser.new_context()
+    page = await context.new_page()
+    await page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
     try:
         logger.info("wb_auth start: user_id=%s url=%s", user_id, page.url)
     except Exception:
         pass
 
-    with _lock:
-        _sessions[user_id] = _Session(browser=browser, context=context, page=page)
+    async with _lock:
+        _sessions[user_id] = _Session(playwright=p, browser=browser, context=context, page=page)
     return {"status": "ok"}
 
 
 @app.post("/save")
-def save(
+async def save(
     req: SaveRequest,
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> dict[str, str]:
@@ -103,26 +103,24 @@ def save(
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
 
-    with _lock:
+    async with _lock:
         sess = _sessions.get(user_id)
         if sess is None:
             raise HTTPException(status_code=409, detail="session_not_started")
 
     out = user_storage_state_path(user_id=user_id)
     out.parent.mkdir(parents=True, exist_ok=True)
-    sess.context.storage_state(path=str(out))
+    await sess.context.storage_state(path=str(out))
 
     # Close session (best-effort)
-    try:
-        sess.context.close()
-    except Exception:
-        pass
-    try:
-        sess.browser.close()
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        await sess.context.close()
+    with contextlib.suppress(Exception):
+        await sess.browser.close()
+    with contextlib.suppress(Exception):
+        await sess.playwright.stop()
 
-    with _lock:
+    async with _lock:
         _sessions.pop(user_id, None)
 
     # Ensure file exists and is not empty.
