@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -36,6 +36,8 @@ class AnalyticsResult:
 _COMP_DELTA_THRESHOLD_PCT = 20.0
 _LOGISTICS_DELTA_THRESHOLD_PCT = 20.0
 _RESTOCK_DAYS_THRESHOLD = 14
+# Конверсии в отчёте WB — процентные пункты; значения > 100 почти всегда означают «не та строка» (шт и т.п.).
+_FUNNEL_CONVERSION_PP_MAX = 100.0
 
 
 def run_daily_analytics(
@@ -73,8 +75,13 @@ def run_daily_analytics(
 
     # 1) Competitor-based rules (ctr/traffic/funnels)
     for nm_id, mm in by_nm.items():
-        # Funnels -> hypothesis "content_change"
-        if _below_competitor_threshold(mm.get("funnel_cart")) or _below_competitor_threshold(mm.get("funnel_order")):
+        # Funnels -> hypothesis "content_change" (только если числа похожи на процентные пункты, не «шт»)
+        fc_m, fo_m = mm.get("funnel_cart"), mm.get("funnel_order")
+        funnel_hit = (
+            (_funnel_conversion_plausible(fc_m) and _below_competitor_threshold(fc_m))
+            or (_funnel_conversion_plausible(fo_m) and _below_competitor_threshold(fo_m))
+        )
+        if funnel_hit:
             h = _upsert_hypothesis(
                 db=db,
                 user_id=user_id,
@@ -106,7 +113,7 @@ def run_daily_analytics(
                     created_tasks.append(str(t.id))
 
         # CTR -> hypothesis "ab_test"
-        if _below_competitor_threshold(mm.get("ctr")):
+        if _ctr_plausible(mm.get("ctr")) and _below_competitor_threshold(mm.get("ctr")):
             h = _upsert_hypothesis(
                 db=db,
                 user_id=user_id,
@@ -167,11 +174,31 @@ def _get_report(*, db: Session, user_id: str, report_id: str) -> AiCompetitorCom
     return rep
 
 
-def _below_competitor_threshold(m: AiCompetitorMetric | None) -> bool:
+def _funnel_conversion_plausible(m: object | None) -> bool:
     if m is None:
         return False
-    ours = _to_float(m.our_value)
-    med = _to_float(m.competitor_median_value)
+    ours = _to_float(getattr(m, "our_value", None))
+    med = _to_float(getattr(m, "competitor_median_value", None))
+    if med <= 0.0:
+        return False
+    return ours <= _FUNNEL_CONVERSION_PP_MAX and med <= _FUNNEL_CONVERSION_PP_MAX
+
+
+def _ctr_plausible(m: object | None) -> bool:
+    if m is None:
+        return False
+    ours = _to_float(getattr(m, "our_value", None))
+    med = _to_float(getattr(m, "competitor_median_value", None))
+    if med <= 0.0:
+        return False
+    return ours <= 100.0 and med <= 100.0
+
+
+def _below_competitor_threshold(m: object | None) -> bool:
+    if m is None:
+        return False
+    ours = _to_float(getattr(m, "our_value", None))
+    med = _to_float(getattr(m, "competitor_median_value", None))
     if med == 0.0:
         return False
     delta_pct = (ours - med) / abs(med) * 100.0
@@ -200,12 +227,12 @@ def _competitor_median_value_payload(mm: dict[str, AiCompetitorMetric]) -> dict[
     return {code: (_to_float(m.competitor_median_value) if m.competitor_median_value is not None else None) for code, m in mm.items()}
 
 
-def _human_ctr_trigger(m: AiCompetitorMetric | None) -> str | None:
+def _human_ctr_trigger(m: object | None) -> str | None:
     """Понятное пользователю объяснение по CTR (без кодов метрик)."""
     if m is None:
         return None
-    ours = _to_float(m.our_value)
-    med = _to_float(m.competitor_median_value)
+    ours = _to_float(getattr(m, "our_value", None))
+    med = _to_float(getattr(m, "competitor_median_value", None))
     if med == 0.0:
         return None
     delta_pct = round((ours - med) / abs(med) * 100.0, 1)
@@ -218,7 +245,7 @@ def _human_ctr_trigger(m: AiCompetitorMetric | None) -> str | None:
     )
 
 
-def _human_funnel_trigger(mm: dict[str, AiCompetitorMetric]) -> str | None:
+def _human_funnel_trigger(mm: dict[str, Any]) -> str | None:
     """Понятное объяснение по конверсиям в корзину/заказ (только сработавшие правила)."""
     chunks: list[str] = []
     for code, label in (
@@ -226,10 +253,10 @@ def _human_funnel_trigger(mm: dict[str, AiCompetitorMetric]) -> str | None:
         ("funnel_order", "конверсия в заказ"),
     ):
         m = mm.get(code)
-        if m is None or not _below_competitor_threshold(m):
+        if m is None or not _funnel_conversion_plausible(m) or not _below_competitor_threshold(m):
             continue
-        ours = _to_float(m.our_value)
-        med = _to_float(m.competitor_median_value)
+        ours = _to_float(getattr(m, "our_value", None))
+        med = _to_float(getattr(m, "competitor_median_value", None))
         if med == 0.0:
             continue
         delta_pct = round((ours - med) / abs(med) * 100.0, 1)
@@ -245,6 +272,112 @@ def _human_funnel_trigger(mm: dict[str, AiCompetitorMetric]) -> str | None:
         + "; ".join(chunks)
         + "."
     )
+
+
+class _JsonMetricView:
+    """Снимок метрики из JSON `competitor_median_metrics` (как в `_competitor_metrics_payload`)."""
+
+    __slots__ = ("our_value", "competitor_median_value", "unit")
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.our_value = payload.get("our_value")
+        self.competitor_median_value = payload.get("competitor_median_value")
+        u = payload.get("unit")
+        self.unit = u if isinstance(u, str) else None
+
+
+def _mm_json_to_views(cm: dict[str, Any] | None) -> dict[str, _JsonMetricView]:
+    out: dict[str, _JsonMetricView] = {}
+    for code, raw in (cm or {}).items():
+        if isinstance(raw, dict):
+            out[str(code)] = _JsonMetricView(raw)
+    return out
+
+
+def hypothesis_api_copy_needs_repair(
+    *,
+    hypothesis_type: str,
+    title: str,
+    description: str | None,
+    trigger_reason: str | None,
+) -> bool:
+    tr_l = (trigger_reason or "").lower()
+    if any(
+        x in tr_l
+        for x in (
+            "funnel_cart",
+            "funnel_order:",
+            "vs median",
+            "отклонение",
+            "metric_code",
+            "ctr:",
+        )
+    ):
+        return True
+    if title.strip() in {"Поменять внутренний контент карточки", "Провести A/B-тест"}:
+        return True
+    desc = description or ""
+    if "ниже медианы конкурентов на 20" in desc or "CTR ниже медианы" in desc:
+        return True
+    return False
+
+
+def presentable_hypothesis_fields(
+    *,
+    hypothesis_type: str,
+    title: str,
+    description: str | None,
+    trigger_reason: str | None,
+    competitor_median_metrics: dict[str, Any] | None,
+) -> tuple[str, str | None, str | None]:
+    """Убирает из ответа API устаревший «технический» текст (без UPDATE в БД)."""
+    if not hypothesis_api_copy_needs_repair(
+        hypothesis_type=hypothesis_type,
+        title=title,
+        description=description,
+        trigger_reason=trigger_reason,
+    ):
+        return title, description, trigger_reason
+
+    mm = _mm_json_to_views(competitor_median_metrics)
+
+    if hypothesis_type == "content_change":
+        cart_ok = _funnel_conversion_plausible(mm.get("funnel_cart")) and _below_competitor_threshold(
+            mm.get("funnel_cart")
+        )
+        order_ok = _funnel_conversion_plausible(mm.get("funnel_order")) and _below_competitor_threshold(
+            mm.get("funnel_order")
+        )
+        if not (cart_ok or order_ok):
+            return (
+                "Обновить текст и медиа внутри карточки",
+                "В сохранённом отчёте конверсии выглядят недостоверно: для строк «Конверсия …, %» ожидаются процентные пункты (обычно 0–100). "
+                "Число вроде «медиана 200» не означает 200% — чаще всего в Excel попали штуки или не та строка. Обновите выгрузку «Сравнение карточек» из WB и снова запустите аналитику.",
+                "Система сравнивает только процентные конверсии из отчёта WB. Перезагрузите сравнение и импорт — после этого подпись пересчитается.",
+            )
+        tr = _human_funnel_trigger(mm)
+        return (
+            "Обновить текст и медиа внутри карточки",
+            "Конверсии в корзину или в заказ заметно слабее, чем у карточек в сравнении — имеет смысл переработать описание, характеристики и внутренний контент.",
+            tr,
+        )
+
+    if hypothesis_type == "ab_test":
+        ctr_m = mm.get("ctr")
+        if not (_ctr_plausible(ctr_m) and _below_competitor_threshold(ctr_m)):
+            return (
+                "Проверить главное фото и инфографику (A/B)",
+                "CTR в сохранённых метриках выглядит некорректно для сравнения в процентах — обновите отчёт из WB и перезапустите аналитику.",
+                "После обновления импорта отчёта сравнения рекомендация по CTR пересчитается автоматически.",
+            )
+        tr = _human_ctr_trigger(ctr_m)
+        return (
+            "Проверить главное фото и инфографику (A/B)",
+            "CTR заметно слабее, чем у карточек в сравнении — логично начать с визуала в поиске и карточке.",
+            tr,
+        )
+
+    return title, description, trigger_reason
 
 
 def _needs_self_buyouts(*, social: dict[int, dict] | None, nm_id: int) -> bool:

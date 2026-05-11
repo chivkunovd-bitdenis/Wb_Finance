@@ -76,6 +76,23 @@ def test_parse_cards_comparison_pokazateli_sheet() -> None:
     assert ord_222["competitor_median_value"] == 2.0
 
 
+def test_parse_pokazateli_skips_conversion_row_if_any_cell_over_100() -> None:
+    """Строка «Конверсия …, %» с числами >100 — не импортируем (обычно не проценты, а шт/ошибка)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 10", "Артикул WB 20"])
+    ws.append(["Показы", 1000, 2000])
+    ws.append(["CTR", 3.0, 4.0])
+    ws.append(["Конверсия в корзину, %", 40.0, 200.0])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    assert not any(i["metric_code"] == "funnel_cart" for i in out["items"])
+
+
 def test_parse_pokazateli_median_excludes_zero_competitor_values() -> None:
     """Нули у конкурентов не входят в медиану (остальные товары)."""
     wb = Workbook()

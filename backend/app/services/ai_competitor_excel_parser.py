@@ -133,6 +133,10 @@ def parse_wb_competitor_excel(
                     return []
                 # WB пишет проценты числом без «%» — сохраняем как есть (процентные пункты).
                 pct_by_nm = _cells_for_nm(_read_metric_row(r_idx))
+                # Если в строке есть значения > 100, это почти наверняка не «конверсия, %» (часто штуки/ошибочная строка).
+                _vals = [abs(float(v)) for v in pct_by_nm.values() if v is not None]
+                if _vals and max(_vals) > 100.0:
+                    return []
                 out: list[dict[str, Any]] = []
                 for nm_id, _c in nm_cols:
                     our = pct_by_nm.get(nm_id)
@@ -192,21 +196,17 @@ def parse_wb_competitor_excel(
             # funnel_cart / funnel_order: строки как в стандартном отчёте WB («Конверсия …, %» в первой колонке).
             # _norm("Конверсия в корзину, %") -> "конверсия_в_корзину,_%" при пробеле после запятой;
             # без пробела после запятой -> "конверсия_в_корзину,%".
+            # Только явные строки «…, %» / «…,%» или официальное «из показов» — без коротких ключей вроде
+            # «конверсия_в_корзину», иначе легко сматчить не ту строку (шт) и получить «медиана 200» при наших 40.
             cr_cart_norms = (
                 "конверсия_в_корзину,_%",
                 "конверсия_в_корзину,%",
-                "конверсия_в_корзину",
                 "конверсия_из_показов_в_корзину",
-                "cr_в_корзину",
-                "cr_корзина",
             )
             cr_order_norms = (
                 "конверсия_в_заказ,_%",
                 "конверсия_в_заказ,%",
-                "конверсия_в_заказ",
                 "конверсия_из_показов_в_заказ",
-                "cr_в_заказ",
-                "cr_заказ",
             )
             items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_cart_norms, metric_code="funnel_cart"))
             items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_order_norms, metric_code="funnel_order"))

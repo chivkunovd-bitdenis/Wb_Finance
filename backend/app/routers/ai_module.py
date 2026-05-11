@@ -52,6 +52,7 @@ from app.services.ai_competitor_service import (
 from app.services.ai_daily_analytics_service import (
     InvalidPayloadError as AnalyticsInvalidPayloadError,
     NotFoundError as AnalyticsNotFoundError,
+    presentable_hypothesis_fields,
     run_daily_analytics,
 )
 from app.services.ai_module_service import (
@@ -207,8 +208,19 @@ def ai_hypotheses_list(
     store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ) -> AiHypothesisListResponse:
-    items = list_hypotheses(db=db, user_id=str(store_ctx.store_owner.id))
-    return AiHypothesisListResponse(items=[AiHypothesisItem.model_validate(x) for x in items])
+    rows = list_hypotheses(db=db, user_id=str(store_ctx.store_owner.id))
+    items: list[AiHypothesisItem] = []
+    for x in rows:
+        base = AiHypothesisItem.model_validate(x)
+        t, d, tr = presentable_hypothesis_fields(
+            hypothesis_type=x.hypothesis_type,
+            title=x.title,
+            description=x.description,
+            trigger_reason=x.trigger_reason,
+            competitor_median_metrics=x.competitor_median_metrics,
+        )
+        items.append(base.model_copy(update={"title": t, "description": d, "trigger_reason": tr}))
+    return AiHypothesisListResponse(items=items)
 
 
 @router.get("/hypotheses/{hypothesis_id}", response_model=AiHypothesisItem)
@@ -221,7 +233,15 @@ def ai_hypothesis_get(
         row = get_hypothesis(db=db, user_id=str(store_ctx.store_owner.id), hypothesis_id=hypothesis_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
-    return AiHypothesisItem.model_validate(row)
+    base = AiHypothesisItem.model_validate(row)
+    t, d, tr = presentable_hypothesis_fields(
+        hypothesis_type=row.hypothesis_type,
+        title=row.title,
+        description=row.description,
+        trigger_reason=row.trigger_reason,
+        competitor_median_metrics=row.competitor_median_metrics,
+    )
+    return base.model_copy(update={"title": t, "description": d, "trigger_reason": tr})
 
 
 @router.post("/hypotheses/{hypothesis_id}/start", response_model=AiHypothesisStartResponse)
