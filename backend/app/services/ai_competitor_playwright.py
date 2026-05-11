@@ -212,7 +212,13 @@ def _create_and_download_excel(*, page: Any, period: str) -> tuple[bytes, dict[s
     # Wait for modal input to appear before interacting (WB UI can render asynchronously).
     page.locator(_excel_name_input_selector()).first.wait_for(state="visible", timeout=20_000)
     page.locator(_excel_name_input_selector()).first.fill(file_name, timeout=20_000)
-    page.locator(_excel_generate_confirm_selector()).first.click(timeout=20_000)
+    try:
+        btn = page.locator(_excel_generate_confirm_selector()).first
+        btn.wait_for(state="visible", timeout=20_000)
+        btn.click(timeout=20_000)
+    except Exception:  # noqa: BLE001
+        # Fallback to visible text inside modal ("Сформировать") — selector hashes often change.
+        page.get_by_text("Сформировать", exact=False).first.click(timeout=20_000)
 
     # Open reports list
     page.wait_for_timeout(6_000)  # WB generation is async; give it a short head-start
