@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -14,6 +15,31 @@ class PlaywrightAuthError(Exception):
 @dataclass(frozen=True)
 class PlaywrightBlockedError(Exception):
     message: str
+
+
+def _storage_state_path() -> str | None:
+    """
+    Optional Playwright storage state snapshot to reuse existing WB session.
+
+    IMPORTANT: this file contains auth cookies/state and must be treated as a secret.
+    """
+    p = (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
+    return p or None
+
+
+def _new_context_kwargs() -> dict[str, Any]:
+    """
+    Build kwargs for browser.new_context without importing Playwright types.
+    """
+    kw: dict[str, Any] = {"accept_downloads": True}
+    p = _storage_state_path()
+    if p:
+        if not Path(p).is_file():
+            raise PlaywrightBlockedError(
+                f"Playwright storage_state file not found: {p!r} (WB_PLAYWRIGHT_STORAGE_STATE_PATH)"
+            )
+        kw["storage_state"] = p
+    return kw
 
 
 def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> tuple[bytes, dict[str, Any]]:
@@ -44,7 +70,7 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
     # NOTE: Real selectors/flow may require updates. We try a minimal safe flow.
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(accept_downloads=True)
+        context = browser.new_context(**_new_context_kwargs())
         page = context.new_page()
         try:
             page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
@@ -52,6 +78,7 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
             # Heuristic: if already logged in, cabinet should show something; otherwise login form.
             # We cannot guarantee selectors; detect common auth fields.
             if page.locator("input[type='password']").count() > 0:
+                meta["auth_mode"] = "password"
                 # Try to fill login/password if there are visible inputs.
                 # Selector strategy is intentionally broad; may need refinement.
                 page.locator("input").first.fill(login, timeout=10_000)
@@ -64,6 +91,14 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
                     raise PlaywrightBlockedError("WB login form detected, but submit button not found (UI changed)")
                 btn.click(timeout=10_000)
                 page.wait_for_load_state("networkidle", timeout=60_000)
+                # If password prompt remains, it's likely 2FA or captcha; automation cannot proceed.
+                if page.locator("input[type='password']").count() > 0:
+                    raise PlaywrightAuthError(
+                        "WB login requires additional confirmation (2FA/captcha). "
+                        "Generate a storage_state snapshot and set WB_PLAYWRIGHT_STORAGE_STATE_PATH."
+                    )
+            else:
+                meta["auth_mode"] = "storage_state" if _storage_state_path() else "existing_session"
 
             # Navigate to competitor comparison page.
             # WB deep links can change; keep as env override.
