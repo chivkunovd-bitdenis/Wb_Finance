@@ -133,7 +133,10 @@ def _open_report_from_list(*, page: Any) -> None:
     container = row.locator("xpath=ancestor-or-self::*[self::tr or self::div][1]")
     if container.count() == 0:
         container = row
-    container.locator(click_sel).first.click(timeout=20_000)
+    if click_sel.strip().lower() == "self":
+        container.first.click(timeout=20_000)
+    else:
+        container.locator(click_sel).first.click(timeout=20_000)
     page.wait_for_load_state("domcontentloaded", timeout=60_000)
 
 
