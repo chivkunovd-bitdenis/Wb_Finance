@@ -64,7 +64,8 @@ def parse_wb_competitor_excel(
     # Format A (WB "Показатели" sheet): metrics in rows, nm_id in columns.
     if "Показатели" in wb.sheetnames:
         sh = wb["Показатели"]
-        header = list(next(sh.iter_rows(min_row=2, max_row=2, values_only=True), []))
+        # openpyxl read_only may report max_column=1 for wide sheets; cap max_col explicitly.
+        header = list(next(sh.iter_rows(min_row=2, max_row=2, max_col=300, values_only=True), []))
         if header and _norm(header[0]) in {"показатели", "показатель"}:
             # Collect nm_id columns for current period: "Артикул WB <id>" (exclude "Разница" and previous period).
             nm_cols: list[tuple[int, int]] = []
@@ -109,7 +110,7 @@ def parse_wb_competitor_excel(
             items: list[dict[str, Any]] = []
             for metric_code, r_idx in metric_rows.items():
                 # Read row values once
-                row_vals = list(next(sh.iter_rows(min_row=r_idx, max_row=r_idx, values_only=True), []))
+                row_vals = list(next(sh.iter_rows(min_row=r_idx, max_row=r_idx, max_col=300, values_only=True), []))
                 unit = next((u for (k, u) in row_map.values() if k == metric_code), None)
                 # Build per nm_id items
                 for nm_id, c_idx in nm_cols:
