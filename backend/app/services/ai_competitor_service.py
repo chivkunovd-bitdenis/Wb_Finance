@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
 from app.models.ai_competitor_metric import AiCompetitorMetric
 from app.models.ai_competitor_report import AiCompetitorComparisonReport
 from app.models.ai_competitor_report_action import AiCompetitorReportAction
+from app.models.base import uuid_gen
 
 
 @dataclass(frozen=True)
@@ -78,11 +80,10 @@ def import_competitor_report(
         report.cost_or_limit_spent = bool(report.cost_or_limit_spent) or (source == "playwright")
         report.last_error = None
         db.add(report)
-        # Replace metrics for the report to keep import idempotent
-        db.query(AiCompetitorMetric).filter(AiCompetitorMetric.report_id == report.id).delete()
         db.commit()
         db.refresh(report)
 
+    import_batch_id = str(uuid_gen())
     metrics: list[AiCompetitorMetric] = []
     for i, it in enumerate(items or []):
         try:
@@ -102,6 +103,7 @@ def import_competitor_report(
         metrics.append(
             AiCompetitorMetric(
                 report_id=str(report.id),
+                import_batch_id=import_batch_id,
                 nm_id=nm_id,
                 metric_code=code,
                 our_value=_to_decimal_or_none(our_value),
@@ -112,8 +114,11 @@ def import_competitor_report(
         )
 
     if metrics:
+        report.latest_import_batch_id = import_batch_id
+        db.add(report)
         db.add_all(metrics)
         db.commit()
+        db.refresh(report)
     return report
 
 
@@ -149,13 +154,29 @@ def get_report(*, db: Session, user_id: str, report_id: str) -> AiCompetitorComp
     return row
 
 
-def list_report_metrics(*, db: Session, report_id: str) -> list[AiCompetitorMetric]:
-    return (
-        db.query(AiCompetitorMetric)
-        .filter(AiCompetitorMetric.report_id == report_id)
-        .order_by(AiCompetitorMetric.nm_id.asc(), AiCompetitorMetric.metric_code.asc())
-        .all()
+def list_report_metrics(
+    *,
+    db: Session,
+    report_id: str,
+    metrics_scope: Literal["latest", "all"] = "latest",
+) -> list[AiCompetitorMetric]:
+    q = db.query(AiCompetitorMetric).filter(AiCompetitorMetric.report_id == report_id)
+    if metrics_scope == "all":
+        return (
+            q.order_by(
+                AiCompetitorMetric.import_batch_id.asc(),
+                AiCompetitorMetric.nm_id.asc(),
+                AiCompetitorMetric.metric_code.asc(),
+            ).all()
+        )
+    rep = (
+        db.query(AiCompetitorComparisonReport)
+        .filter(AiCompetitorComparisonReport.id == report_id)
+        .first()
     )
+    if rep is not None and rep.latest_import_batch_id:
+        q = q.filter(AiCompetitorMetric.import_batch_id == rep.latest_import_batch_id)
+    return q.order_by(AiCompetitorMetric.nm_id.asc(), AiCompetitorMetric.metric_code.asc()).all()
 
 
 def list_report_actions(*, db: Session, user_id: str, limit: int = 50) -> list[AiCompetitorReportAction]:

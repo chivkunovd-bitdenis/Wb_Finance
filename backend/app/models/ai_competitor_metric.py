@@ -16,6 +16,8 @@ class AiCompetitorMetric(Base):
         nullable=False,
         index=True,
     )
+    # One logical import (manual or Playwright) — rows accumulate across re-imports for same report_date/period.
+    import_batch_id = Column(UUID(as_uuid=False), nullable=False, index=True)
 
     nm_id = Column(Integer, nullable=False, index=True)
 
@@ -33,6 +35,12 @@ class AiCompetitorMetric(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("report_id", "nm_id", "metric_code", name="uq_ai_comp_metric_report_nm_code"),
+        UniqueConstraint(
+            "report_id",
+            "nm_id",
+            "metric_code",
+            "import_batch_id",
+            name="uq_ai_comp_metric_report_nm_code_batch",
+        ),
     )
 

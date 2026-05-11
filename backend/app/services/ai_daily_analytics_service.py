@@ -58,12 +58,10 @@ def run_daily_analytics(
     rep = _get_report(db=db, user_id=user_id, report_id=report_id)
     d_for = date_for or rep.report_date
 
-    metrics = (
-        db.query(AiCompetitorMetric)
-        .filter(AiCompetitorMetric.report_id == rep.id)
-        .order_by(AiCompetitorMetric.nm_id.asc())
-        .all()
-    )
+    mq = db.query(AiCompetitorMetric).filter(AiCompetitorMetric.report_id == rep.id)
+    if rep.latest_import_batch_id:
+        mq = mq.filter(AiCompetitorMetric.import_batch_id == rep.latest_import_batch_id)
+    metrics = mq.order_by(AiCompetitorMetric.nm_id.asc()).all()
     by_nm: dict[int, dict[str, AiCompetitorMetric]] = {}
     for m in metrics:
         by_nm.setdefault(int(m.nm_id), {})[str(m.metric_code)] = m

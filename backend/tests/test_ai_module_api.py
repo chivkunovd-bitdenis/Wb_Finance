@@ -100,7 +100,6 @@ def _ensure_ai_module_schema() -> None:
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_report_id ON ai_competitor_metrics (report_id)",
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_nm_id ON ai_competitor_metrics (nm_id)",
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_metric_code ON ai_competitor_metrics (metric_code)",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_comp_metric_report_nm_code ON ai_competitor_metrics (report_id, nm_id, metric_code)",
         # WB cabinet credentials (encrypted)
         """
         CREATE TABLE IF NOT EXISTS ai_wb_cabinet_credentials (
@@ -136,6 +135,29 @@ def _ensure_ai_module_schema() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_report_actions_user_id ON ai_competitor_report_actions (user_id)",
+        # Competitor metrics: accumulate imports (import_batch_id + latest on report)
+        "ALTER TABLE ai_competitor_metrics ADD COLUMN IF NOT EXISTS import_batch_id UUID",
+        "ALTER TABLE ai_competitor_comparison_reports ADD COLUMN IF NOT EXISTS latest_import_batch_id UUID",
+        """
+        DO $$
+        DECLARE r RECORD;
+        DECLARE bid uuid;
+        BEGIN
+          FOR r IN SELECT DISTINCT report_id FROM ai_competitor_metrics WHERE import_batch_id IS NULL LOOP
+            bid := gen_random_uuid();
+            UPDATE ai_competitor_metrics SET import_batch_id = bid
+              WHERE report_id = r.report_id AND import_batch_id IS NULL;
+            UPDATE ai_competitor_comparison_reports SET latest_import_batch_id = bid WHERE id = r.report_id;
+          END LOOP;
+        END $$;
+        """,
+        "DROP INDEX IF EXISTS ux_ai_comp_metric_report_nm_code",
+        "ALTER TABLE ai_competitor_metrics DROP CONSTRAINT IF EXISTS uq_ai_comp_metric_report_nm_code",
+        "ALTER TABLE ai_competitor_metrics DROP CONSTRAINT IF EXISTS uq_ai_comp_metric_report_nm_code_batch",
+        "DROP INDEX IF EXISTS ux_ai_comp_metric_report_nm_code_batch",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_comp_metric_report_nm_code_batch ON ai_competitor_metrics (report_id, nm_id, metric_code, import_batch_id)",
+        "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_import_batch_id ON ai_competitor_metrics (import_batch_id)",
+        "ALTER TABLE ai_competitor_metrics ALTER COLUMN import_batch_id SET NOT NULL",
     ]
     with engine.begin() as conn:
         for stmt in ddl:
@@ -500,6 +522,57 @@ def test_ai_competitor_report_import_is_idempotent_by_date_and_period(client: Te
     metrics = r3.json()["metrics"]
     assert len(metrics) == 1
     assert float(metrics[0]["our_value"]) == 5.0
+
+
+def test_ai_competitor_report_reimport_accumulates_metric_batches(client: TestClient) -> None:
+    from app.db import SessionLocal
+    from app.models.ai_competitor_report import AiCompetitorComparisonReport
+
+    user_id = "00000000-0000-0000-0000-000000000111"
+    iso_day = "2035-07-07"
+    nm_isolated = 66077331
+    db = SessionLocal()
+    try:
+        db.query(AiCompetitorComparisonReport).filter(
+            AiCompetitorComparisonReport.user_id == user_id,
+            AiCompetitorComparisonReport.report_date == date.fromisoformat(iso_day),
+            AiCompetitorComparisonReport.period == "week",
+        ).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    base = {
+        "report_date": iso_day,
+        "period": "week",
+        "source": "manual",
+        "items": [{"nm_id": nm_isolated, "metric_code": "ctr", "our_value": 1.0, "competitor_median_value": 2.0}],
+    }
+    r1 = client.post("/ai/competitor-reports/import", json=base)
+    assert r1.status_code == 200
+    rid = r1.json()["id"]
+
+    r2 = client.post(
+        "/ai/competitor-reports/import",
+        json={
+            **base,
+            "items": [{"nm_id": nm_isolated, "metric_code": "ctr", "our_value": 9.0, "competitor_median_value": 10.0}],
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["id"] == rid
+
+    r_latest = client.get(f"/ai/competitor-reports/{rid}")
+    assert r_latest.status_code == 200
+    assert len(r_latest.json()["metrics"]) == 1
+    assert float(r_latest.json()["metrics"][0]["our_value"]) == 9.0
+
+    r_all = client.get(f"/ai/competitor-reports/{rid}", params={"metrics_scope": "all"})
+    assert r_all.status_code == 200
+    ctr_rows = [m for m in r_all.json()["metrics"] if m["metric_code"] == "ctr" and m["nm_id"] == nm_isolated]
+    assert len(ctr_rows) == 2
+    bids = {m["import_batch_id"] for m in ctr_rows}
+    assert len(bids) == 2
 
 
 def test_ai_competitor_report_import_rejects_invalid_metric_code(client: TestClient) -> None:

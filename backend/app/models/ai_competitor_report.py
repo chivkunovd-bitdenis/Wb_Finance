@@ -27,6 +27,8 @@ class AiCompetitorComparisonReport(Base):
     last_error = Column(Text, nullable=True)
 
     raw_payload = Column(JSONB, nullable=True)
+    # Points to import_batch_id on metrics used for analytics and default GET detail view.
+    latest_import_batch_id = Column(UUID(as_uuid=False), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

@@ -118,6 +118,7 @@ class AiCompetitorReportItem(BaseModel):
     report_date: date
     period: str
     source: str
+    latest_import_batch_id: str | None = None
     created_at: datetime | None
     updated_at: datetime | None
 
@@ -132,6 +133,7 @@ class AiCompetitorMetricItem(BaseModel):
     id: str
     nm_id: int
     metric_code: str
+    import_batch_id: str
     our_value: float | None
     competitor_median_value: float | None
     unit: str | None

@@ -5,8 +5,9 @@ import json
 import os
 import urllib.request
 from collections.abc import Sequence
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -578,6 +579,7 @@ def ai_competitor_report_actions_list(
 @router.get("/competitor-reports/{report_id}", response_model=AiCompetitorReportDetailResponse)
 def ai_competitor_report_get(
     report_id: str,
+    metrics_scope: Annotated[Literal["latest", "all"], Query()] = "latest",
     store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ) -> AiCompetitorReportDetailResponse:
@@ -585,7 +587,7 @@ def ai_competitor_report_get(
         rep = get_competitor_report(db=db, user_id=str(store_ctx.store_owner.id), report_id=report_id)
     except CompetitorNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
-    metrics = list_report_metrics(db=db, report_id=str(rep.id))
+    metrics = list_report_metrics(db=db, report_id=str(rep.id), metrics_scope=metrics_scope)
     return AiCompetitorReportDetailResponse(
         report=AiCompetitorReportItem.model_validate(rep),
         metrics=[AiCompetitorMetricItem.model_validate(x) for x in metrics],
