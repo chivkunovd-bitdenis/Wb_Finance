@@ -81,6 +81,25 @@ def _period_option_text(period: str) -> str:
     return t
 
 
+def _period_tab_selector(period: str) -> str | None:
+    key = f"WB_COMPETITOR_PERIOD_TAB_SELECTOR_{period.upper()}"
+    s = _env(key)
+    return s or None
+
+
+def _period_tab_label(period: str) -> str:
+    """
+    Fallback label for period tabs in WB UI (Russian).
+    Can be overridden via WB_COMPETITOR_PERIOD_TAB_LABEL_<PERIOD>.
+    """
+    key = f"WB_COMPETITOR_PERIOD_TAB_LABEL_{period.upper()}"
+    override = _env(key)
+    if override:
+        return override
+    labels = {"today": "Сегодня", "week": "Неделя", "month": "Месяц", "quarter": "Квартал"}
+    return labels.get(period, period)
+
+
 def _generate_selector() -> str:
     s = _env("WB_COMPETITOR_GENERATE_SELECTOR")
     if not s:
@@ -102,6 +121,45 @@ def _export_excel_selector() -> str:
     return s
 
 
+def _create_excel_button_selector() -> str:
+    s = _env("WB_COMPETITOR_CREATE_EXCEL_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor create excel selector is not configured (WB_COMPETITOR_CREATE_EXCEL_SELECTOR)")
+    return s
+
+
+def _excel_name_input_selector() -> str:
+    s = _env("WB_COMPETITOR_EXCEL_NAME_INPUT_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor excel name input selector is not configured (WB_COMPETITOR_EXCEL_NAME_INPUT_SELECTOR)")
+    return s
+
+
+def _excel_generate_confirm_selector() -> str:
+    s = _env("WB_COMPETITOR_EXCEL_GENERATE_CONFIRM_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError(
+            "WB competitor excel generate confirm selector is not configured (WB_COMPETITOR_EXCEL_GENERATE_CONFIRM_SELECTOR)"
+        )
+    return s
+
+
+def _reports_button_selector() -> str:
+    s = _env("WB_COMPETITOR_REPORTS_BUTTON_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError("WB competitor reports button selector is not configured (WB_COMPETITOR_REPORTS_BUTTON_SELECTOR)")
+    return s
+
+
+def _report_download_button_selector() -> str:
+    s = _env("WB_COMPETITOR_REPORT_DOWNLOAD_BUTTON_SELECTOR")
+    if not s:
+        raise PlaywrightBlockedError(
+            "WB competitor report download button selector is not configured (WB_COMPETITOR_REPORT_DOWNLOAD_BUTTON_SELECTOR)"
+        )
+    return s
+
+
 def _new_context_kwargs() -> dict[str, Any]:
     """
     Build kwargs for browser.new_context without importing Playwright types.
@@ -119,13 +177,62 @@ def _new_context_kwargs() -> dict[str, Any]:
 
 def _select_period(*, page: Any, period: str) -> None:
     """
-    Select period inside report detail page via dropdown.
+    Select period inside report detail page via tabs (preferred) or dropdown (fallback).
     """
+    tab_sel = _period_tab_selector(period)
+    if tab_sel:
+        page.locator(tab_sel).first.click(timeout=15_000)
+        return
+    # Fallback: click by visible label if possible
+    label = _period_tab_label(period)
+    try:
+        page.get_by_text(label, exact=True).click(timeout=10_000)
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    # Last resort: dropdown mode (older config)
     dd = _period_dropdown_selector()
     page.locator(dd).first.click(timeout=15_000)
     option_text = _period_option_text(period)
-    # Broad strategy: click element that has text. Keep simple and robust.
     page.get_by_text(option_text, exact=True).click(timeout=15_000)
+
+
+def _create_and_download_excel(*, page: Any, period: str) -> tuple[bytes, dict[str, Any]]:
+    """
+    WB UI flow (as observed):
+      - Click create Excel button (icon)
+      - Fill file name
+      - Click "Сформировать"
+      - Wait a bit for generation, open "Отчёты"
+      - Download the generated Excel from reports list
+    """
+    # Create Excel
+    file_name = f"wb-cards-{period}-{int(datetime.now(timezone.utc).timestamp())}"
+    page.locator(_create_excel_button_selector()).first.click(timeout=20_000)
+    # Wait for modal input to appear before interacting (WB UI can render asynchronously).
+    page.locator(_excel_name_input_selector()).first.wait_for(state="visible", timeout=20_000)
+    page.locator(_excel_name_input_selector()).first.fill(file_name, timeout=20_000)
+    page.locator(_excel_generate_confirm_selector()).first.click(timeout=20_000)
+
+    # Open reports list
+    page.wait_for_timeout(6_000)  # WB generation is async; give it a short head-start
+    page.locator(_reports_button_selector()).first.click(timeout=20_000)
+
+    # Prefer waiting by file name appearance (less flaky than fixed sleep).
+    try:
+        page.get_by_text(file_name, exact=False).first.wait_for(state="visible", timeout=180_000)
+    except Exception:  # noqa: BLE001
+        # If WB doesn't show name, continue with a best-effort click on the first download button.
+        pass
+
+    with page.expect_download(timeout=180_000) as dl_info:
+        page.locator(_report_download_button_selector()).first.click(timeout=20_000)
+    download = dl_info.value
+    content = download.path().read_bytes()  # type: ignore[union-attr]
+    if not content:
+        raise PlaywrightBlockedError("Downloaded Excel is empty")
+    meta = {"generated_file_name": file_name, "download_url": download.url, "suggested_filename": download.suggested_filename}
+    return content, meta
 
 
 def _open_report_from_list(*, page: Any) -> None:
@@ -245,23 +352,12 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
             else:
                 meta["auth_mode"] = "storage_state" if _storage_state_path() else "existing_session"
 
-            # Flow: list -> open report -> choose period -> generate -> export menu -> download excel
+            # Flow: list -> open report -> choose period -> create excel -> download from reports list
             _open_report_from_list(page=page)
             _select_period(page=page, period=period)
-            page.locator(_generate_selector()).first.click(timeout=20_000)
-
-            # Wait until export menu is available (acts as "report ready" signal).
-            page.locator(_export_menu_selector()).first.wait_for(state="visible", timeout=180_000)
-            page.locator(_export_menu_selector()).first.click(timeout=20_000)
-
-            with page.expect_download(timeout=180_000) as dl_info:
-                page.locator(_export_excel_selector()).first.click(timeout=20_000)
-            download = dl_info.value
-            content = download.path().read_bytes()  # type: ignore[union-attr]
-            if not content:
-                raise PlaywrightBlockedError("Downloaded Excel is empty")
-            meta.update({"download_url": download.url, "suggested_filename": download.suggested_filename})
-            return content, meta
+            excel_bytes, gen_meta = _create_and_download_excel(page=page, period=period)
+            meta.update(gen_meta)
+            return excel_bytes, meta
         except PlaywrightBlockedError:
             raise
         except Exception as exc:  # noqa: BLE001
