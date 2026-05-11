@@ -51,8 +51,10 @@ def run_daily_analytics(
     AI-MVP3: daily analytics -> tasks/hypotheses.
 
     Inputs:
-    - competitor report (AI-MVP2): deltas vs median on ctr/traffic/funnel_cart/funnel_order.
-    - sku_daily: logistics delta vs avg7d (if available).
+    - **WB «Сравнение карточек»** (импортированный отчёт): CTR, трафик (абсолют), конверсии в корзину/заказ
+      (в Excel часто без «%», в БД — процентные пункты); для каждого nm_id «наши» vs медиана по другим карточкам
+      в сравнении (одна из колонок — наш артикул).
+    - **Наши финансы / операционка**: `sku_daily` — логистика и правила роста логистики vs база (не из Excel WB).
     - optional stock/social maps for rules that depend on data not stored in DB yet.
     """
     rep = _get_report(db=db, user_id=user_id, report_id=report_id)
@@ -207,7 +209,6 @@ def _trigger_reason_for_metric(m: AiCompetitorMetric | None) -> str | None:
         return None
     delta_pct = round((ours - med) / abs(med) * 100.0, 1)
     unit = (m.unit or "").strip()
-    # funnel_cart / funnel_order from WB «Показатели» are usually counts (шт), not conversion %.
     suffix = f", {unit}" if unit else ""
     return f"{m.metric_code}{suffix}: наши {ours} vs медиана конкурентов {med} (отклонение {delta_pct}%)"
 

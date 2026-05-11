@@ -947,10 +947,10 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
 }
 
 const COMPETITOR_METRIC_LABELS = {
-  ctr: 'CTR',
-  traffic: 'Показы',
-  funnel_cart: 'Добавления в корзину (кол-во)',
-  funnel_order: 'Заказы (кол-во)',
+  ctr: 'CTR (доля, в Excel без «%»)',
+  traffic: 'Показы (абсолют)',
+  funnel_cart: 'Конверсия в корзину (% п.п., в Excel без «%»)',
+  funnel_order: 'Конверсия в заказ (% п.п., в Excel без «%»)',
 };
 
 function formatMetricCell(v) {
@@ -1089,14 +1089,17 @@ function HypothesesTab({ selectedNmId }) {
         ) : sourceDetail ? (
           <div style={{ display: 'grid', gap: 14 }}>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Ниже — то, что система сохранила из последней выгрузки Excel отчёта «Сравнение карточек» WB
+              Данные из последней выгрузки Excel «Сравнение карточек» WB
               (батч <code style={{ fontSize: 12 }}>{String(sourceDetail?.report?.latest_import_batch_id || '').slice(0, 8)}…</code>
               {sourceDetail?.report?.report_date ? `, дата отчёта ${sourceDetail.report.report_date}` : ''}
               {sourceDetail?.report?.period ? `, период ${sourceDetail.report.period}` : ''}).
               {' '}
-              <strong>Важно:</strong> для листа «Показатели» поля вроде «Добавления в корзину» и «Заказы» — это
-              <strong> количества (шт) за период</strong>, а не процент воронки до 100%.
-              Отклонение в тексте гипотезы — это сравнение с медианой конкурентов по этим же числам, не «CR карточки».
+              <strong>Трафик («Показы»)</strong> — абсолют; сравнение с медианой конкурентов тоже по абсолютам.
+              {' '}
+              <strong>CTR и конверсии в корзину/заказ</strong> — в файле часто просто число без «%», но это уже процентные пункты;
+              сравнение «наши vs медиана» — конверсия к конверсии. В сравнении одна из карточек — ваш товар: значения по колонке артикула — «наши».
+              {' '}
+              <strong>Логистика и затраты</strong> из этого файла не берутся — они считаются из наших финансовых данных (например <code>sku_daily</code>).
             </div>
             {selectedNmId == null ? (
               <div className="alert alert-warning" style={{ margin: 0, fontSize: 13 }}>

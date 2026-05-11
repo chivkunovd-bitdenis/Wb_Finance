@@ -113,8 +113,9 @@ def main() -> None:
         # --- competitor metrics: CTR + funnels below median 20%+ ---
         patches: list[tuple[str, Decimal, Decimal]] = [
             ("ctr", Decimal("3.0"), Decimal("10.0")),
-            ("funnel_cart", Decimal("40.0"), Decimal("200.0")),
-            ("funnel_order", Decimal("15.0"), Decimal("100.0")),
+            # funnel_* в БД — процентные пункты (как в Excel без «%»), не «шт».
+            ("funnel_cart", Decimal("8.0"), Decimal("14.0")),
+            ("funnel_order", Decimal("2.5"), Decimal("5.0")),
         ]
         for code, ours, med in patches:
             db.execute(

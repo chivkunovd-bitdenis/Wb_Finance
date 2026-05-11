@@ -22,7 +22,7 @@ class AiCompetitorMetric(Base):
     nm_id = Column(Integer, nullable=False, index=True)
 
     # Canonical metric codes for analytics rules (AI-MVP3):
-    # ctr, traffic, funnel_cart, funnel_order
+    # traffic — абсолют (показы); ctr / funnel_cart / funnel_order — процентные пункты (в Excel WB часто без «%»).
     metric_code = Column(String(32), nullable=False, index=True)
 
     our_value = Column(Numeric(18, 6), nullable=True)

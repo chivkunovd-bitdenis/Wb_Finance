@@ -22,7 +22,16 @@ def parse_wb_competitor_excel(
     raw_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Parse WB competitor comparison Excel into canonical payload for `import_competitor_report`.
+    Parse WB «Сравнение карточек» Excel into canonical payload for `import_competitor_report`.
+
+    Semantics (лист «Показатели», колонки «Артикул WB …» — один из артикулов это наш товар):
+    - **traffic** («Показы»): абсолютные числа; сравнение «наши vs медиана конкурентов» — по абсолютам.
+    - **ctr**, **funnel_cart**, **funnel_order**: конверсии/CTR; в файле часто **без знака %**, но это уже
+      процентные пункты (например `12.3` означает 12.3%). Сравнение с медианой — «конверсия к конверсии».
+    - Если в файле нет явных строк конверсии в корзину/заказ, **funnel_*** считаются как
+      (кол-во из строки «…, шт») / «Показы» × 100 в тех же процентных пунктах.
+
+    NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
     Contract output:
       {
@@ -84,38 +93,123 @@ def parse_wb_competitor_excel(
             if not nm_cols:
                 raise ParseError("Показатели: no nm_id columns found")
 
-            # Map russian row labels to metric_code
-            row_map = {
-                "показы": ("traffic", "шт"),
-                "ctr": ("ctr", "%"),
-                "добавления_в_корзину,_шт": ("funnel_cart", "шт"),
-                "добавления_в_корзину": ("funnel_cart", "шт"),
-                "заказы,_шт": ("funnel_order", "шт"),
-                "заказы": ("funnel_order", "шт"),
-            }
+            def _read_metric_row(r_idx: int) -> list[Any]:
+                return list(next(sh.iter_rows(min_row=r_idx, max_row=r_idx, max_col=300, values_only=True), []))
 
-            # Find row indexes of metrics
-            metric_rows: dict[str, int] = {}
+            # First label in column A -> row index (first occurrence wins).
+            row_by_norm: dict[str, int] = {}
             for r_idx, r in enumerate(sh.iter_rows(min_row=3, max_row=200, values_only=True), start=3):
                 name = _norm(r[0] if r else "")
-                if not name:
-                    continue
-                if name in row_map:
-                    metric_code = row_map[name][0]
-                    metric_rows[metric_code] = r_idx
+                if name and name not in row_by_norm:
+                    row_by_norm[name] = r_idx
 
-            if not metric_rows:
+            def _cells_for_nm(row_vals: list[Any]) -> dict[int, float | None]:
+                out: dict[int, float | None] = {}
+                for nm_id, c_idx in nm_cols:
+                    out[nm_id] = _to_float_or_none(row_vals[c_idx] if c_idx < len(row_vals) else None)
+                return out
+
+            def _median_excluding(target_nm: int, values_by_nm: dict[int, float | None]) -> float | None:
+                others = [v for nm, v in values_by_nm.items() if nm != target_nm and v is not None]
+                return float(median(others)) if others else None
+
+            def _funnel_items_from_percent_row(
+                *,
+                row_norm_candidates: tuple[str, ...],
+                metric_code: str,
+            ) -> list[dict[str, Any]]:
+                r_idx = None
+                for key in row_norm_candidates:
+                    if key in row_by_norm:
+                        r_idx = row_by_norm[key]
+                        break
+                if r_idx is None:
+                    return []
+                # WB пишет проценты числом без «%» — сохраняем как есть (процентные пункты).
+                pct_by_nm = _cells_for_nm(_read_metric_row(r_idx))
+                out: list[dict[str, Any]] = []
+                for nm_id, _c in nm_cols:
+                    our = pct_by_nm.get(nm_id)
+                    if our is None:
+                        continue
+                    comp = _median_excluding(nm_id, pct_by_nm)
+                    out.append(
+                        {
+                            "nm_id": nm_id,
+                            "metric_code": metric_code,
+                            "our_value": float(our),
+                            "competitor_median_value": comp,
+                            "unit": "%",
+                            "extra": {"source": "excel_row"},
+                        }
+                    )
+                return out
+
+            def _funnel_items_derived_from_counts(
+                *,
+                metric_code: str,
+                numer_norm_candidates: tuple[str, ...],
+            ) -> list[dict[str, Any]]:
+                shows_row = row_by_norm.get("показы")
+                if shows_row is None:
+                    return []
+                shows_by_nm = _cells_for_nm(_read_metric_row(shows_row))
+                num_row_idx = None
+                for key in numer_norm_candidates:
+                    if key in row_by_norm:
+                        num_row_idx = row_by_norm[key]
+                        break
+                if num_row_idx is None:
+                    return []
+                num_by_nm = _cells_for_nm(_read_metric_row(num_row_idx))
+                cr_by_nm: dict[int, float | None] = {}
+                for nm_id, _c in nm_cols:
+                    s = shows_by_nm.get(nm_id)
+                    n = num_by_nm.get(nm_id)
+                    if s is None or n is None or s <= 0:
+                        cr_by_nm[nm_id] = None
+                    else:
+                        cr_by_nm[nm_id] = float(n) / float(s) * 100.0
+                out: list[dict[str, Any]] = []
+                for nm_id, _c in nm_cols:
+                    our = cr_by_nm.get(nm_id)
+                    if our is None:
+                        continue
+                    comp = _median_excluding(nm_id, cr_by_nm)
+                    if comp is None:
+                        continue
+                    out.append(
+                        {
+                            "nm_id": nm_id,
+                            "metric_code": metric_code,
+                            "our_value": float(our),
+                            "competitor_median_value": comp,
+                            "unit": "%",
+                            "extra": {"source": "derived_from_counts", "numer_row": numer_norm_candidates},
+                        }
+                    )
+                return out
+
+            # Трафик — абсолют («Показы»). CTR — как в WB: в ячейке часто число без «%», это процентные пункты.
+            row_map_simple: dict[str, tuple[str, str]] = {
+                "показы": ("traffic", "шт"),
+                "ctr": ("ctr", "%"),
+            }
+            metric_rows: dict[str, int] = {}
+            for name, r_idx in row_by_norm.items():
+                if name in row_map_simple:
+                    metric_rows[row_map_simple[name][0]] = r_idx
+
+            if "ctr" not in metric_rows and "traffic" not in metric_rows:
                 raise ParseError("Показатели: metric rows not found")
 
             items: list[dict[str, Any]] = []
             for metric_code, r_idx in metric_rows.items():
-                # Read row values once
-                row_vals = list(next(sh.iter_rows(min_row=r_idx, max_row=r_idx, max_col=300, values_only=True), []))
-                unit = next((u for (k, u) in row_map.values() if k == metric_code), None)
-                # Build per nm_id items
+                row_vals = _read_metric_row(r_idx)
+                unit = next((u for (k, u) in row_map_simple.values() if k == metric_code), None)
                 for nm_id, c_idx in nm_cols:
                     our = _to_float_or_none(row_vals[c_idx] if c_idx < len(row_vals) else None)
-                    others = []
+                    others: list[float] = []
                     for nm2, c2 in nm_cols:
                         if nm2 == nm_id:
                             continue
@@ -133,6 +227,40 @@ def parse_wb_competitor_excel(
                             "extra": None,
                         }
                     )
+
+            # funnel_cart / funnel_order: conversion % (not шт). Prefer explicit conversion rows; else derive from counts / Показы.
+            cr_cart_norms = (
+                "конверсия_в_корзину",
+                "конверсия_в_корзину,%",
+                "конверсия_из_показов_в_корзину",
+                "cr_в_корзину",
+                "cr_корзина",
+            )
+            cr_order_norms = (
+                "конверсия_в_заказ",
+                "конверсия_в_заказ,%",
+                "конверсия_из_показов_в_заказ",
+                "cr_в_заказ",
+                "cr_заказ",
+            )
+            cart_items = _funnel_items_from_percent_row(row_norm_candidates=cr_cart_norms, metric_code="funnel_cart")
+            if not cart_items:
+                cart_items = _funnel_items_derived_from_counts(
+                    metric_code="funnel_cart",
+                    # Только явные счётчики «, шт» — строка без суффикса может быть конверсией (число без %).
+                    numer_norm_candidates=("добавления_в_корзину,_шт",),
+                )
+            order_items = _funnel_items_from_percent_row(row_norm_candidates=cr_order_norms, metric_code="funnel_order")
+            if not order_items:
+                order_items = _funnel_items_derived_from_counts(
+                    metric_code="funnel_order",
+                    numer_norm_candidates=("заказы,_шт",),
+                )
+            items.extend(cart_items)
+            items.extend(order_items)
+
+            if not items:
+                raise ParseError("Показатели: no metrics parsed")
 
             return {
                 "report_date": report_date,

@@ -98,7 +98,10 @@ class AiHypothesisDailyLogResponse(BaseModel):
 
 class AiCompetitorMetricImportItem(BaseModel):
     nm_id: int
-    metric_code: str = Field(..., description="ctr|traffic|funnel_cart|funnel_order")
+    metric_code: str = Field(
+        ...,
+        description="ctr|traffic|funnel_cart|funnel_order — CTR/конверсии: процентные пункты как в WB (часто без «%» в ячейке); traffic: абсолют (показы).",
+    )
     our_value: float | None = None
     competitor_median_value: float | None = None
     unit: str | None = None
