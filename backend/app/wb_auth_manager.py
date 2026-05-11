@@ -83,6 +83,9 @@ async def start(
     context = await browser.new_context()
     page = await context.new_page()
     await page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
+    # Make sure the WB tab is the visible/focused window in noVNC.
+    with contextlib.suppress(Exception):
+        await page.bring_to_front()
     try:
         logger.info("wb_auth start: user_id=%s url=%s", user_id, page.url)
     except Exception:
