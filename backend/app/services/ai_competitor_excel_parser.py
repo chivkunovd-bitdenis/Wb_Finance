@@ -28,8 +28,8 @@ def parse_wb_competitor_excel(
     - **traffic** («Показы»): абсолютные числа; сравнение «наши vs медиана конкурентов» — по абсолютам.
     - **ctr**, **funnel_cart**, **funnel_order**: конверсии/CTR; в файле часто **без знака %**, но это уже
       процентные пункты (например `12.3` означает 12.3%). Сравнение с медианой — «конверсия к конверсии».
-    - Если в файле нет явных строк конверсии в корзину/заказ, **funnel_*** считаются как
-      (кол-во из строки «…, шт») / «Показы» × 100 в тех же процентных пунктах.
+      **funnel_cart** / **funnel_order** берутся только из соответствующих строк отчёта WB (см. список
+      синонимов имён строк в коде), без пересчёта из «шт» и «Показы».
 
     NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
@@ -145,51 +145,6 @@ def parse_wb_competitor_excel(
                     )
                 return out
 
-            def _funnel_items_derived_from_counts(
-                *,
-                metric_code: str,
-                numer_norm_candidates: tuple[str, ...],
-            ) -> list[dict[str, Any]]:
-                shows_row = row_by_norm.get("показы")
-                if shows_row is None:
-                    return []
-                shows_by_nm = _cells_for_nm(_read_metric_row(shows_row))
-                num_row_idx = None
-                for key in numer_norm_candidates:
-                    if key in row_by_norm:
-                        num_row_idx = row_by_norm[key]
-                        break
-                if num_row_idx is None:
-                    return []
-                num_by_nm = _cells_for_nm(_read_metric_row(num_row_idx))
-                cr_by_nm: dict[int, float | None] = {}
-                for nm_id, _c in nm_cols:
-                    s = shows_by_nm.get(nm_id)
-                    n = num_by_nm.get(nm_id)
-                    if s is None or n is None or s <= 0:
-                        cr_by_nm[nm_id] = None
-                    else:
-                        cr_by_nm[nm_id] = float(n) / float(s) * 100.0
-                out: list[dict[str, Any]] = []
-                for nm_id, _c in nm_cols:
-                    our = cr_by_nm.get(nm_id)
-                    if our is None:
-                        continue
-                    comp = _median_excluding(nm_id, cr_by_nm)
-                    if comp is None:
-                        continue
-                    out.append(
-                        {
-                            "nm_id": nm_id,
-                            "metric_code": metric_code,
-                            "our_value": float(our),
-                            "competitor_median_value": comp,
-                            "unit": "%",
-                            "extra": {"source": "derived_from_counts", "numer_row": numer_norm_candidates},
-                        }
-                    )
-                return out
-
             # Трафик — абсолют («Показы»). CTR — как в WB: в ячейке часто число без «%», это процентные пункты.
             row_map_simple: dict[str, tuple[str, str]] = {
                 "показы": ("traffic", "шт"),
@@ -228,7 +183,7 @@ def parse_wb_competitor_excel(
                         }
                     )
 
-            # funnel_cart / funnel_order: conversion % (not шт). Prefer explicit conversion rows; else derive from counts / Показы.
+            # funnel_cart / funnel_order: только строки конверсии из Excel (п.п., в ячейке часто без «%»).
             cr_cart_norms = (
                 "конверсия_в_корзину",
                 "конверсия_в_корзину,%",
@@ -243,21 +198,8 @@ def parse_wb_competitor_excel(
                 "cr_в_заказ",
                 "cr_заказ",
             )
-            cart_items = _funnel_items_from_percent_row(row_norm_candidates=cr_cart_norms, metric_code="funnel_cart")
-            if not cart_items:
-                cart_items = _funnel_items_derived_from_counts(
-                    metric_code="funnel_cart",
-                    # Только явные счётчики «, шт» — строка без суффикса может быть конверсией (число без %).
-                    numer_norm_candidates=("добавления_в_корзину,_шт",),
-                )
-            order_items = _funnel_items_from_percent_row(row_norm_candidates=cr_order_norms, metric_code="funnel_order")
-            if not order_items:
-                order_items = _funnel_items_derived_from_counts(
-                    metric_code="funnel_order",
-                    numer_norm_candidates=("заказы,_шт",),
-                )
-            items.extend(cart_items)
-            items.extend(order_items)
+            items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_cart_norms, metric_code="funnel_cart"))
+            items.extend(_funnel_items_from_percent_row(row_norm_candidates=cr_order_norms, metric_code="funnel_order"))
 
             if not items:
                 raise ParseError("Показатели: no metrics parsed")

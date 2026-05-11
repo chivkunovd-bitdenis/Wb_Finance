@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date
 from io import BytesIO
 
-import pytest
 from openpyxl import Workbook
 
 from app.services.ai_competitor_excel_parser import parse_wb_competitor_excel
@@ -45,6 +44,8 @@ def test_parse_cards_comparison_pokazateli_sheet() -> None:
     ws.append(["CTR", 5, 15, 10])
     ws.append(["Добавления в корзину, шт", 10, 20, 10])
     ws.append(["Заказы, шт", 2, 8, 6])
+    ws.append(["Конверсия в корзину", 10.0, 7.0, -3.0])
+    ws.append(["Конверсия в заказ", 2.0, 5.0, 3.0])
     buf = BytesIO()
     wb.save(buf)
 
@@ -58,12 +59,18 @@ def test_parse_cards_comparison_pokazateli_sheet() -> None:
     assert traffic_222["our_value"] == 300.0
     assert traffic_222["competitor_median_value"] == 100.0
 
-    # Конверсии: из «…, шт» / «Показы» × 100 (процентные пункты, как в UI WB).
+    # Конверсии — только из строк «Конверсия …» в Excel (п.п.; строки «…, шт» в импорт конверсий не идут).
     cart_111 = next(i for i in items if i["nm_id"] == 111 and i["metric_code"] == "funnel_cart")
-    assert cart_111["our_value"] == pytest.approx(10.0)
-    assert cart_111["competitor_median_value"] == pytest.approx(100.0 * 20.0 / 300.0)
+    assert cart_111["our_value"] == 10.0
+    assert cart_111["competitor_median_value"] == 7.0
     assert cart_111["unit"] == "%"
+    cart_222 = next(i for i in items if i["nm_id"] == 222 and i["metric_code"] == "funnel_cart")
+    assert cart_222["our_value"] == 7.0
+    assert cart_222["competitor_median_value"] == 10.0
+    ord_111 = next(i for i in items if i["nm_id"] == 111 and i["metric_code"] == "funnel_order")
+    assert ord_111["our_value"] == 2.0
+    assert ord_111["competitor_median_value"] == 5.0
     ord_222 = next(i for i in items if i["nm_id"] == 222 and i["metric_code"] == "funnel_order")
-    assert ord_222["our_value"] == pytest.approx(100.0 * 8.0 / 300.0)
-    assert ord_222["competitor_median_value"] == pytest.approx(100.0 * 2.0 / 100.0)
+    assert ord_222["our_value"] == 5.0
+    assert ord_222["competitor_median_value"] == 2.0
 
