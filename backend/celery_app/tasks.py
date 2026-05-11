@@ -81,7 +81,9 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
     - This task MUST be enqueued only after explicit user confirmation (UI action /ai/tasks/{id}/execute).
     """
     import os
+    import io
     from pathlib import Path
+    import zipfile
     from datetime import date as date_type, timedelta as td
     from app.models.ai_competitor_report import AiCompetitorComparisonReport
     from app.services.ai_wb_credentials_service import decrypt_credentials, mark_error, mark_verified
@@ -118,6 +120,26 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         if primary not in lst:
             lst = [primary, *lst]
         return lst
+
+    def _maybe_extract_xlsx(blob: bytes, meta: dict) -> bytes:
+        """
+        WB export may download a .zip containing the Excel file.
+        If so, extract the first .xlsx entry.
+        """
+        name = str(meta.get("suggested_filename") or "")
+        is_zip = blob[:2] == b"PK" or name.lower().endswith(".zip")
+        if not is_zip:
+            return blob
+        try:
+            with zipfile.ZipFile(io.BytesIO(blob)) as zf:  # type: ignore[name-defined]
+                # Pick first .xlsx file (prefer root-level).
+                names = [n for n in zf.namelist() if n.lower().endswith(".xlsx")]
+                if not names:
+                    return blob
+                pick = sorted(names, key=lambda s: ("/" in s, len(s)))[0]
+                return zf.read(pick)
+        except Exception:
+            return blob
 
     db = SessionLocal()
     try:
@@ -177,6 +199,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
 
             try:
                 excel_bytes, raw_meta = fetch_comparison_excel_bytes(login=login, password=password, period=p2)
+                excel_bytes = _maybe_extract_xlsx(excel_bytes, raw_meta or {})
             except PlaywrightAuthError as exc:
                 mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
                 rep_row.status = "error"

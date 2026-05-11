@@ -940,6 +940,13 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     wb.save(buf)
     excel_bytes = buf.getvalue()
 
+    # Wrap into zip to mimic WB export (often provides .zip with .xlsx inside)
+    from zipfile import ZipFile
+    zbuf = BytesIO()
+    with ZipFile(zbuf, "w") as zf:
+        zf.writestr("report.xlsx", excel_bytes)
+    zip_bytes = zbuf.getvalue()
+
     # Monkeypatch Playwright fetch to avoid network and selectors
     import app.services.ai_competitor_playwright as pw
 
@@ -947,7 +954,7 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
         assert login == "u"
         assert password == "p"
         assert period in {"week", "month"}
-        return excel_bytes, {"stub": True, "period": period}
+        return zip_bytes, {"stub": True, "period": period, "suggested_filename": "wb_export.zip"}
 
     monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _fake_fetch_comparison_excel_bytes)
 
