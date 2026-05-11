@@ -746,6 +746,27 @@ def test_ai_daily_analytics_run_creates_entities_and_is_idempotent(client: TestC
     assert len(data["created_hypothesis_ids"]) >= 2  # content_change + ab_test
     assert len(data["created_task_ids"]) >= 3  # restock + 2 logistics tasks + self_buyouts
 
+    db2 = SessionLocal()
+    try:
+        fps = (
+            f"hyp:content_change:123:{report_date}:{period}",
+            f"hyp:ab_test:123:{report_date}:{period}",
+        )
+        hyps = (
+            db2.query(AiHypothesis)
+            .filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint.in_(fps))
+            .all()
+        )
+        assert len(hyps) == 2
+        for h in hyps:
+            tr = (h.trigger_reason or "").lower()
+            assert "funnel_cart" not in tr
+            assert "funnel_order" not in tr
+            assert "metric_code" not in tr
+            assert "рекомендуется" in tr
+    finally:
+        db2.close()
+
     # Second run should create nothing new (fingerprints)
     r3 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": "2026-05-10"})
     assert r3.status_code == 200
