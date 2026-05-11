@@ -81,6 +81,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
     - This task MUST be enqueued only after explicit user confirmation (UI action /ai/tasks/{id}/execute).
     """
     import os
+    from pathlib import Path
     from datetime import date as date_type, timedelta as td
     from app.models.ai_competitor_report import AiCompetitorComparisonReport
     from app.services.ai_wb_credentials_service import decrypt_credentials, mark_error, mark_verified
@@ -124,12 +125,18 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         if period not in {"week", "month", "quarter"}:
             return {"ok": False, "error": "invalid_period"}
 
-        try:
-            login, password = decrypt_credentials(db=db, user_id=user_id)
-        except Exception as exc:  # noqa: BLE001
-            mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
-            _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
-            return {"ok": False, "error": "missing_credentials"}
+        # If storage_state is provided, we can run without explicit WB login/password:
+        # the browser context will reuse the saved session (phone+code 2FA done manually once).
+        storage_state_path = (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
+        if storage_state_path and Path(storage_state_path).is_file():
+            login, password = "", ""
+        else:
+            try:
+                login, password = decrypt_credentials(db=db, user_id=user_id)
+            except Exception as exc:  # noqa: BLE001
+                mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
+                _log_action(db, user_id, None, action="refresh", ok=False, err=str(exc))
+                return {"ok": False, "error": "missing_credentials"}
 
         report_date = date_type.today()
         periods = _periods_to_fetch(period)

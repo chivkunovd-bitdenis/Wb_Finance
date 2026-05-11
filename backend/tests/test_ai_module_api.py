@@ -987,3 +987,66 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     finally:
         db2.close()
 
+
+def test_ai_competitor_report_worker_can_run_with_storage_state_without_creds(client: TestClient, monkeypatch, tmp_path) -> None:
+    """
+    If WB_PLAYWRIGHT_STORAGE_STATE_PATH is provided (phone+code auth done manually once),
+    worker must be able to run even when encrypted creds are missing/invalid.
+    """
+    from datetime import date as date_type
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from sqlalchemy.orm import Session
+
+    from app.db import SessionLocal
+    from app.models.ai_competitor_report import AiCompetitorComparisonReport
+
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "1")
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_FETCH_PERIODS", "week")
+    state = tmp_path / "state.json"
+    state.write_text('{"cookies":[],"origins":[]}', encoding="utf-8")
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH", str(state))
+
+    # Build minimal workbook bytes for parser
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["nm_id", "ctr", "ctr_median"])
+    ws.append([123, 3.1, 4.2])
+    buf = BytesIO()
+    wb.save(buf)
+    excel_bytes = buf.getvalue()
+
+    import app.services.ai_competitor_playwright as pw
+
+    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str):
+        assert login == ""
+        assert password == ""
+        assert period == "week"
+        return excel_bytes, {"stub": True, "period": period}
+
+    monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _fake_fetch_comparison_excel_bytes)
+
+    from celery_app.tasks import ai_competitor_report_fetch_playwright
+
+    user_id = "00000000-0000-0000-0000-000000000222"
+    res = ai_competitor_report_fetch_playwright(user_id, "week")
+    assert res["ok"] is True
+
+    db2: Session = SessionLocal()
+    try:
+        today = date_type.today()
+        rep = (
+            db2.query(AiCompetitorComparisonReport)
+            .filter(
+                AiCompetitorComparisonReport.user_id == user_id,
+                AiCompetitorComparisonReport.report_date == today,
+                AiCompetitorComparisonReport.period == "week",
+            )
+            .first()
+        )
+        assert rep is not None
+        assert rep.status == "ready"
+    finally:
+        db2.close()
+

@@ -118,6 +118,7 @@ services:
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/data:/app/data
+      - ./backend/wb_storage_state.json:/app/wb_storage_state.json:ro
     command: celery -A celery_app.celery worker --loglevel=info
 
   celery_beat:

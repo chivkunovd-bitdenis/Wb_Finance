@@ -20,6 +20,9 @@ backend/.env
 **/node_modules/
 # dist коммитим — на сервере нет Node, Caddy отдаёт статику из frontend/dist
 # frontend/dist/
+
+# Playwright WB session snapshot (secret)
+backend/wb_storage_state.json
 frontend/test-results/
 npm-debug.log*
 yarn-debug.log*
