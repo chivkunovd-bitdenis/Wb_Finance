@@ -6,7 +6,7 @@ import os
 import urllib.request
 from collections.abc import Sequence
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -430,9 +430,25 @@ def ai_wb_access_storage_state_upload(
     return {"status": "ok"}
 
 
+@router.get("/wb-access/status")
+def ai_wb_access_status(
+    store_ctx: StoreContext = Depends(get_store_context),
+) -> dict:
+    """
+    Check whether a saved Playwright storage_state snapshot exists for this user.
+    This is the real signal of "access is granted" for headless/worker usage.
+    """
+    from app.services.ai_wb_access_service import user_storage_state_path
+
+    p = user_storage_state_path(user_id=str(store_ctx.store_owner.id))
+    ok = p.is_file() and p.stat().st_size >= 50
+    return {"status": "ok", "has_storage_state": ok}
+
+
 @router.post("/wb-access/remote/start")
 def ai_wb_access_remote_start(
     store_ctx: StoreContext = Depends(get_store_context),
+    payload: dict = Body(default={}),
 ) -> dict:
     """
     Start remote browser session (noVNC) for WB login on server.
@@ -441,7 +457,8 @@ def ai_wb_access_remote_start(
     if not token:
         raise HTTPException(status_code=503, detail="WB auth is not configured")
     user_id = str(store_ctx.store_owner.id)
-    data = json.dumps({"user_id": user_id}).encode("utf-8")
+    force = bool(payload.get("force")) if isinstance(payload, dict) else False
+    data = json.dumps({"user_id": user_id, "force": force}).encode("utf-8")
     req = urllib.request.Request(
         "http://wb_auth:8081/start",
         data=data,
@@ -480,6 +497,32 @@ def ai_wb_access_remote_save(
             return json.loads(body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"WB auth save failed: {exc}") from exc
+
+
+@router.post("/wb-access/remote/status")
+def ai_wb_access_remote_status(
+    store_ctx: StoreContext = Depends(get_store_context),
+) -> dict:
+    """
+    Check whether remote browser session (noVNC) is currently active for user.
+    """
+    token = (os.getenv("WB_AUTH_INTERNAL_TOKEN") or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="WB auth is not configured")
+    user_id = str(store_ctx.store_owner.id)
+    data = json.dumps({"user_id": user_id}).encode("utf-8")
+    req = urllib.request.Request(
+        "http://wb_auth:8081/status",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Internal-Token": token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec - internal network
+            body = resp.read().decode("utf-8")
+            return json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"WB auth status failed: {exc}") from exc
 
 
 @router.get("/competitor-reports", response_model=AiCompetitorReportListResponse)

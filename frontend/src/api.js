@@ -725,10 +725,11 @@ export async function uploadAiWbAccessFile(file) {
   return res.json();
 }
 
-export async function startAiWbRemoteAuth() {
+export async function startAiWbRemoteAuth({ force = false } = {}) {
   const res = await apiFetch(`${API_BASE}/ai/wb-access/remote/start`, {
     method: 'POST',
     headers: headers(),
+    body: JSON.stringify({ force: Boolean(force) }),
   });
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {
@@ -749,6 +750,29 @@ export async function saveAiWbRemoteAuth() {
     throw new Error(parseApiErrorText(raw, res.status));
   }
   return res.json();
+}
+
+export async function getAiWbRemoteAuthStatus() {
+  const res = await apiFetch(`${API_BASE}/ai/wb-access/remote/status`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { status: "ok", active: boolean, url?: string }
+}
+
+export async function getAiWbAccessStatus() {
+  const res = await apiFetch(`${API_BASE}/ai/wb-access/status`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { status: "ok", has_storage_state: boolean }
 }
 
 export async function updateWbApiKey(wbApiKey) {

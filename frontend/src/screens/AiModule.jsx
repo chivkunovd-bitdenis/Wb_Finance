@@ -4,6 +4,7 @@ import DataTable from '../components/DataTable';
 
 const LS_SELECTED_NM_ID = 'ai_module_selected_nm_id';
 const LS_HIDE_COMPARISON_CALLOUT = 'ai_module_hide_comparison_callout';
+const LS_ONBOARDING_CONFIRMED = 'ai_module_onboarding_confirmed_v1';
 
 function lsGet(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -11,6 +12,14 @@ function lsGet(key) {
 
 function lsSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* ignore */ }
+}
+
+function softCardStyle() {
+  return {
+    border: '1px solid rgba(2,6,23,0.08)',
+    borderRadius: 12,
+    background: '#fff',
+  };
 }
 
 function statusBadge(status) {
@@ -45,24 +54,16 @@ function statusBadge(status) {
   );
 }
 
-function TabButton({ active, onClick, children }) {
+function InfoRow({ label, children }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="btn"
-      style={{
-        padding: '8px 12px',
-        borderRadius: 10,
-        border: active ? '1px solid rgba(124,58,237,0.45)' : '1px solid rgba(0,0,0,0.12)',
-        background: active ? 'rgba(124,58,237,0.08)' : 'transparent',
-        color: active ? '#6d28d9' : 'var(--text-secondary)',
-        fontWeight: 700,
-        fontSize: 13,
-      }}
-    >
-      {children}
-    </button>
+    <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(2,6,23,0.06)' }}>
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 800, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      <div style={{ color: 'var(--text-secondary)', fontSize: 13, whiteSpace: 'pre-wrap' }}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -109,6 +110,100 @@ function ModalShell({ open, title, onClose, children, footer }) {
           <div style={{ padding: 14, borderTop: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             {footer}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FirstRunBanner({
+  step,
+  selectedNmId,
+  needsWbAccess,
+  onPickProduct,
+  onConfirmProduct,
+  onGrantAccess,
+  busy,
+  errorText,
+}) {
+  if (!step) return null;
+  const step1 = step === 1;
+  const step2 = step === 2;
+
+  return (
+    <div
+      style={{
+        ...softCardStyle(),
+        borderColor: 'rgba(124,58,237,0.22)',
+        background: 'rgba(124,58,237,0.06)',
+        padding: 14,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 14,
+        flexWrap: 'wrap',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 260 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '3px 10px',
+              borderRadius: 999,
+              background: 'rgba(91,79,212,0.12)',
+              color: '#4c42b8',
+              border: '1px solid rgba(91,79,212,0.20)',
+              fontSize: 12,
+              fontWeight: 900,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Шаг {step}
+          </span>
+          <div style={{ fontWeight: 900 }}>
+            {step1 ? 'Выберите товар' : 'Дайте доступ к кабинету WB'}
+          </div>
+        </div>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13, maxWidth: 860 }}>
+          {step1
+            ? 'Выберите товар, с которым хотите работать, и нажмите OK.'
+            : 'Нажмите “Выдать доступ”. После успешной авторизации плашка исчезнет.'}
+        </div>
+        {errorText && (
+          <div className="alert alert-danger" style={{ margin: '6px 0 0 0' }}>
+            {errorText}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {step1 && (
+          <>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onPickProduct} disabled={busy}>
+              {selectedNmId ? `Сменить (сейчас ${selectedNmId})` : 'Выбрать товар'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={onConfirmProduct}
+              disabled={!selectedNmId || busy}
+            >
+              OK
+            </button>
+          </>
+        )}
+        {step2 && (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={onGrantAccess}
+            disabled={busy || !needsWbAccess}
+            title={!needsWbAccess ? 'Доступ уже выдан' : undefined}
+          >
+            Выдать доступ
+          </button>
         )}
       </div>
     </div>
@@ -244,6 +339,8 @@ function WbAccessModal({ open, onClose, onGranted }) {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [remoteIframeNonce, setRemoteIframeNonce] = useState(0);
+  const [remoteSessionEnsured, setRemoteSessionEnsured] = useState(false);
+  const [checkedOnce, setCheckedOnce] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -252,22 +349,63 @@ function WbAccessModal({ open, onClose, onGranted }) {
     setFile(null);
     setUploading(false);
     setRemoteOpen(false);
+    setRemoteSessionEnsured(false);
+    setCheckedOnce(false);
     setRemoteBusy(false);
     setRemoteIframeNonce(0);
   }, [open]);
 
-  const startRemote = async () => {
+  const ensureRemote = async () => {
     setRemoteBusy(true);
     setError('');
     try {
-      await api.startAiWbRemoteAuth();
+      const st = await api.getAiWbRemoteAuthStatus();
+      if (st?.active) {
+        setRemoteOpen(true);
+        setRemoteIframeNonce((x) => x + 1);
+        return;
+      }
+      await api.startAiWbRemoteAuth({ force: false });
       setRemoteOpen(true);
-      // Force iframe/noVNC client reconnect to show fresh remote session.
+      setRemoteSessionEnsured(true);
+      setRemoteIframeNonce((x) => x + 1);
+    } catch (e) {
+      // During rolling deploys the backend may not have /remote/status yet (404).
+      // In that case, fall back to "start" without surfacing a scary error.
+      const msg = String(e?.message || '');
+      const looksLikeNotFound = msg.toLowerCase().includes('not found') || msg.includes('404');
+      if (looksLikeNotFound) {
+        try {
+          await api.startAiWbRemoteAuth({ force: false });
+          setRemoteOpen(true);
+          setRemoteSessionEnsured(true);
+          setRemoteIframeNonce((x) => x + 1);
+          return;
+        } catch (e2) {
+          setError(e2?.message || 'Не удалось открыть окно авторизации');
+          return;
+        }
+      }
+      setError(msg || 'Не удалось открыть окно авторизации');
+    } finally {
+      setRemoteBusy(false);
+      setCheckedOnce(true);
+    }
+  };
+
+  const restartRemote = async () => {
+    setRemoteBusy(true);
+    setError('');
+    try {
+      await api.startAiWbRemoteAuth({ force: true });
+      setRemoteOpen(true);
+      setRemoteSessionEnsured(true);
       setRemoteIframeNonce((x) => x + 1);
     } catch (e) {
       setError(e?.message || 'Не удалось открыть окно авторизации');
     } finally {
       setRemoteBusy(false);
+      setCheckedOnce(true);
     }
   };
 
@@ -302,6 +440,13 @@ function WbAccessModal({ open, onClose, onGranted }) {
 
   const showUpload = String(error || '').toLowerCase().includes('no display') || String(error || '').toLowerCase().includes('storage_state');
 
+  useEffect(() => {
+    if (!open) return;
+    if (showUpload) return;
+    if (checkedOnce) return;
+    ensureRemote();
+  }, [open, showUpload, checkedOnce]);
+
   return (
     <ModalShell
       open={open}
@@ -310,8 +455,8 @@ function WbAccessModal({ open, onClose, onGranted }) {
       footer={(
         <>
           <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>Отмена</button>
-          <button type="button" className="btn btn-outline-primary" onClick={startRemote} disabled={saving || uploading || remoteBusy}>
-            {remoteBusy ? 'Открываю…' : 'Открыть окно'}
+          <button type="button" className="btn btn-outline-primary" onClick={restartRemote} disabled={saving || uploading || remoteBusy}>
+            {remoteBusy ? 'Открываю…' : remoteSessionEnsured ? 'Переоткрыть окно' : 'Открыть окно'}
           </button>
           <button type="button" className="btn btn-primary" onClick={finishRemote} disabled={!remoteOpen || saving || uploading || remoteBusy}>
             {remoteBusy ? 'Сохраняю…' : 'Я вошёл'}
@@ -320,7 +465,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
       )}
     >
       <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
-        Нажмите “Открыть окно” — откроется встроенное окно кабинета WB. Введите логин/пароль (и код, если попросит WB).
+        Если сессия уже открыта, окно появится сразу. Если сессии нет — мы запустим её автоматически. Если окно “залипло”, нажмите “Открыть окно” для перезапуска.
         После успешного входа нажмите “Я вошёл”, чтобы сохранить доступ.
       </div>
       {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
@@ -358,55 +503,121 @@ function WbAccessModal({ open, onClose, onGranted }) {
   );
 }
 
-function SelectedProductCard({ nmId, onChange }) {
-  return (
-    <div
-      style={{
-        border: '1px solid rgba(2,6,23,0.08)',
-        borderRadius: 12,
-        background: '#fff',
-        padding: 12,
-        display: 'flex',
-        gap: 12,
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-      }}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Сейчас вы работаете с карточкой:</div>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>Артикул {nmId}</div>
-      </div>
-      <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onChange}>
-        Сменить товар
-      </button>
-    </div>
-  );
+function aiDetailsForTask(t) {
+  const type = String(t?.task_type || '');
+  const title = String(t?.title || 'Задача');
+  const base = {
+    title,
+    what: t?.description || 'Задача от AI-модуля для улучшения карточки товара.',
+    why: 'Помогает системно улучшать карточку и проверять шаги, которые повышают продажи.',
+    business: 'Рост продаж за счёт улучшения качества карточки и конкурентности.',
+    hypothesis: 'Если выполнить задачу, метрики карточки улучшатся.',
+    userAction: 'Выполните задачу и нажмите “Готово” (или “Отменить”, если задача неактуальна).',
+    result: 'Статус задачи изменится, и вы сможете видеть прогресс по списку.',
+  };
+
+  if (type === 'wb_access_grant') {
+    return {
+      ...base,
+      title: 'Дать доступ к кабинету WB',
+      what: 'Нужно выдать доступ к кабинету WB для получения отчётов и данных сравнения.',
+      userAction: 'Нажмите “Выдать доступ” в шаге 2 и авторизуйтесь.',
+      result: 'После успешной авторизации onboarding-плашка исчезнет.',
+    };
+  }
+
+  if (type === 'competitor_report_refresh') {
+    return {
+      ...base,
+      title: title || 'Обновить отчёт сравнения',
+      what: 'Нужно обновить отчёт сравнения карточек с конкурентами.',
+      userAction: 'Создайте/обновите сравнение в кабинете WB (ваш товар + 4 конкурента), затем нажмите “Я создал сравнение”.',
+      result: 'Статус отчёта станет актуальным, AI сможет создавать корректные задачи/гипотезы.',
+    };
+  }
+
+  return base;
 }
 
-function EmptyState({ onPick }) {
+function aiDetailsForHypothesis(h) {
+  const title = String(h?.title || 'Гипотеза');
+  const trigger = String(h?.trigger_reason || '').trim();
+  return {
+    title,
+    what: 'Гипотеза — это проверка идеи, которая потенциально улучшит метрики карточки.',
+    why: 'Фокусирует усилия на проверяемых действиях вместо случайных изменений.',
+    business: 'Быстрее найти работающие улучшения и масштабировать их.',
+    hypothesis: trigger || 'Если выполнить действия по гипотезе, метрики карточки улучшатся.',
+    userAction: 'Запустите гипотезу, выполняйте действия, фиксируйте результат и завершите её.',
+    result: 'После завершения гипотеза попадёт в “Готово” и сохранится итог.',
+  };
+}
+
+function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionLabel, busy }) {
+  if (!openItem) return null;
+  const isTask = openItem.kind === 'task';
+  const isHyp = openItem.kind === 'hypothesis';
+  const details = isTask ? aiDetailsForTask(openItem.data) : aiDetailsForHypothesis(openItem.data);
+  const status = openItem?.data?.status;
   return (
-    <div
-      style={{
-        border: '1px solid rgba(2,6,23,0.08)',
-        borderRadius: 12,
-        background: '#fff',
-        padding: 18,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        alignItems: 'flex-start',
-      }}
+    <ModalShell
+      open={Boolean(openItem)}
+      title={details.title}
+      onClose={onClose}
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={busy}>Закрыть</button>
+          {primaryActionLabel && (
+            <button type="button" className="btn btn-primary" onClick={onPrimaryAction} disabled={busy}>
+              {busy ? '...' : primaryActionLabel}
+            </button>
+          )}
+          {(isTask && (status === 'new' || status === 'in_progress')) && (
+            <>
+              <button type="button" className="btn" style={{ background: 'rgba(22,163,74,0.12)', border: '1px solid rgba(22,163,74,0.18)', color: '#166534', fontWeight: 800 }} onClick={() => openItem.onSetStatus?.('completed')} disabled={busy}>
+                Готово
+              </button>
+              <button type="button" className="btn" style={{ background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.18)', color: '#991b1b', fontWeight: 800 }} onClick={() => openItem.onSetStatus?.('cancelled')} disabled={busy}>
+                Отменить
+              </button>
+            </>
+          )}
+          {isHyp && openItem.actions?.length ? openItem.actions.map((a) => (
+            <button key={a.key} type="button" className={a.className} onClick={a.onClick} disabled={busy || a.disabled}>
+              {a.label}
+            </button>
+          )) : null}
+        </>
+      )}
     >
-      <div style={{ fontWeight: 900, fontSize: 18 }}>AI-модуль развития карточек</div>
-      <div style={{ color: 'var(--text-secondary)', maxWidth: 760 }}>
-        <div>Выберите товар, с которым хотите работать.</div>
-        <div>Система будет анализировать карточку, сравнивать её с конкурентами и создавать задачи и гипотезы для роста продаж.</div>
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Статус: {statusBadge(status)}
+          </div>
+          {openItem?.data?.nm_id != null && (
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Артикул: <span style={{ fontWeight: 800, color: 'var(--text-secondary)' }}>{openItem.data.nm_id}</span>
+            </div>
+          )}
+        </div>
+        <div style={{ ...softCardStyle(), padding: 12 }}>
+          <InfoRow label="Что это">{details.what}</InfoRow>
+          <InfoRow label="Зачем">{details.why}</InfoRow>
+          <InfoRow label="Бизнес-смысл">{details.business}</InfoRow>
+          <InfoRow label="Гипотеза">{details.hypothesis}</InfoRow>
+          <InfoRow label="Что сделать">{details.userAction}</InfoRow>
+          <div style={{ paddingTop: 8 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 800, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+              Как понять результат
+            </div>
+            <div style={{ color: 'var(--text-secondary)', fontSize: 13, whiteSpace: 'pre-wrap', marginTop: 6 }}>
+              {details.result}
+            </div>
+          </div>
+        </div>
       </div>
-      <button type="button" className="btn btn-primary" onClick={onPick}>
-        Выбрать товар
-      </button>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -547,11 +758,12 @@ function ActionsLogModal({ open, onClose }) {
   );
 }
 
-function TasksTab({ selectedNmId, onGrantWbAccess }) {
+function TasksTab({ selectedNmId }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [openItem, setOpenItem] = useState(null);
 
   const reload = async () => {
     setLoading(true);
@@ -598,25 +810,8 @@ function TasksTab({ selectedNmId, onGrantWbAccess }) {
     }
   };
 
-  const execute = async (taskId) => {
-    setBusyId(taskId);
-    setError('');
-    try {
-      await api.executeAiTask(taskId);
-      await reload();
-    } catch (e) {
-      setError(e?.message || 'Ошибка');
-    } finally {
-      setBusyId('');
-    }
-  };
-
   return (
-    <DataTable title="Задачи" tag="ИИ модуль" actions={
-      <button type="button" className="btn btn-outline-secondary btn-sm" onClick={reload} disabled={loading}>
-        Обновить
-      </button>
-    }>
+    <DataTable title="Задачи" tag="ИИ модуль">
       {loading ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Загрузка…</div>
       ) : error ? (
@@ -624,64 +819,55 @@ function TasksTab({ selectedNmId, onGrantWbAccess }) {
       ) : sorted.length === 0 ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Пока нет задач</div>
       ) : (
-        <div className="table-wrapper" style={{ marginTop: 0 }}>
-          <table className="custom-table">
-            <thead>
-              <tr>
-                <th>Задача</th>
-                <th>Статус</th>
-                <th style={{ width: 260 }}>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    <div style={{ fontWeight: 700 }}>{t.title}</div>
-                    {t.description && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t.description}</div>}
-                  </td>
-                  <td>{statusBadge(t.status)}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {t.task_type === 'wb_access_grant' && t.status !== 'completed' && (
-                        <button type="button" className="btn btn-sm btn-primary" disabled={busyId === t.id} onClick={() => onGrantWbAccess?.()}>
-                          Выдать доступ
-                        </button>
-                      )}
-                      {t.task_type === 'competitor_report_refresh' && t.status === 'new' && (
-                        <button type="button" className="btn btn-sm btn-warning" disabled={busyId === t.id} onClick={() => execute(t.id)}>
-                          Подтвердить и обновить
-                        </button>
-                      )}
-                      {t.status === 'new' && (
-                        <button type="button" className="btn btn-sm btn-outline-primary" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'in_progress')}>
-                          В работу
-                        </button>
-                      )}
-                      {(t.status === 'new' || t.status === 'in_progress') && (
-                        <button type="button" className="btn btn-sm btn-success" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'completed')}>
-                          Готово
-                        </button>
-                      )}
-                      {(t.status === 'new' || t.status === 'in_progress') && (
-                        <button type="button" className="btn btn-sm btn-outline-danger" disabled={busyId === t.id} onClick={() => setStatus(t.id, 'cancelled')}>
-                          Отменить
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+          {sorted.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className="btn"
+              onClick={() => setOpenItem({
+                kind: 'task',
+                data: t,
+                onSetStatus: (st) => setStatus(t.id, st),
+              })}
+              style={{
+                ...softCardStyle(),
+                padding: 12,
+                textAlign: 'left',
+                display: 'grid',
+                gap: 6,
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 900, fontSize: 13, color: 'var(--text-primary)' }}>{t.title}</div>
+                <div style={{ marginLeft: 'auto' }}>{statusBadge(t.status)}</div>
+              </div>
+              {t.description && (
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                  {t.description}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
+                {(t.status === 'new' || t.status === 'in_progress') && (
+                  <>
+                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Действия:</span>
+                    <span style={{ fontSize: 12, color: '#166534', fontWeight: 800 }}>Готово</span>
+                    <span style={{ fontSize: 12, color: '#991b1b', fontWeight: 800 }}>Отменить</span>
+                  </>
+                )}
+              </div>
+            </button>
+          ))}
         </div>
       )}
+      <AiItemDetailsModal
+        openItem={openItem}
+        onClose={() => setOpenItem(null)}
+        busy={Boolean(busyId)}
+      />
     </DataTable>
   );
-}
-
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function HypothesesTab({ selectedNmId }) {
@@ -690,11 +876,7 @@ function HypothesesTab({ selectedNmId }) {
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
   const [resultSummary, setResultSummary] = useState({});
-  const [logOpenId, setLogOpenId] = useState(null);
-  const [logItems, setLogItems] = useState({});
-  const [logLoadingId, setLogLoadingId] = useState(null);
-  const [logError, setLogError] = useState('');
-  const [logForm, setLogForm] = useState(() => ({ day: todayIso(), happened: '', changed: '', unchanged: '' }));
+  const [openItem, setOpenItem] = useState(null);
 
   const reload = async () => {
     setLoading(true);
@@ -743,9 +925,6 @@ function HypothesesTab({ selectedNmId }) {
     try {
       await api.finishAiHypothesis(id, resultSummary[id] || null);
       await reload();
-      if (logOpenId === id) {
-        await fetchDailyLog(id);
-      }
     } catch (e) {
       setError(e?.message || 'Ошибка');
     } finally {
@@ -753,54 +932,8 @@ function HypothesesTab({ selectedNmId }) {
     }
   };
 
-  const fetchDailyLog = async (hypothesisId) => {
-    setLogLoadingId(hypothesisId);
-    setLogError('');
-    try {
-      const data = await api.getAiHypothesisDailyLog(hypothesisId);
-      const rows = Array.isArray(data?.items) ? data.items : [];
-      setLogItems((m) => ({ ...m, [hypothesisId]: rows }));
-    } catch (e) {
-      setLogError(e?.message || 'Ошибка загрузки дневного лога');
-      setLogItems((m) => ({ ...m, [hypothesisId]: [] }));
-    } finally {
-      setLogLoadingId(null);
-    }
-  };
-
-  const toggleDailyLog = async (h) => {
-    const id = h.id;
-    if (logOpenId === id) {
-      setLogOpenId(null);
-      setLogError('');
-      return;
-    }
-    setLogOpenId(id);
-    setLogError('');
-    setLogForm({ day: todayIso(), happened: '', changed: '', unchanged: '' });
-    await fetchDailyLog(id);
-  };
-
-  const saveDailyLog = async (hypothesisId) => {
-    setBusyId(hypothesisId);
-    setLogError('');
-    try {
-      await api.upsertAiHypothesisDailyLog(hypothesisId, logForm);
-      await fetchDailyLog(hypothesisId);
-      setLogForm((f) => ({ ...f, happened: '', changed: '', unchanged: '' }));
-    } catch (e) {
-      setLogError(e?.message || 'Не удалось сохранить запись');
-    } finally {
-      setBusyId('');
-    }
-  };
-
   return (
-    <DataTable title="Гипотезы" tag="ИИ модуль" actions={
-      <button type="button" className="btn btn-outline-secondary btn-sm" onClick={reload} disabled={loading}>
-        Обновить
-      </button>
-    }>
+    <DataTable title="Гипотезы" tag="ИИ модуль">
       {loading ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Загрузка…</div>
       ) : error ? (
@@ -808,160 +941,86 @@ function HypothesesTab({ selectedNmId }) {
       ) : sorted.length === 0 ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Пока нет гипотез</div>
       ) : (
-        <div className="table-wrapper" style={{ marginTop: 0 }}>
-          <table className="custom-table">
-            <thead>
-              <tr>
-                <th>Гипотеза</th>
-                <th>Статус</th>
-                <th style={{ width: 360 }}>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((h) => (
-                <Fragment key={h.id}>
-                  <tr>
-                    <td>
-                      <div style={{ fontWeight: 700 }}>{h.title}</div>
-                      {h.trigger_reason && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{h.trigger_reason}</div>}
-                    </td>
-                    <td>{statusBadge(h.status)}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-secondary"
-                          disabled={logLoadingId === h.id}
-                          onClick={() => toggleDailyLog(h)}
-                        >
-                          {logOpenId === h.id ? 'Скрыть дневной лог' : 'Дневной лог'}
-                        </button>
-                        {h.status === 'draft' && (
-                          <button type="button" className="btn btn-sm btn-primary" disabled={busyId === h.id} onClick={() => start(h.id)}>
-                            Запустить
-                          </button>
-                        )}
-                        {h.status === 'running' && (
-                          <>
-                            <input
-                              className="form-control form-control-sm"
-                              style={{ width: 220 }}
-                              value={resultSummary[h.id] || ''}
-                              placeholder="Итог (коротко)"
-                              onChange={(e) => setResultSummary((m) => ({ ...m, [h.id]: e.target.value }))}
-                            />
-                            <button type="button" className="btn btn-sm btn-success" disabled={busyId === h.id} onClick={() => finish(h.id)}>
-                              Завершить
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                  {logOpenId === h.id && (
-                    <tr>
-                      <td colSpan={3} style={{ background: 'rgba(124,58,237,0.04)', verticalAlign: 'top' }}>
-                        {logError && <div className="alert alert-danger" style={{ marginBottom: 8 }}>{logError}</div>}
-                        {logLoadingId === h.id ? (
-                          <div style={{ color: 'var(--text-tertiary)', padding: 8 }}>Загрузка дневного лога…</div>
-                        ) : (
-                          <>
-                            <div style={{ fontWeight: 800, marginBottom: 8 }}>Записи по дням</div>
-                            {((logItems[h.id] || []).length === 0) ? (
-                              <div style={{ color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 10 }}>
-                                {h.status === 'draft'
-                                  ? 'После запуска гипотезы здесь можно вести дневные заметки.'
-                                  : 'Пока нет записей.'}
-                              </div>
-                            ) : (
-                              <div className="table-wrapper" style={{ marginBottom: 12 }}>
-                                <table className="custom-table">
-                                  <thead>
-                                    <tr>
-                                      <th>День</th>
-                                      <th>Произошло</th>
-                                      <th>Изменили</th>
-                                      <th>Не меняли</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {(logItems[h.id] || []).map((row) => (
-                                      <tr key={row.day}>
-                                        <td style={{ whiteSpace: 'nowrap' }}>{row.day ?? '—'}</td>
-                                        <td style={{ fontSize: 13 }}>{row.happened || '—'}</td>
-                                        <td style={{ fontSize: 13 }}>{row.changed || '—'}</td>
-                                        <td style={{ fontSize: 13 }}>{row.unchanged || '—'}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-                            {h.status === 'running' && (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 720 }}>
-                                <div style={{ fontWeight: 700, fontSize: 13 }}>Добавить / обновить день</div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                                    Дата
-                                    <input
-                                      type="date"
-                                      className="form-control form-control-sm"
-                                      style={{ width: 160, marginLeft: 6 }}
-                                      value={logForm.day}
-                                      onChange={(e) => setLogForm((f) => ({ ...f, day: e.target.value }))}
-                                    />
-                                  </label>
-                                </div>
-                                <textarea
-                                  className="form-control form-control-sm"
-                                  rows={2}
-                                  placeholder="Что произошло за день"
-                                  value={logForm.happened}
-                                  onChange={(e) => setLogForm((f) => ({ ...f, happened: e.target.value }))}
-                                />
-                                <textarea
-                                  className="form-control form-control-sm"
-                                  rows={2}
-                                  placeholder="Что изменили"
-                                  value={logForm.changed}
-                                  onChange={(e) => setLogForm((f) => ({ ...f, changed: e.target.value }))}
-                                />
-                                <textarea
-                                  className="form-control form-control-sm"
-                                  rows={2}
-                                  placeholder="Что сознательно не трогали"
-                                  value={logForm.unchanged}
-                                  onChange={(e) => setLogForm((f) => ({ ...f, unchanged: e.target.value }))}
-                                />
-                                <div>
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary btn-sm"
-                                    disabled={busyId === h.id || !logForm.day}
-                                    onClick={() => saveDailyLog(h.id)}
-                                  >
-                                    Сохранить день
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ display: 'grid', gap: 10, padding: 12 }}>
+          {sorted.map((h) => {
+            const actions = [];
+            if (h.status === 'draft') {
+              actions.push({
+                key: 'start',
+                label: 'Запустить',
+                className: 'btn btn-primary',
+                onClick: () => start(h.id),
+                disabled: false,
+              });
+            }
+            if (h.status === 'running') {
+              actions.push({
+                key: 'finish',
+                label: 'Завершить',
+                className: 'btn btn-primary',
+                onClick: () => finish(h.id),
+                disabled: false,
+              });
+            }
+
+            return (
+              <button
+                key={h.id}
+                type="button"
+                className="btn"
+                onClick={() => setOpenItem({
+                  kind: 'hypothesis',
+                  data: h,
+                  actions,
+                })}
+                style={{
+                  ...softCardStyle(),
+                  padding: 12,
+                  textAlign: 'left',
+                  display: 'grid',
+                  gap: 6,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: 'var(--text-primary)' }}>{h.title}</div>
+                  <div style={{ marginLeft: 'auto' }}>{statusBadge(h.status)}</div>
+                </div>
+                {h.trigger_reason && (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                    {h.trigger_reason}
+                  </div>
+                )}
+                {h.status === 'running' && (
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 2 }}>
+                    <input
+                      className="form-control form-control-sm"
+                      style={{ width: 260 }}
+                      value={resultSummary[h.id] || ''}
+                      placeholder="Итог (коротко)"
+                      onChange={(e) => setResultSummary((m) => ({ ...m, [h.id]: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      Откройте карточку, чтобы завершить
+                    </span>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
+      <AiItemDetailsModal
+        openItem={openItem}
+        onClose={() => setOpenItem(null)}
+        busy={Boolean(busyId)}
+      />
     </DataTable>
   );
 }
 
 export default function AiModule() {
-  const [tab, setTab] = useState('tasks');
   const [selectedNmId, setSelectedNmId] = useState(() => {
     const v = (lsGet(LS_SELECTED_NM_ID) || '').trim();
     const n = Number(v);
@@ -969,8 +1028,11 @@ export default function AiModule() {
   });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [wbModalOpen, setWbModalOpen] = useState(false);
+  const [onboardingConfirmed, setOnboardingConfirmed] = useState(() => (lsGet(LS_ONBOARDING_CONFIRMED) || '') === '1');
 
   const [credsStatus, setCredsStatus] = useState(null);
+  const [remoteStatus, setRemoteStatus] = useState(null);
+  const [accessStatus, setAccessStatus] = useState(null);
   const [reportStatus, setReportStatus] = useState(null);
   const [comparisonBusy, setComparisonBusy] = useState(false);
   const [comparisonError, setComparisonError] = useState('');
@@ -995,10 +1057,38 @@ export default function AiModule() {
     }
   }, []);
 
+  const loadRemoteStatus = useCallback(async () => {
+    try {
+      const st = await api.getAiWbRemoteAuthStatus();
+      setRemoteStatus(st);
+    } catch {
+      // ignore; fallback to creds status only
+    }
+  }, []);
+
+  const loadAccessStatus = useCallback(async () => {
+    try {
+      const st = await api.getAiWbAccessStatus();
+      setAccessStatus(st);
+    } catch {
+      // ignore; screen still works
+    }
+  }, []);
+
   useEffect(() => {
     loadReport();
     loadCreds();
-  }, [loadReport, loadCreds]);
+    loadRemoteStatus();
+    loadAccessStatus();
+  }, [loadReport, loadCreds, loadRemoteStatus, loadAccessStatus]);
+
+  useEffect(() => {
+    // If product is missing, onboarding can't be confirmed.
+    if (!selectedNmId && onboardingConfirmed) {
+      setOnboardingConfirmed(false);
+      lsSet(LS_ONBOARDING_CONFIRMED, '');
+    }
+  }, [selectedNmId, onboardingConfirmed]);
 
   const calloutHidden = useMemo(() => (lsGet(LS_HIDE_COMPARISON_CALLOUT) || '') === '1', []);
   const showComparisonCallout = useMemo(() => {
@@ -1007,6 +1097,21 @@ export default function AiModule() {
     const st = (reportStatus?.status || '').toLowerCase();
     return st === 'missing' || st === 'stale';
   }, [selectedNmId, reportStatus, calloutHidden]);
+
+  const remoteSessionActive = useMemo(() => Boolean(remoteStatus?.active), [remoteStatus]);
+  const hasSavedAccess = useMemo(() => Boolean(accessStatus?.has_storage_state), [accessStatus]);
+  const needsWbAccess = useMemo(() => {
+    // If access is already saved OR remote session is active, do not block the screen.
+    if (hasSavedAccess) return false;
+    if (remoteSessionActive) return false;
+    return (credsStatus?.status || '').toLowerCase() === 'missing';
+  }, [credsStatus, remoteSessionActive, hasSavedAccess]);
+  const onboardingStep = useMemo(() => {
+    if (!onboardingConfirmed) return 1;
+    if (needsWbAccess) return 2;
+    return 0;
+  }, [onboardingConfirmed, needsWbAccess]);
+  const onboardingDone = onboardingStep === 0;
 
   const onConfirmCreated = async () => {
     setComparisonBusy(true);
@@ -1038,7 +1143,6 @@ export default function AiModule() {
     try {
       await api.requestAiCompetitorReportRefresh('week');
       await loadReport();
-      setTab('tasks');
     } catch (e) {
       setComparisonError(e?.message || 'Не удалось создать задачу');
     } finally {
@@ -1048,46 +1152,32 @@ export default function AiModule() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {!selectedNmId ? (
-        <EmptyState onPick={() => setPickerOpen(true)} />
-      ) : (
-        <>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
-            <div style={{ flex: '1 1 520px' }}>
-              <SelectedProductCard nmId={selectedNmId} onChange={() => setPickerOpen(true)} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setActionsOpen(true)}>
-                Журнал обновлений
-              </button>
-            </div>
-          </div>
+      <FirstRunBanner
+        step={onboardingStep || null}
+        selectedNmId={selectedNmId}
+        needsWbAccess={needsWbAccess}
+        onPickProduct={() => setPickerOpen(true)}
+        onConfirmProduct={() => {
+          setOnboardingConfirmed(true);
+          lsSet(LS_ONBOARDING_CONFIRMED, '1');
+          setComparisonError('');
+        }}
+        onGrantAccess={() => setWbModalOpen(true)}
+        busy={comparisonBusy}
+        errorText={comparisonError}
+      />
 
-          {(credsStatus?.status || '').toLowerCase() === 'missing' && (
-            <div
-              style={{
-                border: '1px solid rgba(2,6,23,0.08)',
-                borderRadius: 12,
-                background: '#fff',
-                padding: 14,
-                display: 'flex',
-                gap: 12,
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-              }}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div style={{ fontWeight: 900 }}>Нужно дать доступ к кабинету WB</div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                  Это требуется, чтобы система могла получать отчёт сравнения с конкурентами.
-                </div>
-              </div>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => setWbModalOpen(true)}>
-                Выдать доступ
-              </button>
-            </div>
-          )}
+      {onboardingDone && (
+        <>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ fontWeight: 900, fontSize: 16 }}>Задачи и гипотезы</div>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setPickerOpen(true)}>
+              Сменить товар
+            </button>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setActionsOpen(true)} style={{ marginLeft: 'auto' }}>
+              Журнал обновлений
+            </button>
+          </div>
 
           <ComparisonCallout
             visible={showComparisonCallout}
@@ -1097,16 +1187,13 @@ export default function AiModule() {
             busy={comparisonBusy}
             errorText={comparisonError}
           />
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            <TasksTab selectedNmId={selectedNmId} />
+            <HypothesesTab selectedNmId={selectedNmId} />
+          </div>
         </>
       )}
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <TabButton active={tab === 'tasks'} onClick={() => setTab('tasks')}>Задачи</TabButton>
-        <TabButton active={tab === 'hypotheses'} onClick={() => setTab('hypotheses')}>Гипотезы</TabButton>
-      </div>
-      {tab === 'tasks'
-        ? <TasksTab selectedNmId={selectedNmId} onGrantWbAccess={() => setWbModalOpen(true)} />
-        : <HypothesesTab selectedNmId={selectedNmId} />}
 
       <ProductPickerModal
         open={pickerOpen}
@@ -1115,6 +1202,8 @@ export default function AiModule() {
           setSelectedNmId(nm);
           lsSet(LS_SELECTED_NM_ID, String(nm));
           lsSet(LS_HIDE_COMPARISON_CALLOUT, '');
+          setOnboardingConfirmed(false);
+          lsSet(LS_ONBOARDING_CONFIRMED, '');
           setComparisonError('');
         }}
       />
@@ -1122,7 +1211,14 @@ export default function AiModule() {
         open={wbModalOpen}
         onClose={() => setWbModalOpen(false)}
         onGranted={() => {
+          // Optimistic: hide onboarding immediately after successful save/upload,
+          // then refresh status from server.
+          setCredsStatus({ status: 'ok' });
+          setAccessStatus({ status: 'ok', has_storage_state: true });
           loadCreds();
+          loadRemoteStatus();
+          loadAccessStatus();
+          setComparisonError('');
         }}
       />
       <ActionsLogModal

@@ -791,6 +791,34 @@ def test_ai_wb_credentials_upsert_and_status(client: TestClient, monkeypatch) ->
     assert r2.json()["status"] == "active"
 
 
+def test_ai_wb_access_remote_status_proxies_internal_manager(client: TestClient, monkeypatch) -> None:
+    class _Resp:
+        def __init__(self, body: str) -> None:
+            self._body = body.encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            return None
+
+    def _fake_urlopen(req, timeout=0):  # noqa: ANN001
+        assert "http://wb_auth:8081/status" in str(getattr(req, "full_url", ""))
+        return _Resp('{"status":"ok","active":true,"url":"https://seller.wildberries.ru/"}')
+
+    monkeypatch.setenv("WB_AUTH_INTERNAL_TOKEN", "t")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    r = client.post("/ai/wb-access/remote/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "ok"
+    assert data["active"] is True
+
+
 def test_ai_tasks_list_auto_creates_wb_access_task_when_missing(client: TestClient) -> None:
     """
     UX contract: when WB credentials are missing, AI module should expose a single

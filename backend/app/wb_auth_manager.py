@@ -28,9 +28,14 @@ def _require_internal_token(token: str | None) -> None:
 
 class StartRequest(BaseModel):
     user_id: str
+    force: bool = False
 
 
 class SaveRequest(BaseModel):
+    user_id: str
+
+
+class StatusRequest(BaseModel):
     user_id: str
 
 
@@ -46,9 +51,62 @@ _lock = asyncio.Lock()
 _sessions: dict[str, _Session] = {}
 
 
+async def _keepalive_loop() -> None:
+    """
+    Keep remote WB sessions warm so WB doesn't log out / VNC doesn't go stale.
+    Best-effort: we ping the active page periodically.
+    """
+    interval_sec = int((os.getenv("WB_AUTH_KEEPALIVE_SECONDS") or "60") or "60")
+    interval_sec = max(10, interval_sec)
+    while True:
+        await asyncio.sleep(interval_sec)
+        async with _lock:
+            sessions = list(_sessions.items())
+        for user_id, sess in sessions:
+            try:
+                with contextlib.suppress(Exception):
+                    await sess.page.evaluate("() => 1")
+                with contextlib.suppress(Exception):
+                    await sess.page.bring_to_front()
+            except Exception:
+                logger.exception("wb_auth keepalive failed user_id=%s", user_id)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    asyncio.create_task(_keepalive_loop())
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/status")
+async def status_(
+    req: StatusRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> dict[str, str | bool]:
+    _require_internal_token(x_internal_token)
+    user_id = (req.user_id or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    async with _lock:
+        sess = _sessions.get(user_id)
+        has = sess is not None
+        url = ""
+        if sess is not None:
+            try:
+                with contextlib.suppress(Exception):
+                    await sess.page.evaluate("() => 1")
+                with contextlib.suppress(Exception):
+                    await sess.page.bring_to_front()
+                url = str(sess.page.url or "")
+            except Exception:
+                url = ""
+
+    return {"status": "ok", "active": has, "url": url}
 
 
 @app.post("/start")
@@ -61,10 +119,17 @@ async def start(
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
 
-    # Robustness: always recreate the session. Users can open new tabs or navigate away,
-    # and Playwright may end up controlling a non-visible page. Recreate guarantees a single
-    # visible window on WB login root.
+    # If session already exists, reuse it by default (so we don't lose WB login cookies/state).
+    # Caller can pass force=true to explicitly recreate.
     async with _lock:
+        existing = _sessions.get(user_id)
+        if existing is not None and not req.force:
+            url = ""
+            try:
+                url = str(existing.page.url or "")
+            except Exception:
+                url = ""
+            return {"status": "ok", "url": url, "reused": "1"}
         existing = _sessions.pop(user_id, None)
 
     if existing is not None:
@@ -131,17 +196,6 @@ async def save(
     out = user_storage_state_path(user_id=user_id)
     out.parent.mkdir(parents=True, exist_ok=True)
     await sess.context.storage_state(path=str(out))
-
-    # Close session (best-effort)
-    with contextlib.suppress(Exception):
-        await sess.context.close()
-    with contextlib.suppress(Exception):
-        await sess.browser.close()
-    with contextlib.suppress(Exception):
-        await sess.playwright.stop()
-
-    async with _lock:
-        _sessions.pop(user_id, None)
 
     # Ensure file exists and is not empty.
     if not out.is_file() or out.stat().st_size < 50:
