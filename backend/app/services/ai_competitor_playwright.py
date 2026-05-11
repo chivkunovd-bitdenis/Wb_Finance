@@ -363,6 +363,15 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
             _select_period(page=page, period=period)
             excel_bytes, gen_meta = _create_and_download_excel(page=page, period=period)
             meta.update(gen_meta)
+            dbg_dir = (os.getenv("WB_PLAYWRIGHT_DEBUG_SAVE_DIR") or "").strip()
+            if dbg_dir:
+                try:
+                    Path(dbg_dir).mkdir(parents=True, exist_ok=True)
+                    name = str(meta.get("suggested_filename") or f"wb_export_{period}.bin").replace("/", "_")
+                    (Path(dbg_dir) / name).write_bytes(excel_bytes)
+                except Exception:
+                    # Debug save must never break the job.
+                    pass
             return excel_bytes, meta
         except PlaywrightBlockedError:
             raise
