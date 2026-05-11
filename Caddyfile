@@ -11,7 +11,6 @@ localhost, 127.0.0.1 {
 	encode zstd gzip
 
 	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /offer/* /ai/* /health /openapi.json /docs* /redoc*
-	@wb_auth path /wb-auth/*
 
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"
@@ -22,7 +21,9 @@ localhost, 127.0.0.1 {
 		reverse_proxy api:8000
 	}
 
-	handle_path @wb_auth {
+	# noVNC remote browser (WB auth). Use literal path matcher to ensure
+	# /wb-auth/* never falls through to SPA try_files.
+	handle_path /wb-auth/* {
 		reverse_proxy wb_auth:6080
 	}
 
@@ -37,7 +38,6 @@ app.sellerfocus.pro {
 	encode zstd gzip
 
 	@api path /auth/* /sync/* /dashboard/* /billing/* /stores* /offer/* /ai/* /health /openapi.json /docs* /redoc*
-	@wb_auth path /wb-auth/*
 
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"
@@ -48,7 +48,8 @@ app.sellerfocus.pro {
 		reverse_proxy api:8000
 	}
 
-	handle_path @wb_auth {
+	# noVNC remote browser (WB auth).
+	handle_path /wb-auth/* {
 		reverse_proxy wb_auth:6080
 	}
 

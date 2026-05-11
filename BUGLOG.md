@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-17
+Дата: 2026-05-11
+Статус: fixed
+Автоматизация: нет (ручной репорт + curl-проверка)
+
+## Бизнес-описание
+В модалке «Выдать доступ к кабинету WB» встроенное окно вместо удалённого браузера (noVNC) показывало наш же интерфейс WB Finance Pro. Из‑за этого пользователь не мог выдать доступ к WB.
+
+## Процесс / сценарий
+1) Открыть AI-модуль → «Выдать доступ» → «Открыть окно».
+2) Ожидание: загружается noVNC (`/wb-auth/vnc.html`) и видно удалённый браузер.
+3) Факт (до фикса): iframe показывал наш SPA (как будто просто вложенная страница приложения).
+
+## Техническое описание
+Запрос `GET /wb-auth/vnc.html` на `https://localhost:8444` **не проксировался** в `wb_auth`, а падал в общий `handle` со `root /var/www/app` и `try_files ... /index.html`.
+В итоге Caddy отдавал `frontend/dist/index.html`, и iframe отображал приложение вместо noVNC.
+
+## Root cause (почему произошло)
+- Конфигурация Caddy использовала `handle_path @wb_auth` (через named matcher), но матчинг не срабатывал для `/wb-auth/*`, поэтому запросы “проваливались” в SPA fallback.
+
+## Исправление (что сделали)
+- Переписали роутинг на буквальный путь: `handle_path /wb-auth/* { reverse_proxy wb_auth:6080 }` (и для localhost, и для `app.sellerfocus.pro`).
+- Проверили `curl`: `https://localhost:8444/wb-auth/vnc.html` теперь возвращает HTML noVNC (WebSockify), а не `WB Finance Pro`.
+
+## Профилактика (как не повторить)
+- Для критичных прокси-путей (auth/remote tools) использовать явные path-handlers, чтобы запрос не мог “упасть” в `try_files /index.html`.
+- Добавить smoke-check в релизный чеклист: `curl -I /wb-auth/vnc.html` должен вернуть `server: WebSockify`.
+
+## Проверка
+- Команды: `curl -k -I https://localhost:8444/wb-auth/vnc.html`, `docker compose restart caddy`
+- Сценарии: “Открыть окно” в UI показывает noVNC (не SPA).
+
+Затронутые файлы: `Caddyfile`, `BUGLOG.md`
+---
+
+---
 ID: BUG-16
 Дата: 2026-05-11
 Статус: fixed
