@@ -446,6 +446,107 @@ function ComparisonCallout({ visible, onConfirmCreated, onLater, onCreateTechnic
   );
 }
 
+function ActionsLogModal({ open, onClose }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.getAiCompetitorReportActions(50);
+      setItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (e) {
+      setItems([]);
+      setError(e?.message || 'Не удалось загрузить журнал');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    load();
+  }, [open, load]);
+
+  const rows = Array.isArray(items) ? items : [];
+
+  return (
+    <ModalShell
+      open={open}
+      title="Журнал обновлений отчёта"
+      onClose={onClose}
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose}>Закрыть</button>
+          <button type="button" className="btn btn-outline-secondary" onClick={load} disabled={loading}>
+            {loading ? 'Обновляю…' : 'Обновить'}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>
+        Здесь видно результат последней попытки обновить отчёт сравнения (ok/error) и текст ошибки, если она была.
+      </div>
+      {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
+      {loading ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Пока нет записей</div>
+      ) : (
+        <div className="table-wrapper" style={{ marginTop: 0 }}>
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th style={{ width: 200 }}>Время</th>
+                <th style={{ width: 120 }}>Действие</th>
+                <th style={{ width: 120 }}>Результат</th>
+                <th>Сообщение</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((x) => {
+                const res = String(x?.result || '');
+                const isOk = res === 'ok';
+                const isErr = res === 'error';
+                return (
+                  <tr key={x.id}>
+                    <td style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                      {x.requested_at ? String(x.requested_at).replace('T', ' ').slice(0, 19) : '—'}
+                    </td>
+                    <td style={{ fontWeight: 800 }}>{x.action || '—'}</td>
+                    <td>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          padding: '3px 8px',
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 800,
+                          background: isOk ? 'rgba(16,185,129,0.12)' : isErr ? 'rgba(239,68,68,0.10)' : 'rgba(0,0,0,0.06)',
+                          color: isOk ? '#047857' : isErr ? '#b91c1c' : 'var(--text-secondary)',
+                          border: '1px solid rgba(0,0,0,0.06)',
+                        }}
+                      >
+                        {res || '—'}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 13, color: isErr ? '#b91c1c' : 'var(--text-secondary)' }}>
+                      {x.error_message || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
 function TasksTab({ selectedNmId, onGrantWbAccess }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -873,6 +974,7 @@ export default function AiModule() {
   const [reportStatus, setReportStatus] = useState(null);
   const [comparisonBusy, setComparisonBusy] = useState(false);
   const [comparisonError, setComparisonError] = useState('');
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   const loadReport = useCallback(async () => {
     setComparisonError('');
@@ -950,7 +1052,16 @@ export default function AiModule() {
         <EmptyState onPick={() => setPickerOpen(true)} />
       ) : (
         <>
-          <SelectedProductCard nmId={selectedNmId} onChange={() => setPickerOpen(true)} />
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
+            <div style={{ flex: '1 1 520px' }}>
+              <SelectedProductCard nmId={selectedNmId} onChange={() => setPickerOpen(true)} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setActionsOpen(true)}>
+                Журнал обновлений
+              </button>
+            </div>
+          </div>
 
           {(credsStatus?.status || '').toLowerCase() === 'missing' && (
             <div
@@ -1013,6 +1124,10 @@ export default function AiModule() {
         onGranted={() => {
           loadCreds();
         }}
+      />
+      <ActionsLogModal
+        open={actionsOpen}
+        onClose={() => setActionsOpen(false)}
       />
     </div>
   );
