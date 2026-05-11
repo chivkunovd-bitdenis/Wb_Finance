@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ from app.services.ai_wb_access_service import user_storage_state_path
 
 
 app = FastAPI(title="WB Auth Manager", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 
 def _require_internal_token(token: str | None) -> None:
@@ -56,18 +58,21 @@ def start(
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
 
+    # Robustness: always recreate the session. Users can open new tabs or navigate away,
+    # and Playwright may end up controlling a non-visible page. Recreate guarantees a single
+    # visible window on WB login root.
     with _lock:
-        existing = _sessions.get(user_id)
-        if existing is not None:
-            # User might have navigated away (e.g. back to our app in the same remote browser).
-            # Always force the page back to WB login root for a predictable UX.
-            try:
-                existing.page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
-            except Exception:
-                # If navigation fails, fall through and recreate the session.
-                _sessions.pop(user_id, None)
-            else:
-                return {"status": "ok", "message": "already_started"}
+        existing = _sessions.pop(user_id, None)
+
+    if existing is not None:
+        try:
+            existing.context.close()
+        except Exception:
+            pass
+        try:
+            existing.browser.close()
+        except Exception:
+            pass
 
     # Lazy import to keep startup light.
     from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
@@ -78,6 +83,10 @@ def start(
     context = browser.new_context()
     page = context.new_page()
     page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
+    try:
+        logger.info("wb_auth start: user_id=%s url=%s", user_id, page.url)
+    except Exception:
+        pass
 
     with _lock:
         _sessions[user_id] = _Session(browser=browser, context=context, page=page)

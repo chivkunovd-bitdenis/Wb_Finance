@@ -243,6 +243,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
   const [uploading, setUploading] = useState(false);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
+  const [remoteIframeNonce, setRemoteIframeNonce] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -252,6 +253,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
     setUploading(false);
     setRemoteOpen(false);
     setRemoteBusy(false);
+    setRemoteIframeNonce(0);
   }, [open]);
 
   const startRemote = async () => {
@@ -260,6 +262,8 @@ function WbAccessModal({ open, onClose, onGranted }) {
     try {
       await api.startAiWbRemoteAuth();
       setRemoteOpen(true);
+      // Force iframe/noVNC client reconnect to show fresh remote session.
+      setRemoteIframeNonce((x) => x + 1);
     } catch (e) {
       setError(e?.message || 'Не удалось открыть окно авторизации');
     } finally {
@@ -325,6 +329,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
         <div style={{ border: '1px solid rgba(2,6,23,0.10)', borderRadius: 12, overflow: 'hidden', height: 520 }}>
           <iframe
             title="WB remote login"
+            key={`wb-remote-${remoteIframeNonce}`}
             src="/wb-auth/vnc.html?autoconnect=1&resize=scale"
             style={{ width: '100%', height: '100%', border: 0 }}
           />
