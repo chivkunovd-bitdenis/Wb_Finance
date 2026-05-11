@@ -766,6 +766,7 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
   const [openItem, setOpenItem] = useState(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -800,6 +801,18 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
     return list;
   }, [visibleItems]);
 
+  const { openItems, archivedItems } = useMemo(() => {
+    const list = Array.isArray(sorted) ? sorted : [];
+    const open = [];
+    const archived = [];
+    for (const t of list) {
+      const st = String(t?.status || '').toLowerCase();
+      if (st === 'completed' || st === 'cancelled') archived.push(t);
+      else open.push(t);
+    }
+    return { openItems: open, archivedItems: archived };
+  }, [sorted]);
+
   const setStatus = async (taskId, status) => {
     setBusyId(taskId);
     try {
@@ -818,11 +831,64 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Загрузка…</div>
       ) : error ? (
         <div className="alert alert-danger" style={{ margin: 12 }}>{error}</div>
-      ) : sorted.length === 0 ? (
+      ) : openItems.length === 0 && archivedItems.length === 0 ? (
         <div style={{ padding: 12, color: 'var(--text-tertiary)' }}>Пока нет задач</div>
       ) : (
         <div style={{ display: 'grid', gap: 10, padding: 12 }}>
-          {sorted.map((t) => (
+          {archivedItems.length > 0 && (
+            <div style={{ ...softCardStyle(), padding: 12 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary"
+                onClick={() => setArchiveOpen((v) => !v)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}
+              >
+                <span style={{ fontWeight: 900 }}>Архив</span>
+                <span style={{ color: 'var(--text-tertiary)', fontWeight: 800 }}>({archivedItems.length})</span>
+                <span style={{ marginLeft: 6, color: 'var(--text-tertiary)' }}>
+                  {archiveOpen ? 'Свернуть' : 'Развернуть'}
+                </span>
+              </button>
+
+              {archiveOpen && (
+                <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                  {archivedItems.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="btn"
+                      onClick={() => setOpenItem({
+                        kind: 'task',
+                        data: t,
+                        onSetStatus: (st) => setStatus(t.id, st),
+                      })}
+                      style={{
+                        ...softCardStyle(),
+                        padding: 12,
+                        textAlign: 'left',
+                        display: 'grid',
+                        gap: 6,
+                        cursor: 'pointer',
+                        opacity: 0.92,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <div style={{ fontWeight: 900, fontSize: 13, color: 'var(--text-primary)' }}>{t.title}</div>
+                        <div style={{ marginLeft: 'auto' }}>{statusBadge(t.status)}</div>
+                      </div>
+                      {t.description && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                          {t.description}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {openItems.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -1038,7 +1104,7 @@ export default function AiModule() {
   const [wbModalOpen, setWbModalOpen] = useState(false);
   const [onboardingConfirmed, setOnboardingConfirmed] = useState(() => (lsGet(LS_ONBOARDING_CONFIRMED) || '') === '1');
 
-  const [credsStatus, setCredsStatus] = useState(null);
+  const [_credsStatus, setCredsStatus] = useState(null);
   const [remoteStatus, setRemoteStatus] = useState(null);
   const [accessStatus, setAccessStatus] = useState(null);
   const [reportStatus, setReportStatus] = useState(null);
