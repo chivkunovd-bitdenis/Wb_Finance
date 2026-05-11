@@ -94,6 +94,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         PlaywrightBlockedError,
         fetch_comparison_excel_bytes,
     )
+    from app.services.ai_wb_access_service import user_storage_state_path
 
     def _parse_periods(raw: str) -> list[str]:
         items = []
@@ -147,9 +148,10 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         if period not in {"week", "month", "quarter"}:
             return {"ok": False, "error": "invalid_period"}
 
-        # If storage_state is provided, we can run without explicit WB login/password:
+        # If storage_state is provided (per-user preferred, env fallback), we can run without explicit WB login/password:
         # the browser context will reuse the saved session (phone+code 2FA done manually once).
-        storage_state_path = (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
+        per_user_state = user_storage_state_path(user_id=user_id)
+        storage_state_path = str(per_user_state) if per_user_state.is_file() else (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
         if storage_state_path and Path(storage_state_path).is_file():
             login, password = "", ""
         else:
@@ -198,7 +200,12 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
             db.refresh(rep_row)
 
             try:
-                excel_bytes, raw_meta = fetch_comparison_excel_bytes(login=login, password=password, period=p2)
+                excel_bytes, raw_meta = fetch_comparison_excel_bytes(
+                    login=login,
+                    password=password,
+                    period=p2,
+                    storage_state_path=storage_state_path if storage_state_path else None,
+                )
                 excel_bytes = _maybe_extract_xlsx(excel_bytes, raw_meta or {})
             except PlaywrightAuthError as exc:
                 mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))

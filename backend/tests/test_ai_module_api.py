@@ -973,7 +973,7 @@ def test_ai_competitor_report_worker_success_sets_ready_and_logs_action(client: 
     # Monkeypatch Playwright fetch to avoid network and selectors
     import app.services.ai_competitor_playwright as pw
 
-    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str):
+    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str, storage_state_path: str | None = None):
         assert login == "u"
         assert password == "p"
         assert period in {"week", "month"}
@@ -1049,7 +1049,7 @@ def test_ai_competitor_report_worker_can_run_with_storage_state_without_creds(cl
 
     import app.services.ai_competitor_playwright as pw
 
-    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str):
+    def _fake_fetch_comparison_excel_bytes(*, login: str, password: str, period: str, storage_state_path: str | None = None):
         assert login == ""
         assert password == ""
         assert period == "week"

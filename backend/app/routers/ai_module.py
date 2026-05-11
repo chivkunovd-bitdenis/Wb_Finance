@@ -69,6 +69,11 @@ from app.services.ai_wb_credentials_service import (
     credentials_status as get_creds_status,
     upsert_credentials,
 )
+from app.services.ai_wb_access_service import (
+    InteractiveAuthDisabledError,
+    InteractiveAuthFailedError,
+    interactive_grant_wb_access,
+)
 from app.services.store_access_service import StoreContext
 from celery_app.tasks import ai_competitor_report_fetch_playwright
 from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
@@ -372,6 +377,22 @@ def ai_wb_credentials_status(
 ) -> AiWbCredentialsStatusResponse:
     st = get_creds_status(db=db, user_id=str(store_ctx.store_owner.id))
     return AiWbCredentialsStatusResponse(**st)
+
+
+@router.post("/wb-access/grant")
+def ai_wb_access_grant(
+    store_ctx: StoreContext = Depends(get_store_context),
+) -> dict:
+    """
+    Interactive grant flow: opens a browser window (headed Playwright) on the API host,
+    lets the user complete WB login, then stores a per-user storage_state snapshot.
+    """
+    try:
+        return interactive_grant_wb_access(user_id=str(store_ctx.store_owner.id))
+    except InteractiveAuthDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.message) from exc
+    except InteractiveAuthFailedError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Не удалось выдать доступ: {exc.message}") from exc
 
 
 @router.get("/competitor-reports", response_model=AiCompetitorReportListResponse)

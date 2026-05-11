@@ -237,13 +237,11 @@ function ProductPickerModal({ open, onClose, onSelectNmId }) {
 }
 
 function WbAccessModal({ open, onClose, onGranted }) {
-  const [form, setForm] = useState({ wb_login: '', wb_password: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open) return;
-    setForm({ wb_login: '', wb_password: '' });
     setError('');
     setSaving(false);
   }, [open]);
@@ -252,7 +250,7 @@ function WbAccessModal({ open, onClose, onGranted }) {
     setSaving(true);
     setError('');
     try {
-      await api.upsertAiWbCredentials(form);
+      await api.grantAiWbAccessInteractive();
       onGranted?.();
       onClose?.();
     } catch (e) {
@@ -270,31 +268,17 @@ function WbAccessModal({ open, onClose, onGranted }) {
       footer={(
         <>
           <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>Отмена</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving || !form.wb_login || !form.wb_password}>
-            {saving ? 'Сохраняю…' : 'Выдать доступ'}
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving}>
+            {saving ? 'Открываю окно…' : 'Выдать доступ'}
           </button>
         </>
       )}
     >
       <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
-        Нужно один раз авторизоваться, чтобы система могла получать отчёт сравнения с конкурентами.
+        Нажмите “Выдать доступ” — откроется окно кабинета WB. Введите логин/пароль (и код, если попросит WB),
+        после успешного входа окно закроется автоматически.
       </div>
       {error && <div className="alert alert-danger" style={{ marginTop: 0 }}>{error}</div>}
-      <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
-        <input
-          className="form-control"
-          value={form.wb_login}
-          placeholder="WB логин"
-          onChange={(e) => setForm((m) => ({ ...m, wb_login: e.target.value }))}
-        />
-        <input
-          className="form-control"
-          value={form.wb_password}
-          placeholder="WB пароль"
-          type="password"
-          onChange={(e) => setForm((m) => ({ ...m, wb_password: e.target.value }))}
-        />
-      </div>
     </ModalShell>
   );
 }

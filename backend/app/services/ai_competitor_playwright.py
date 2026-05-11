@@ -17,13 +17,13 @@ class PlaywrightBlockedError(Exception):
     message: str
 
 
-def _storage_state_path() -> str | None:
+def _storage_state_path(storage_state_path: str | None = None) -> str | None:
     """
     Optional Playwright storage state snapshot to reuse existing WB session.
 
     IMPORTANT: this file contains auth cookies/state and must be treated as a secret.
     """
-    p = (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
+    p = (storage_state_path or "").strip() or (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_PATH") or "").strip()
     return p or None
 
 
@@ -160,12 +160,12 @@ def _report_download_button_selector() -> str:
     return s
 
 
-def _new_context_kwargs() -> dict[str, Any]:
+def _new_context_kwargs(storage_state_path: str | None = None) -> dict[str, Any]:
     """
     Build kwargs for browser.new_context without importing Playwright types.
     """
     kw: dict[str, Any] = {"accept_downloads": True}
-    p = _storage_state_path()
+    p = _storage_state_path(storage_state_path)
     if p:
         if not Path(p).is_file():
             raise PlaywrightBlockedError(
@@ -300,7 +300,13 @@ def _open_report_from_list(*, page: Any) -> None:
     page.wait_for_load_state("domcontentloaded", timeout=60_000)
 
 
-def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> tuple[bytes, dict[str, Any]]:
+def fetch_comparison_excel_bytes(
+    *,
+    login: str,
+    password: str,
+    period: str,
+    storage_state_path: str | None = None,
+) -> tuple[bytes, dict[str, Any]]:
     """
     Best-effort Playwright automation for WB Seller cabinet.
 
@@ -328,7 +334,7 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
     # NOTE: Real selectors/flow may require updates. We try a minimal safe flow.
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(**_new_context_kwargs())
+        context = browser.new_context(**_new_context_kwargs(storage_state_path))
         page = context.new_page()
         try:
             page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
@@ -356,7 +362,7 @@ def fetch_comparison_excel_bytes(*, login: str, password: str, period: str) -> t
                         "Generate a storage_state snapshot and set WB_PLAYWRIGHT_STORAGE_STATE_PATH."
                     )
             else:
-                meta["auth_mode"] = "storage_state" if _storage_state_path() else "existing_session"
+                meta["auth_mode"] = "storage_state" if _storage_state_path(storage_state_path) else "existing_session"
 
             # Flow: list -> open report -> choose period -> create excel -> download from reports list
             _open_report_from_list(page=page)
