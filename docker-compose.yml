@@ -60,6 +60,8 @@ services:
       DATABASE_URL: postgresql://wb_finance:wb_finance@postgres:5432/wb_finance
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
+      # Internal-only auth between api -> wb_auth manager (used for remote noVNC login flow)
+      WB_AUTH_INTERNAL_TOKEN: ${WB_AUTH_INTERNAL_TOKEN:-dev-internal-token}
       # AI daily brief + внешние вызовы к LLM выключены по умолчанию
       DAILY_BRIEF_ENABLED: "false"
     depends_on:

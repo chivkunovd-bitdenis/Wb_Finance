@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
 from app.services.ai_wb_access_service import user_storage_state_path
@@ -47,7 +47,10 @@ def health() -> dict[str, str]:
 
 
 @app.post("/start")
-def start(req: StartRequest, x_internal_token: str | None = None) -> dict[str, str]:
+def start(
+    req: StartRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> dict[str, str]:
     _require_internal_token(x_internal_token)
     user_id = (req.user_id or "").strip()
     if not user_id:
@@ -73,7 +76,10 @@ def start(req: StartRequest, x_internal_token: str | None = None) -> dict[str, s
 
 
 @app.post("/save")
-def save(req: SaveRequest, x_internal_token: str | None = None) -> dict[str, str]:
+def save(
+    req: SaveRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> dict[str, str]:
     _require_internal_token(x_internal_token)
     user_id = (req.user_id or "").strip()
     if not user_id:
