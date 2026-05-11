@@ -57,8 +57,17 @@ def start(
         raise HTTPException(status_code=400, detail="user_id is required")
 
     with _lock:
-        if user_id in _sessions:
-            return {"status": "ok", "message": "already_started"}
+        existing = _sessions.get(user_id)
+        if existing is not None:
+            # User might have navigated away (e.g. back to our app in the same remote browser).
+            # Always force the page back to WB login root for a predictable UX.
+            try:
+                existing.page.goto("https://seller.wildberries.ru/", wait_until="domcontentloaded", timeout=60_000)
+            except Exception:
+                # If navigation fails, fall through and recreate the session.
+                _sessions.pop(user_id, None)
+            else:
+                return {"status": "ok", "message": "already_started"}
 
     # Lazy import to keep startup light.
     from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
