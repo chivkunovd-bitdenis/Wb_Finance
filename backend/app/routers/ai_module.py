@@ -79,6 +79,7 @@ from app.services.ai_wb_access_service import (
     InteractiveAuthFailedError,
     interactive_grant_wb_access,
 )
+from app.models.user import User
 from app.services.store_access_service import StoreContext
 from celery_app.tasks import ai_competitor_report_fetch_playwright
 from app.models.ai_hypothesis_daily_log import AiHypothesisDailyLog
@@ -134,6 +135,52 @@ def ai_tasks_list(
             )
             db.add(row)
             db.commit()
+
+    # Daily task: reply to WB reviews (1 per day, only if there are pending reviews).
+    # We DO NOT call WB API here (to keep /ai/tasks fast). We rely on sync endpoint/beat
+    # to populate ai_review_replies and then ensure a single open task for today.
+    try:
+        from datetime import date as date_type
+
+        from app.models.ai_review_reply import AiReviewReply
+
+        pending_count = (
+            db.query(AiReviewReply.id)
+            .filter(AiReviewReply.user_id == user_id, AiReviewReply.status == "pending")
+            .count()
+        )
+        if pending_count > 0:
+            today = date_type.today().isoformat()
+            dedupe_key = f"task:reviews_reply:{today}"
+            existing = (
+                db.query(AiTask)
+                .filter(
+                    AiTask.user_id == user_id,
+                    AiTask.dedupe_key == dedupe_key,
+                    AiTask.status.in_(["new", "in_progress"]),
+                )
+                .order_by(AiTask.created_at.desc())
+                .first()
+            )
+            if existing is None:
+                row = AiTask(
+                    user_id=user_id,
+                    nm_id=None,
+                    task_type="review_replies_daily",
+                    title="Ответить на отзывы",
+                    description="Есть неотвеченные отзывы на Wildberries. Открой задачу: внутри — список отзывов и ответы от AI.",
+                    reason=f"Неотвеченных отзывов: {pending_count}",
+                    current_value={"date": today, "pending_count": int(pending_count)},
+                    priority=80,
+                    status="new",
+                    fingerprint=None,
+                    dedupe_key=dedupe_key,
+                )
+                db.add(row)
+                db.commit()
+    except Exception:  # noqa: BLE001
+        # Never break tasks list because of this UX helper.
+        logger.exception("ai_tasks_list: failed to ensure reviews task user=%s", user_id)
 
     items = list_tasks(db=db, user_id=user_id)
     return AiTaskListResponse(items=[AiTaskItem.model_validate(x) for x in items])
@@ -201,6 +248,110 @@ def ai_task_execute(
         return AiTaskExecuteResponse(status="ok", task_id=task_id, message="queued")
 
     return AiTaskExecuteResponse(status="ok", task_id=task_id, message="noop")
+
+
+@router.post("/review-replies/sync")
+def ai_review_replies_sync(
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+    take: int = Query(20, ge=1, le=50),
+) -> dict:
+    """
+    Sync unanswered WB reviews for the store owner and (best-effort) generate suggested replies.
+
+    Contract:
+    - Uses WB API key from the "digitization cabinet" (User.wb_api_key).
+    - Does NOT publish anything; only prepares approval rows for UI.
+    """
+    user_id = str(store_ctx.store_owner.id)
+    store_user = db.query(User).filter(User.id == user_id).first()
+    wb_key = ((getattr(store_user, "wb_api_key", None) or "") if store_user is not None else "").strip()
+    if not wb_key:
+        raise HTTPException(status_code=400, detail="WB API ключ не задан. Добавь ключ в профиле.")
+    from app.services.ai_review_replies_service import sync_review_replies_for_user
+
+    res = sync_review_replies_for_user(db=db, user_id=user_id, wb_api_key=wb_key, take=take)
+    return {"status": "ok", "result": res.__dict__}
+
+
+@router.get("/review-replies/pending")
+def ai_review_replies_pending_list(
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    List pending review replies for approval UI.
+    """
+    user_id = str(store_ctx.store_owner.id)
+    from app.models.ai_review_reply import AiReviewReply
+
+    rows = (
+        db.query(AiReviewReply)
+        .filter(AiReviewReply.user_id == user_id, AiReviewReply.status == "pending")
+        .order_by(AiReviewReply.first_seen_date.asc(), AiReviewReply.created_at.asc())
+        .limit(200)
+        .all()
+    )
+    items = []
+    for r in rows:
+        items.append(
+            {
+                "feedback_id": r.feedback_id,
+                "product_name": r.product_name,
+                "author": r.author,
+                "rating": r.rating,
+                "review_text": r.review_text,
+                "suggested_reply": r.suggested_reply,
+                "edited_reply": r.edited_reply,
+                "status": r.status,
+                "last_error": r.last_error,
+                "first_seen_date": r.first_seen_date.isoformat() if r.first_seen_date else None,
+                "published_at": r.published_at.isoformat() if r.published_at else None,
+            }
+        )
+    return {"items": items}
+
+
+@router.post("/review-replies/{feedback_id}/publish")
+def ai_review_reply_publish(
+    feedback_id: str,
+    body: dict = Body(...),
+    store_ctx: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Publish a reply to WB (explicit user action from approval card).
+    """
+    user_id = str(store_ctx.store_owner.id)
+    store_user = db.query(User).filter(User.id == user_id).first()
+    wb_key = ((getattr(store_user, "wb_api_key", None) or "") if store_user is not None else "").strip()
+    if not wb_key:
+        raise HTTPException(status_code=400, detail="WB API ключ не задан. Добавь ключ в профиле.")
+
+    text = ""
+    if isinstance(body, dict):
+        text = str(body.get("text") or "")
+    from app.services.ai_review_replies_service import publish_review_reply
+
+    try:
+        row = publish_review_reply(db=db, user_id=user_id, wb_api_key=wb_key, feedback_id=feedback_id, text=text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ai_review_reply_publish failed user=%s feedback_id=%s", user_id, feedback_id)
+        raise HTTPException(status_code=500, detail="Не удалось опубликовать ответ") from exc
+
+    return {
+        "status": "ok",
+        "item": {
+            "feedback_id": row.feedback_id,
+            "status": row.status,
+            "edited_reply": row.edited_reply,
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+        },
+    }
 
 
 @router.get("/hypotheses", response_model=AiHypothesisListResponse)

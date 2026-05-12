@@ -22,6 +22,9 @@ _ARCHIVE_BACKFILL_ENABLED = (os.getenv("ARCHIVE_BACKFILL_ENABLED") or "").strip(
 _AI_DAILY_ANALYTICS_BEAT_ENABLED = (
     (os.getenv("AI_DAILY_ANALYTICS_BEAT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 )
+_AI_REVIEW_REPLIES_BEAT_ENABLED = (
+    (os.getenv("AI_REVIEW_REPLIES_BEAT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+)
 
 beat_schedule: dict = {
     # Ежедневные напоминания о платёжке.
@@ -66,6 +69,18 @@ if _AI_DAILY_ANALYTICS_BEAT_ENABLED:
             "ai-daily-analytics-beat-0715-msk": {
                 "task": "ai_daily_analytics_beat",
                 "schedule": crontab(hour=4, minute=15),
+            },
+        }
+    )
+
+if _AI_REVIEW_REPLIES_BEAT_ENABLED:
+    beat_schedule.update(
+        {
+            # Pull unanswered reviews + generate suggested replies.
+            # Default time: 08:30 МСК (05:30 UTC).
+            "ai-review-replies-sync-0830-msk": {
+                "task": "ai_review_replies_sync_all",
+                "schedule": crontab(hour=5, minute=30),
             },
         }
     )

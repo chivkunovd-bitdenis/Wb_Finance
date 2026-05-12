@@ -668,6 +668,49 @@ export async function executeAiTask(taskId) {
   return res.json();
 }
 
+// ── AI review replies approval ───────────────────────────────────────────────
+
+export async function syncAiReviewReplies({ take = 20 } = {}) {
+  const p = new URLSearchParams();
+  if (take != null) p.set('take', String(take));
+  const res = await apiFetch(`${API_BASE}/ai/review-replies/sync?${p}`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getAiPendingReviewReplies() {
+  const res = await apiFetch(`${API_BASE}/ai/review-replies/pending`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json(); // { items: [...] }
+}
+
+export async function publishAiReviewReply(feedbackId, { text } = {}) {
+  const fid = String(feedbackId || '').trim();
+  if (!fid) throw new Error('feedback_id is required');
+  const res = await apiFetch(`${API_BASE}/ai/review-replies/${encodeURIComponent(fid)}/publish`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ text: text || '' }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function upsertAiWbCredentials({ wb_login, wb_password }) {
   const res = await apiFetch(`${API_BASE}/ai/wb-credentials`, {
     method: 'PUT',

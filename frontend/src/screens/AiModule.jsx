@@ -551,6 +551,167 @@ function aiDetailsForHypothesis(h) {
   };
 }
 
+function ReviewRepliesApproval({ open, onClose }) {
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState('');
+  const [items, setItems] = useState([]);
+  const [drafts, setDrafts] = useState({});
+  const [busyId, setBusyId] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.getAiPendingReviewReplies();
+      const list = Array.isArray(data?.items) ? data.items : [];
+      setItems(list);
+      const init = {};
+      for (const x of list) {
+        const fid = String(x?.feedback_id || '');
+        if (!fid) continue;
+        init[fid] = String(x?.edited_reply || x?.suggested_reply || '');
+      }
+      setDrafts(init);
+    } catch (e) {
+      setItems([]);
+      setError(e?.message || 'Не удалось загрузить отзывы');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const sync = useCallback(async () => {
+    setSyncing(true);
+    setError('');
+    try {
+      await api.syncAiReviewReplies({ take: 20 });
+      await load();
+    } catch (e) {
+      setError(e?.message || 'Не удалось синхронизировать отзывы');
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
+
+  useEffect(() => {
+    if (!open) return;
+    setItems([]);
+    setDrafts({});
+    setError('');
+    load();
+  }, [open, load]);
+
+  const publish = async (fid) => {
+    const feedbackId = String(fid || '');
+    if (!feedbackId) return;
+    setBusyId(feedbackId);
+    setError('');
+    try {
+      const text = String(drafts?.[feedbackId] || '').trim();
+      await api.publishAiReviewReply(feedbackId, { text });
+      await load();
+    } catch (e) {
+      setError(e?.message || 'Не удалось опубликовать ответ');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const rows = Array.isArray(items) ? items : [];
+
+  return (
+    <ModalShell
+      open={open}
+      title="Ответить на отзывы"
+      onClose={onClose}
+      width="min(980px, 100%)"
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose}>Закрыть</button>
+          <button type="button" className="btn btn-outline-secondary" onClick={load} disabled={loading || syncing}>
+            {loading ? 'Загрузка…' : 'Обновить'}
+          </button>
+          <button type="button" className="btn btn-primary" onClick={sync} disabled={loading || syncing}>
+            {syncing ? 'Синхронизация…' : 'Синхронизировать из WB'}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
+          Здесь показаны <strong>неотвеченные</strong> отзывы из WB и предложенный ответ от AI. Можно отредактировать текст и нажать “Опубликовать”.
+        </div>
+        {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
+
+        {loading ? (
+          <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ color: 'var(--text-tertiary)' }}>Неотвеченных отзывов нет</div>
+        ) : (
+          <div style={{ overflow: 'auto', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 10 }}>
+            <table className="table table-sm" style={{ margin: 0, fontSize: 12, minWidth: 920 }}>
+              <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>
+                <tr>
+                  <th style={{ width: 140 }}>feedback_id</th>
+                  <th style={{ width: 260 }}>Товар</th>
+                  <th style={{ width: 90 }}>Оценка</th>
+                  <th>Отзыв</th>
+                  <th>Ответ (можно править)</th>
+                  <th style={{ width: 140 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((x) => {
+                  const fid = String(x?.feedback_id || '');
+                  const disabled = Boolean(busyId) && busyId !== fid;
+                  const busy = busyId === fid;
+                  return (
+                    <tr key={fid}>
+                      <td style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{fid || '—'}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{x?.product_name || '—'}</td>
+                      <td style={{ fontWeight: 800 }}>{x?.rating || '—'}</td>
+                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxWidth: 360 }}>
+                        {x?.review_text || '—'}
+                        {x?.last_error ? (
+                          <div style={{ marginTop: 6, color: '#b91c1c', fontSize: 11 }}>
+                            Ошибка AI/WB: {String(x.last_error).slice(0, 200)}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td style={{ minWidth: 320 }}>
+                        <textarea
+                          className="form-control form-control-sm"
+                          rows={4}
+                          value={String(drafts?.[fid] ?? '')}
+                          onChange={(e) => setDrafts((m) => ({ ...(m || {}), [fid]: e.target.value }))}
+                          placeholder="Ответ…"
+                          disabled={busy || disabled}
+                        />
+                      </td>
+                      <td style={{ verticalAlign: 'top' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={() => publish(fid)}
+                          disabled={busy || disabled || !String(drafts?.[fid] || '').trim()}
+                          style={{ width: '100%' }}
+                        >
+                          {busy ? 'Публикую…' : 'Опубликовать'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionLabel, busy }) {
   if (!openItem) return null;
   const isTask = openItem.kind === 'task';
@@ -559,6 +720,10 @@ function AiItemDetailsModal({ openItem, onClose, onPrimaryAction, primaryActionL
   const status = openItem?.data?.status;
   const taskType = String(openItem?.data?.task_type || '');
   const isWbAccessTask = isTask && taskType === 'wb_access_grant';
+  const isReviewTask = isTask && taskType === 'review_replies_daily';
+  if (isReviewTask) {
+    return <ReviewRepliesApproval open={Boolean(openItem)} onClose={onClose} />;
+  }
   return (
     <ModalShell
       open={Boolean(openItem)}

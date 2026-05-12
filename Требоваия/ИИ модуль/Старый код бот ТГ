@@ -1,0 +1,591 @@
+
+
+// ==========================================
+// НАСТРОЙКИ — ЗАПОЛНИ ЗДЕСЬ
+// ==========================================
+
+const TG_TOKEN              = ''; // REDACTED: never commit secrets
+const MASTER_SPREADSHEET_ID = '1OmqKn_o7vWZgwVHaSFj1wrvLlqNpMSaKQ36-SbPuitM';  // создай пустой Sheet, вставь ID из URL
+const MY_CHAT_ID            = '';        // REDACTED
+const YA_API_KEY_DEFAULT    = '';        // REDACTED: use env/config, not hardcode
+const YA_FOLDER_ID_DEFAULT  = '';        // REDACTED
+const WEB_APP_EXEC_URL      = ''; // СЮДА ВСТАВЬ URL из Deploy → Web app (который заканчивается на /exec)
+const WB_TAKE               = 5;
+const DRIVE_FOLDER_ID       = ''; // (опционально) ID папки в Drive, куда класть клиентские таблицы. Оставь пустым — будут в корне.
+
+// ==========================================
+// ТОЧКИ ВХОДА
+// ==========================================
+
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput('ok');
+    }
+
+    const update = JSON.parse(e.postData.contents);
+    handleTelegramUpdate_(update);
+  } catch (err) {
+    Logger.log('doPost error: ' + (err && err.stack ? err.stack : err));
+  }
+  return ContentService.createTextOutput('ok');
+}
+
+function handleTelegramUpdate_(update) {
+  if (!update) return;
+
+  if (update.callback_query) {
+    handleCallback(update.callback_query);
+    return;
+  }
+
+  const msg = update.message || update.edited_message;
+  if (!msg || !msg.chat || !msg.chat.id) return;
+
+  const chatId = String(msg.chat.id);
+  const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+
+  // /start всегда начинает онбординг
+  if (text === '/start' || text.startsWith('/start ')) {
+    startOnboarding(chatId);
+    return;
+  }
+
+  // Если пользователь редактирует ответ
+  const props = PropertiesService.getScriptProperties();
+  const feedbackIdToEdit = props.getProperty('AWAITING_EDIT_' + chatId);
+  if (feedbackIdToEdit && text) {
+    handleEdit(chatId, feedbackIdToEdit, text);
+    return;
+  }
+
+  // Онбординг
+  const step = props.getProperty('ONBOARDING_' + chatId);
+  if (step) {
+    handleOnboarding(chatId, text, step);
+    return;
+  }
+
+  // По умолчанию
+  if (text) {
+    sendText(chatId, 'Напиши /start чтобы начать подключение.');
+  }
+}
+
+/**
+ * ВАЖНО: Telegram webhook обычно НЕ следует HTTP-редиректам.
+ * GAS Web App на домене script.google.com часто отвечает 302 на script.googleusercontent.com.
+ * Поэтому webhook надо ставить на финальный URL (Location из 302).
+ */
+function setTelegramWebhook() {
+  const url = getWebhookTargetUrl_();
+  const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/setWebhook`, {
+    method: 'POST',
+    payload: { url },
+    muteHttpExceptions: true
+  });
+  Logger.log(resp.getContentText());
+}
+
+function deleteTelegramWebhook() {
+  const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/deleteWebhook`, {
+    method: 'POST',
+    muteHttpExceptions: true
+  });
+  Logger.log(resp.getContentText());
+}
+
+function getTelegramWebhookInfo() {
+  const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/getWebhookInfo`, {
+    method: 'GET',
+    muteHttpExceptions: true
+  });
+  Logger.log(resp.getContentText());
+}
+
+function getWebhookTargetUrl_() {
+  // 1) Если явно указан /exec URL — возвращаем его как есть.
+  if (WEB_APP_EXEC_URL) {
+    return WEB_APP_EXEC_URL;
+  }
+
+  // 2) Если нет — пробуем URL сервиса (может быть /exec или /dev).
+  const execUrl = ScriptApp.getService().getUrl();
+  if (!execUrl) throw new Error('Нет Web App URL. Сначала сделай Deploy → Web app.');
+
+  // Не следуем редиректам на accounts.google.com или echo,
+  // чтобы не получить 302/405 для Telegram. Возвращаем прямой execUrl.
+  return execUrl;
+}
+
+// Триггер 1 — опрашивает WB всех клиентов и пишет в их таблицы
+function checkAllClients() {
+  const clients = getAllClients();
+  for (const client of clients) {
+    if (client.status !== 'active') continue;
+    try {
+      fetchAndQueueReviews(client);
+    } catch(e) {
+      Logger.log('checkAllClients error [' + client.chatId + ']: ' + e.message);
+    }
+    Utilities.sleep(500);
+  }
+}
+
+// Триггер 2 — отправляет по одному новому отзыву каждому клиенту
+function sendNextReviews() {
+  const clients = getAllClients();
+  for (const client of clients) {
+    if (client.status !== 'active') continue;
+    try {
+      sendNextReview(client);
+    } catch(e) {
+      Logger.log('sendNextReviews error [' + client.chatId + ']: ' + e.message);
+    }
+    Utilities.sleep(500);
+  }
+}
+
+// ==========================================
+// ОНБОРДИНГ
+// ==========================================
+
+function startOnboarding(chatId) {
+  if (getClient(chatId)) {
+    sendText(chatId, '✅ Ты уже зарегистрирован! Жди отзывов.');
+    return;
+  }
+  PropertiesService.getScriptProperties().setProperty('ONBOARDING_' + chatId, 'awaiting_wb_token');
+  sendText(chatId,
+    '👋 Привет! Я помогу отвечать на отзывы Wildberries.\n\n' +
+    'Пришли свой *WB API токен*.\n\n' +
+    'Где взять: Кабинет WB → Настройки → Доступ к API → Скопировать токен',
+    true
+  );
+}
+
+function handleOnboarding(chatId, text, step) {
+  const props = PropertiesService.getScriptProperties();
+
+  if (step === 'awaiting_wb_token') {
+    sendText(chatId, '⏳ Проверяю токен...');
+    if (!testWbToken(text)) {
+      sendText(chatId, '❌ Токен не подходит. Попробуй ещё раз:');
+      return;
+    }
+    props.setProperty('ONBOARDING_WB_' + chatId, text);
+    props.setProperty('ONBOARDING_' + chatId, 'awaiting_ya_choice');
+    sendText(chatId,
+      '✅ WB токен принят!\n\n' +
+      'Использовать свой Яндекс API ключ или общий?\n\n' +
+      'Напиши *свой* или *общий*',
+      true
+    );
+  }
+
+  else if (step === 'awaiting_ya_choice') {
+    if (text.toLowerCase().includes('свой')) {
+      props.setProperty('ONBOARDING_' + chatId, 'awaiting_ya_key');
+      sendText(chatId, 'Пришли свой Яндекс API ключ:');
+    } else {
+      finishOnboarding(chatId, '', '');
+    }
+  }
+
+  else if (step === 'awaiting_ya_key') {
+    props.setProperty('ONBOARDING_YA_KEY_' + chatId, text);
+    props.setProperty('ONBOARDING_' + chatId, 'awaiting_ya_folder');
+    sendText(chatId, 'Теперь пришли Яндекс Folder ID:');
+  }
+
+  else if (step === 'awaiting_ya_folder') {
+    const yaKey = props.getProperty('ONBOARDING_YA_KEY_' + chatId);
+    finishOnboarding(chatId, yaKey, text);
+  }
+}
+
+function finishOnboarding(chatId, yaKey, yaFolderId) {
+  const props   = PropertiesService.getScriptProperties();
+  const wbToken = props.getProperty('ONBOARDING_WB_' + chatId);
+
+  sendText(chatId, '⏳ Создаю твою таблицу...');
+
+const ss     = SpreadsheetApp.create('WB Reviews - ' + chatId);
+const file   = DriveApp.getFileById(ss.getId());
+const folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+folder.addFile(file);
+DriveApp.getRootFolder().removeFile(file); // убираем из корня
+  const sheet = ss.getActiveSheet();
+  sheet.setName('Reviews');
+  sheet.appendRow(['feedback_id', 'product', 'author', 'rating', 'text', 'suggested_reply', 'status', 'tg_msg_id', 'created_at']);
+  sheet.setFrozenRows(1);
+
+  addClient({
+    chatId:        chatId,
+    wbToken:       wbToken,
+    yaApiKey:      yaKey || '',
+    yaFolderId:    yaFolderId || '',
+    spreadsheetId: ss.getId(),
+    status:        'pending',
+    registeredAt:  new Date()
+  });
+
+  ['ONBOARDING_', 'ONBOARDING_WB_', 'ONBOARDING_YA_KEY_'].forEach(prefix =>
+    props.deleteProperty(prefix + chatId)
+  );
+
+  // Клиенту
+  sendText(chatId,
+    '⏳ Заявка отправлена! Ожидай подтверждения — обычно в течение нескольких часов.'
+  );
+
+  // Уведомление тебе
+  sendText(MY_CHAT_ID,
+    '🆕 *Новая заявка на подключение*\n\n' +
+    'Chat ID: `' + chatId + '`\n\n' +
+    'Зайди в мастер таблицу и смени статус с *pending* на *active*',
+    true
+  );
+}
+
+function testWbToken(token) {
+  const resp = UrlFetchApp.fetch(
+    'https://feedbacks-api.wildberries.ru/api/v1/feedbacks?isAnswered=false&take=1&skip=0',
+    { headers: { Authorization: token }, muteHttpExceptions: true }
+  );
+  const data = JSON.parse(resp.getContentText());
+  return data.error === false;
+}
+
+// ==========================================
+// ОБРАБОТКА ОТЗЫВОВ
+// ==========================================
+
+function fetchAndQueueReviews(client) {
+  const feedbacks = getNewFeedbacks(client.wbToken);
+  if (!feedbacks || feedbacks.length === 0) return;
+
+  const sheet = getClientSheet(client.spreadsheetId);
+
+  for (const fb of feedbacks) {
+    if (isAlreadyQueued(sheet, fb.id)) continue;
+    sheet.appendRow([
+      fb.id,
+      fb.productDetails?.productName || '—',
+      fb.userName || 'Аноним',
+      fb.productValuation,
+      fb.text || '',
+      '',
+      'new',
+      '',
+      new Date()
+    ]);
+  }
+}
+
+function sendNextReview(client) {
+  const sheet = getClientSheet(client.spreadsheetId);
+  const data  = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][6] === 'new') {
+      const fb = {
+        id:               data[i][0],
+        productDetails:   { productName: data[i][1] },
+        userName:         data[i][2],
+        productValuation: data[i][3],
+        text:             data[i][4]
+      };
+
+      const yaKey    = client.yaApiKey   || YA_API_KEY_DEFAULT;
+      const yaFolder = client.yaFolderId || YA_FOLDER_ID_DEFAULT;
+      const reply    = generateReply(fb, yaKey, yaFolder);
+      const tgMsgId  = sendReviewCard(client.chatId, fb, reply);
+
+      sheet.getRange(i + 1, 6).setValue(reply);
+      sheet.getRange(i + 1, 7).setValue('pending');
+      sheet.getRange(i + 1, 8).setValue(tgMsgId);
+
+      return; // только один за раз
+    }
+  }
+}
+
+// ==========================================
+// ОБРАБОТКА КНОПОК И ПРАВОК
+// ==========================================
+
+function handleCallback(cbq) {
+  const chatId               = String(cbq.from.id);
+  const [action, feedbackId] = cbq.data.split('_');
+  answerCallback(cbq.id);
+
+  const client = getClient(chatId);
+  if (!client) return;
+
+  const sheet = getClientSheet(client.spreadsheetId);
+  const data  = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(feedbackId)) {
+
+      if (action === 'approve') {
+        postFeedbackReply(feedbackId, data[i][5], client.wbToken);
+        sheet.getRange(i + 1, 7).setValue('approved');
+        editTgMessage(chatId, cbq.message.message_id, cbq.message.text + '\n\n✅ *Ответ отправлен*');
+      }
+
+      if (action === 'reject') {
+        sheet.getRange(i + 1, 7).setValue('rejected');
+        editTgMessage(chatId, cbq.message.message_id, cbq.message.text + '\n\n❌ *Пропущено*');
+      }
+
+      if (action === 'edit') {
+        PropertiesService.getScriptProperties().setProperty('AWAITING_EDIT_' + chatId, feedbackId);
+        sendText(chatId, '✏️ Пришли свой вариант ответа:');
+      }
+
+      return;
+    }
+  }
+}
+
+function handleEdit(chatId, feedbackId, text) {
+  const client = getClient(chatId);
+  if (!client) return;
+
+  postFeedbackReply(feedbackId, text, client.wbToken);
+
+  const sheet = getClientSheet(client.spreadsheetId);
+  const data  = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(feedbackId)) {
+      sheet.getRange(i + 1, 6).setValue(text);
+      sheet.getRange(i + 1, 7).setValue('approved_edited');
+      break;
+    }
+  }
+
+  PropertiesService.getScriptProperties().deleteProperty('AWAITING_EDIT_' + chatId);
+  sendText(chatId, '✅ Твой ответ отправлен на WB');
+}
+
+// ==========================================
+// МАСТЕР ТАБЛИЦА — КЛИЕНТЫ
+// ==========================================
+
+function getMasterSheet() {
+  const ss    = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  let   sheet = ss.getSheetByName('Clients');
+  if (!sheet) {
+    sheet = ss.insertSheet('Clients');
+    sheet.appendRow(['chat_id', 'wb_token', 'ya_api_key', 'ya_folder_id', 'spreadsheet_id', 'status', 'registered_at']);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function getAllClients() {
+  const data    = getMasterSheet().getDataRange().getValues();
+  const clients = [];
+  for (let i = 1; i < data.length; i++) {
+    clients.push({
+      chatId:        String(data[i][0]),
+      wbToken:       data[i][1],
+      yaApiKey:      data[i][2],
+      yaFolderId:    data[i][3],
+      spreadsheetId: data[i][4],
+      status:        data[i][5]
+    });
+  }
+  return clients;
+}
+
+function getClient(chatId) {
+  const data = getMasterSheet().getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(chatId)) {
+      return {
+        chatId:        String(data[i][0]),
+        wbToken:       data[i][1],
+        yaApiKey:      data[i][2],
+        yaFolderId:    data[i][3],
+        spreadsheetId: data[i][4],
+        status:        data[i][5]
+      };
+    }
+  }
+  return null;
+}
+
+function addClient(client) {
+  getMasterSheet().appendRow([
+    client.chatId,
+    client.wbToken,
+    client.yaApiKey,
+    client.yaFolderId,
+    client.spreadsheetId,
+    client.status,
+    client.registeredAt
+  ]);
+}
+
+// ==========================================
+// КЛИЕНТСКАЯ ТАБЛИЦА
+// ==========================================
+
+function getClientSheet(spreadsheetId) {
+  return SpreadsheetApp.openById(spreadsheetId).getSheetByName('Reviews');
+}
+
+function isAlreadyQueued(sheet, feedbackId) {
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(feedbackId)) return true;
+  }
+  return false;
+}
+
+// ==========================================
+// WB API
+// ==========================================
+
+function getNewFeedbacks(wbToken) {
+  const url  = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?isAnswered=false&take=${WB_TAKE}&skip=0`;
+  const resp = UrlFetchApp.fetch(url, {
+    headers: { Authorization: wbToken },
+    muteHttpExceptions: true
+  });
+  const data = JSON.parse(resp.getContentText());
+  return data?.data?.feedbacks || [];
+}
+
+function postFeedbackReply(feedbackId, text, wbToken) {
+  UrlFetchApp.fetch('https://feedbacks-api.wildberries.ru/api/v1/feedbacks', {
+    method: 'PATCH',
+    headers: { Authorization: wbToken, 'Content-Type': 'application/json' },
+    payload: JSON.stringify({ id: feedbackId, text: text }),
+    muteHttpExceptions: true
+  });
+}
+
+// ==========================================
+// YANDEX AI
+// ==========================================
+
+function generateReply(fb, yaKey, yaFolder) {
+  const instructions = `Ты помощник продавца на Wildberries. Напиши вежливый и живой ответ на отзыв покупателя. Без шаблонных фраз типа "Уважаемый покупатель". 2-3 предложения.`;
+  const input = `Товар: ${fb.productDetails?.productName || 'не указан'}
+Оценка: ${fb.productValuation}/5
+Отзыв: ${fb.text || '(без текста)'}`;
+
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch('https://ai.api.cloud.yandex.net/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type':   'application/json',
+        'Authorization':  `Api-Key ${yaKey}`,
+        'OpenAI-Project': yaFolder
+      },
+      payload: JSON.stringify({
+        model:            `gpt://${yaFolder}/aliceai-llm/latest`,
+        instructions:     instructions,
+        input:            input,
+        temperature:      0.7,
+        max_output_tokens: 300
+      }),
+      muteHttpExceptions: true
+    });
+  } catch(e) {
+    Logger.log('Yandex fetch error: ' + e.message);
+    return 'Не удалось сгенерировать ответ';
+  }
+
+  const data = JSON.parse(resp.getContentText());
+  if (!data?.output) {
+    Logger.log('Yandex API error: ' + resp.getContentText());
+    return 'Не удалось сгенерировать ответ';
+  }
+  return data.output[0].content[0].text;
+}
+
+// ==========================================
+// TELEGRAM
+// ==========================================
+
+function sendReviewCard(chatId, fb, suggestedReply) {
+  const stars = '⭐'.repeat(fb.productValuation || 0);
+  const text  = `*Новый отзыв* ${stars}\n\n` +
+    `*Товар:* ${fb.productDetails?.productName || '—'}\n` +
+    `*Автор:* ${fb.userName || 'Аноним'}\n\n` +
+    `*Отзыв:*\n${fb.text || '_(без текста)_'}\n\n` +
+    `*Предложенный ответ:*\n_${suggestedReply}_`;
+
+  const keyboard = {
+    inline_keyboard: [[
+      { text: '✅ Отправить',     callback_data: `approve_${fb.id}` },
+      { text: '✏️ Редактировать', callback_data: `edit_${fb.id}`    },
+      { text: '❌ Пропустить',    callback_data: `reject_${fb.id}`  }
+    ]]
+  };
+
+  const resp = UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    payload: JSON.stringify({
+      chat_id:      chatId,
+      text:         text,
+      parse_mode:   'Markdown',
+      reply_markup: keyboard
+    }),
+    muteHttpExceptions: true
+  });
+  return JSON.parse(resp.getContentText()).result?.message_id;
+}
+
+function answerCallback(callbackId) {
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    payload: JSON.stringify({ callback_query_id: callbackId }),
+    muteHttpExceptions: true
+  });
+}
+
+function editTgMessage(chatId, msgId, newText) {
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    payload: JSON.stringify({
+      chat_id:    chatId,
+      message_id: msgId,
+      text:       newText,
+      parse_mode: 'Markdown'
+    }),
+    muteHttpExceptions: true
+  });
+}
+
+function sendText(chatId, text, markdown) {
+  const payload = { chat_id: chatId, text: text };
+  if (markdown) payload.parse_mode = 'Markdown';
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput('alive');
+}
+
+function authorizeAll() {
+  SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  DriveApp.getRootFolder();
+  PropertiesService.getScriptProperties().getKeys();
+  UrlFetchApp.fetch('https://api.telegram.org', {muteHttpExceptions: true});
+  Logger.log('Все разрешения получены');
+}

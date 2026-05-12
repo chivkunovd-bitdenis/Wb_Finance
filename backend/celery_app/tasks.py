@@ -363,6 +363,50 @@ def ai_daily_analytics_beat() -> dict:
         db.close()
 
 
+@celery_app.task(name="ai_review_replies_sync_all")
+def ai_review_replies_sync_all() -> dict:
+    """
+    Celery Beat: sync unanswered reviews + suggested replies for all active users with WB API key.
+
+    Safety:
+    - Does not publish anything; only prepares approval rows.
+    - Small `take` per user to keep load predictable.
+    """
+    db = SessionLocal()
+    ok = 0
+    err = 0
+    total_pending = 0
+    try:
+        users = (
+            db.query(User)
+            .filter(User.is_active.is_(True))
+            .filter(User.wb_api_key.isnot(None))
+            .all()
+        )
+        from app.services.ai_review_replies_service import sync_review_replies_for_user
+
+        for u in users:
+            wb_key = (u.wb_api_key or "").strip()
+            if not wb_key:
+                continue
+            try:
+                res = sync_review_replies_for_user(
+                    db=db,
+                    user_id=str(u.id),
+                    wb_api_key=wb_key,
+                    take=20,
+                    generate_missing_suggestions_limit=10,
+                )
+                ok += 1
+                total_pending += int(res.pending_total or 0)
+            except Exception as exc:  # noqa: BLE001
+                err += 1
+                logger.exception("ai_review_replies_sync_all failed user=%s err=%s", u.id, str(exc)[:300])
+        return {"ok": True, "users_ok": ok, "users_error": err, "pending_total": total_pending}
+    finally:
+        db.close()
+
+
 def _funnel_nm_ids(db, *, user_id: str, date_from: date, date_to: date) -> list[int]:
     """
     Список nm_id для запросов funnel.

@@ -158,6 +158,29 @@ def _ensure_ai_module_schema() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_comp_metric_report_nm_code_batch ON ai_competitor_metrics (report_id, nm_id, metric_code, import_batch_id)",
         "CREATE INDEX IF NOT EXISTS ix_ai_competitor_metrics_import_batch_id ON ai_competitor_metrics (import_batch_id)",
         "ALTER TABLE ai_competitor_metrics ALTER COLUMN import_batch_id SET NOT NULL",
+        # review replies approval rows
+        """
+        CREATE TABLE IF NOT EXISTS ai_review_replies (
+            id UUID NOT NULL,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            feedback_id VARCHAR(64) NOT NULL,
+            product_name VARCHAR(512) NULL,
+            author VARCHAR(255) NULL,
+            rating VARCHAR(16) NULL,
+            review_text TEXT NULL,
+            suggested_reply TEXT NULL,
+            edited_reply TEXT NULL,
+            status VARCHAR(24) NOT NULL DEFAULT 'pending',
+            last_error TEXT NULL,
+            first_seen_date DATE NOT NULL,
+            published_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT pk_ai_review_replies PRIMARY KEY (id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_ai_review_replies_user_id ON ai_review_replies (user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_review_replies_user_feedback ON ai_review_replies (user_id, feedback_id)",
     ]
     with engine.begin() as conn:
         for stmt in ddl:
