@@ -56,6 +56,513 @@ function statusBadge(status) {
 
 const VITE_PRODUCT_GEN_UI_STUB = import.meta.env.VITE_PRODUCT_GEN_UI_STUB === '1';
 
+function parseOptionalPositiveDecimal(raw) {
+  const s = String(raw ?? '').trim().replace(',', '.');
+  if (!s) return { ok: false, error: 'Обязательное поле' };
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) return { ok: false, error: 'Введите неотрицательное число' };
+  return { ok: true, value: n };
+}
+
+function parsePriceRubToKopeks(raw) {
+  const s = String(raw ?? '').trim().replace(',', '.');
+  if (!s) return { ok: false, error: 'Укажите цену' };
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) return { ok: false, error: 'Некорректная цена' };
+  const kopeks = Math.round(n * 100);
+  if (!Number.isFinite(kopeks) || kopeks < 0 || kopeks > 9_999_999_999) {
+    return { ok: false, error: 'Слишком большая цена' };
+  }
+  return { ok: true, value: kopeks };
+}
+
+/** PG-2.1: мастер (шаблон B): 1) референсы + текст → 2) карточка → 3) проверка и создание черновика. */
+function ProductGenerationWizardModal({ open, onClose, onCreated }) {
+  const [step, setStep] = useState(1);
+  const [referenceFiles, setReferenceFiles] = useState([]);
+  const [descriptionUser, setDescriptionUser] = useState('');
+  const [dimensionsLength, setDimensionsLength] = useState('');
+  const [dimensionsWidth, setDimensionsWidth] = useState('');
+  const [dimensionsHeight, setDimensionsHeight] = useState('');
+  const [weightBrutto, setWeightBrutto] = useState('');
+  const [priceRub, setPriceRub] = useState('');
+  const [vendorCode, setVendorCode] = useState('');
+  const [title, setTitle] = useState('');
+  const [brand, setBrand] = useState('');
+  const [sizeRows, setSizeRows] = useState([{ tech_size: '', wb_size: '' }]);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const resetForm = useCallback(() => {
+    setStep(1);
+    setReferenceFiles([]);
+    setDescriptionUser('');
+    setDimensionsLength('');
+    setDimensionsWidth('');
+    setDimensionsHeight('');
+    setWeightBrutto('');
+    setPriceRub('');
+    setVendorCode('');
+    setTitle('');
+    setBrand('');
+    setSizeRows([{ tech_size: '', wb_size: '' }]);
+    setFieldErrors({});
+    setSubmitError('');
+    setSubmitting(false);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    resetForm();
+    return undefined;
+  }, [open, resetForm]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  const onPickReferences = (e) => {
+    const files = Array.from(e.target.files || []);
+    setReferenceFiles(files);
+    setFieldErrors((m) => {
+      const next = { ...(m || {}) };
+      delete next.referenceFiles;
+      return next;
+    });
+  };
+
+  const clearReferences = () => {
+    setReferenceFiles([]);
+  };
+
+  const validateStep1 = () => {
+    const err = {};
+    if (!String(descriptionUser || '').trim()) err.descriptionUser = 'Опишите товар для генерации';
+    if (!referenceFiles.length) err.referenceFiles = 'Выберите хотя бы один файл-референс (изображение)';
+    setFieldErrors(err);
+    return Object.keys(err).length === 0;
+  };
+
+  const validateStep2 = () => {
+    const err = {};
+    if (!String(vendorCode || '').trim()) err.vendorCode = 'Укажите артикул (vendor code)';
+    if (!String(title || '').trim()) err.title = 'Укажите наименование';
+    if (!String(brand || '').trim()) err.brand = 'Укажите бренд';
+
+    const pr = parsePriceRubToKopeks(priceRub);
+    if (!pr.ok) err.priceRub = pr.error;
+
+    const dl = parseOptionalPositiveDecimal(dimensionsLength);
+    const dw = parseOptionalPositiveDecimal(dimensionsWidth);
+    const dh = parseOptionalPositiveDecimal(dimensionsHeight);
+    const wgt = parseOptionalPositiveDecimal(weightBrutto);
+    if (!dl.ok) err.dimensionsLength = dl.error;
+    if (!dw.ok) err.dimensionsWidth = dw.error;
+    if (!dh.ok) err.dimensionsHeight = dh.error;
+    if (!wgt.ok) err.weightBrutto = wgt.error;
+
+    const rows = Array.isArray(sizeRows) ? sizeRows : [];
+    const filled = rows
+      .map((r) => ({
+        tech: String(r?.tech_size ?? '').trim(),
+        wb: String(r?.wb_size ?? '').trim(),
+      }))
+      .filter((r) => r.tech || r.wb);
+    const complete = filled.filter((r) => r.tech && r.wb);
+    const partial = filled.length > complete.length;
+    if (partial) err.sizes = 'Для каждой строки заполните и techSize, и wbSize';
+    if (complete.length === 0) err.sizes = 'Добавьте хотя бы одну пару размеров (techSize + wbSize)';
+
+    setFieldErrors(err);
+    return Object.keys(err).length === 0;
+  };
+
+  const buildPayload = () => {
+    const pr = parsePriceRubToKopeks(priceRub);
+    const dl = parseOptionalPositiveDecimal(dimensionsLength);
+    const dw = parseOptionalPositiveDecimal(dimensionsWidth);
+    const dh = parseOptionalPositiveDecimal(dimensionsHeight);
+    const wgt = parseOptionalPositiveDecimal(weightBrutto);
+    if (!pr.ok || !dl.ok || !dw.ok || !dh.ok || !wgt.ok) return null;
+    const rows = Array.isArray(sizeRows) ? sizeRows : [];
+    const sizes = rows
+      .map((r) => ({
+        tech_size: String(r?.tech_size ?? '').trim(),
+        wb_size: String(r?.wb_size ?? '').trim(),
+      }))
+      .filter((r) => r.tech_size && r.wb_size);
+    return {
+      vendor_code: String(vendorCode || '').trim(),
+      title: String(title || '').trim(),
+      brand: String(brand || '').trim(),
+      description_user: String(descriptionUser || '').trim(),
+      price_kopeks: pr.value,
+      dimensions_length: dl.value,
+      dimensions_width: dw.value,
+      dimensions_height: dh.value,
+      weight_brutto: wgt.value,
+      sizes,
+    };
+  };
+
+  const goNext = () => {
+    setSubmitError('');
+    if (step === 1) {
+      if (!validateStep1()) return;
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      if (!validateStep2()) return;
+      setStep(3);
+    }
+  };
+
+  const goBack = () => {
+    setSubmitError('');
+    setFieldErrors({});
+    if (step <= 1) return;
+    setStep(step - 1);
+  };
+
+  const submit = async () => {
+    const payload = buildPayload();
+    if (!payload) {
+      setSubmitError('Проверьте числовые поля');
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      await api.createProductGenerationJob(payload);
+      onCreated?.();
+      onClose?.();
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось создать задачу');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const addSizeRow = () => {
+    setSizeRows((prev) => [...(Array.isArray(prev) ? prev : []), { tech_size: '', wb_size: '' }]);
+  };
+
+  const removeSizeRow = (idx) => {
+    setSizeRows((prev) => {
+      const list = Array.isArray(prev) ? prev.slice() : [];
+      if (list.length <= 1) return list;
+      list.splice(idx, 1);
+      return list;
+    });
+  };
+
+  const updateSizeRow = (idx, key, value) => {
+    setSizeRows((prev) => {
+      const list = Array.isArray(prev) ? prev.slice() : [];
+      if (!list[idx]) return list;
+      list[idx] = { ...list[idx], [key]: value };
+      return list;
+    });
+  };
+
+  if (!open) return null;
+
+  const stepLabel = step === 1 ? 'Референсы и текст' : step === 2 ? 'Карточка и размеры' : 'Проверка';
+
+  return (
+    <ModalShell
+      open={open}
+      title="Полная генерация товара"
+      onClose={onClose}
+      width="min(760px, 100%)"
+      footer={(
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting}>
+            Отмена
+          </button>
+          {step > 1 ? (
+            <button type="button" className="btn btn-outline-secondary" onClick={goBack} disabled={submitting}>
+              Назад
+            </button>
+          ) : null}
+          {step < 3 ? (
+            <button type="button" className="btn btn-primary" onClick={goNext}>
+              Далее
+            </button>
+          ) : (
+            <button type="button" className="btn btn-primary" onClick={submit} disabled={submitting}>
+              {submitting ? 'Создаю…' : 'Создать черновик'}
+            </button>
+          )}
+        </>
+      )}
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '3px 10px',
+              borderRadius: 999,
+              background: 'rgba(124,58,237,0.10)',
+              color: '#5b21b6',
+              border: '1px solid rgba(124,58,237,0.18)',
+              fontSize: 12,
+              fontWeight: 900,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Шаг {step} из 3
+          </span>
+          <span style={{ fontWeight: 800, color: 'var(--text-secondary)', fontSize: 13 }}>{stepLabel}</span>
+        </div>
+
+        {submitError ? <div className="alert alert-danger" style={{ margin: 0 }}>{submitError}</div> : null}
+
+        {step === 1 && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8 }}>
+              <div style={{ fontWeight: 900, fontSize: 13 }}>Референсы</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                Нужен хотя бы один файл. Несколько файлов можно выбрать за раз. Сохранение на сервер и привязка к черновику — этап PG-2.2 (пока файлы только в браузере до создания записи).
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input
+                  type="file"
+                  className="form-control"
+                  style={{ flex: '1 1 240px' }}
+                  accept="image/*"
+                  multiple
+                  onChange={onPickReferences}
+                />
+                {referenceFiles.length > 0 ? (
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={clearReferences}>
+                    Сбросить файлы
+                  </button>
+                ) : null}
+              </div>
+              {fieldErrors.referenceFiles ? (
+                <div className="alert alert-warning" style={{ margin: 0, fontSize: 12 }}>{fieldErrors.referenceFiles}</div>
+              ) : null}
+              {referenceFiles.length > 0 ? (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {referenceFiles.map((f, i) => (
+                    <li key={`${f.name}-${f.size}-${i}`}>{f.name}</li>
+                  ))}
+                </ul>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Нет выбранных файлов — без референсов к шагу 2 не перейти</div>
+              )}
+            </div>
+
+            <div>
+              <label className="form-label" style={{ fontWeight: 800, fontSize: 12 }}>Текст о товаре</label>
+              <textarea
+                className={`form-control${fieldErrors.descriptionUser ? ' is-invalid' : ''}`}
+                rows={6}
+                value={descriptionUser}
+                onChange={(e) => {
+                  setDescriptionUser(e.target.value);
+                  setFieldErrors((m) => {
+                    const next = { ...(m || {}) };
+                    delete next.descriptionUser;
+                    return next;
+                  });
+                }}
+                placeholder="Опишите товар, материал, особенности, для кого — это пойдёт в генерацию контента."
+              />
+              {fieldErrors.descriptionUser ? (
+                <div className="invalid-feedback d-block">{fieldErrors.descriptionUser}</div>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Габариты и вес — отдельные поля (длина × ширина × высота, вес). Цена в рублях; на сервер уходит в копейках.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Длина</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.dimensionsLength ? ' is-invalid' : ''}`}
+                  value={dimensionsLength}
+                  onChange={(e) => setDimensionsLength(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="см"
+                />
+                {fieldErrors.dimensionsLength ? <div className="invalid-feedback d-block">{fieldErrors.dimensionsLength}</div> : null}
+              </div>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Ширина</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.dimensionsWidth ? ' is-invalid' : ''}`}
+                  value={dimensionsWidth}
+                  onChange={(e) => setDimensionsWidth(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="см"
+                />
+                {fieldErrors.dimensionsWidth ? <div className="invalid-feedback d-block">{fieldErrors.dimensionsWidth}</div> : null}
+              </div>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Высота</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.dimensionsHeight ? ' is-invalid' : ''}`}
+                  value={dimensionsHeight}
+                  onChange={(e) => setDimensionsHeight(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="см"
+                />
+                {fieldErrors.dimensionsHeight ? <div className="invalid-feedback d-block">{fieldErrors.dimensionsHeight}</div> : null}
+              </div>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Вес, кг</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.weightBrutto ? ' is-invalid' : ''}`}
+                  value={weightBrutto}
+                  onChange={(e) => setWeightBrutto(e.target.value)}
+                  inputMode="decimal"
+                />
+                {fieldErrors.weightBrutto ? <div className="invalid-feedback d-block">{fieldErrors.weightBrutto}</div> : null}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Цена, ₽</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.priceRub ? ' is-invalid' : ''}`}
+                  value={priceRub}
+                  onChange={(e) => setPriceRub(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="например 1999.00"
+                />
+                {fieldErrors.priceRub ? <div className="invalid-feedback d-block">{fieldErrors.priceRub}</div> : null}
+              </div>
+              <div>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Артикул</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.vendorCode ? ' is-invalid' : ''}`}
+                  value={vendorCode}
+                  onChange={(e) => setVendorCode(e.target.value)}
+                />
+                {fieldErrors.vendorCode ? <div className="invalid-feedback d-block">{fieldErrors.vendorCode}</div> : null}
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Наименование</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.title ? ' is-invalid' : ''}`}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+                {fieldErrors.title ? <div className="invalid-feedback d-block">{fieldErrors.title}</div> : null}
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>Бренд</label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.brand ? ' is-invalid' : ''}`}
+                  value={brand}
+                  onChange={(e) => setBrand(e.target.value)}
+                />
+                {fieldErrors.brand ? <div className="invalid-feedback d-block">{fieldErrors.brand}</div> : null}
+              </div>
+            </div>
+
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 900, fontSize: 13 }}>Размеры (techSize + wbSize)</div>
+                <button type="button" className="btn btn-sm btn-outline-primary" onClick={addSizeRow}>
+                  Добавить строку
+                </button>
+              </div>
+              {fieldErrors.sizes ? <div className="alert alert-warning" style={{ margin: 0, fontSize: 12 }}>{fieldErrors.sizes}</div> : null}
+              <div className="table-wrapper" style={{ marginTop: 0 }}>
+                <table className="custom-table">
+                  <thead>
+                    <tr>
+                      <th>techSize</th>
+                      <th>wbSize</th>
+                      <th style={{ width: 1 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sizeRows.map((row, idx) => (
+                      <tr key={`sz-${idx}`}>
+                        <td>
+                          <input
+                            className="form-control form-control-sm"
+                            value={row.tech_size}
+                            onChange={(e) => updateSizeRow(idx, 'tech_size', e.target.value)}
+                            placeholder="например M"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            className="form-control form-control-sm"
+                            value={row.wb_size}
+                            onChange={(e) => updateSizeRow(idx, 'wb_size', e.target.value)}
+                            placeholder="например 48"
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-secondary"
+                            disabled={sizeRows.length <= 1}
+                            onClick={() => removeSizeRow(idx)}
+                          >
+                            Удалить
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Проверьте данные перед созданием черновика. После нажатия «Создать черновик» задача появится в списке; запуск фонового пайплайна — в PG-2.3.
+            </div>
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
+              <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов) выбрано локально` : 'Не выбраны'}</InfoRow>
+              <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Габариты (Д×Ш×В)">
+                {[dimensionsLength, dimensionsWidth, dimensionsHeight].map((x) => String(x || '').trim()).join(' × ') || '—'}
+              </InfoRow>
+              <InfoRow label="Вес">{String(weightBrutto || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Цена">{String(priceRub || '').trim() ? `${priceRub} ₽` : '—'}</InfoRow>
+              <InfoRow label="Артикул">{String(vendorCode || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Наименование">{String(title || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Бренд">{String(brand || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Размеры">
+                {sizeRows
+                  .filter((r) => String(r?.tech_size || '').trim() && String(r?.wb_size || '').trim())
+                  .map((r) => `${r.tech_size} → ${r.wb_size}`)
+                  .join('; ') || '—'}
+              </InfoRow>
+            </div>
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function productGenerationStatusBadge(status) {
   const s = String(status || '');
   const map = {
@@ -93,6 +600,7 @@ function ProductGenerationAdminCard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,17 +667,25 @@ function ProductGenerationAdminCard() {
 
   return (
     <div style={{ ...softCardStyle(), padding: 14, display: 'grid', gap: 10 }}>
+      <ProductGenerationWizardModal
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onCreated={load}
+      />
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
-        <button type="button" className="btn btn-primary btn-sm" onClick={onCreateDraft} disabled={creating || loading}>
-          {creating ? 'Создаю…' : 'Создать черновик'}
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => setWizardOpen(true)} disabled={loading}>
+          Мастер: новая генерация
+        </button>
+        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCreateDraft} disabled={creating || loading}>
+          {creating ? 'Создаю…' : 'Пустой черновик'}
         </button>
         <button type="button" className="btn btn-outline-secondary btn-sm" onClick={load} disabled={loading}>
           {loading ? 'Обновление…' : 'Обновить'}
         </button>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Пошаговый мастер и фоновый пайплайн — в следующих фазах (PG-2+). Сейчас доступен список черновиков и создание пустой задачи.
+        Мастер (PG-2.1): референсы, текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize. Фоновый старт пайплайна — PG-2.3; загрузка файлов на сервер — PG-2.2.
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (
