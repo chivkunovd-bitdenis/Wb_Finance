@@ -558,6 +558,7 @@ function ReviewRepliesApproval({ open, onClose }) {
   const [items, setItems] = useState([]);
   const [drafts, setDrafts] = useState({});
   const [busyId, setBusyId] = useState('');
+  const [publishState, setPublishState] = useState({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -598,6 +599,7 @@ function ReviewRepliesApproval({ open, onClose }) {
     if (!open) return;
     setItems([]);
     setDrafts({});
+    setPublishState({});
     setError('');
     load();
   }, [open, load]);
@@ -607,11 +609,18 @@ function ReviewRepliesApproval({ open, onClose }) {
     if (!feedbackId) return;
     setBusyId(feedbackId);
     setError('');
+    setPublishState((m) => ({ ...(m || {}), [feedbackId]: { status: 'publishing' } }));
     try {
       const text = String(drafts?.[feedbackId] || '').trim();
       await api.publishAiReviewReply(feedbackId, { text });
-      await load();
+      setPublishState((m) => ({ ...(m || {}), [feedbackId]: { status: 'ok' } }));
+      setItems((prev) => (Array.isArray(prev) ? prev.map((x) => (
+        String(x?.feedback_id || '') === feedbackId
+          ? { ...(x || {}), status: 'published', published_at: new Date().toISOString() }
+          : x
+      )) : prev));
     } catch (e) {
+      setPublishState((m) => ({ ...(m || {}), [feedbackId]: { status: 'error' } }));
       setError(e?.message || 'Не удалось опубликовать ответ');
     } finally {
       setBusyId('');
@@ -625,7 +634,7 @@ function ReviewRepliesApproval({ open, onClose }) {
       open={open}
       title="Ответить на отзывы"
       onClose={onClose}
-      width="min(980px, 100%)"
+      width="min(860px, 100%)"
       footer={(
         <>
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>Закрыть</button>
@@ -638,7 +647,7 @@ function ReviewRepliesApproval({ open, onClose }) {
         </>
       )}
     >
-      <div style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'grid', gap: 10, maxHeight: 'min(78vh, 720px)' }}>
         <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
           Здесь показаны <strong>неотвеченные</strong> отзывы из WB и предложенный ответ от AI. Можно отредактировать текст и нажать “Опубликовать”.
         </div>
@@ -649,16 +658,15 @@ function ReviewRepliesApproval({ open, onClose }) {
         ) : rows.length === 0 ? (
           <div style={{ color: 'var(--text-tertiary)' }}>Неотвеченных отзывов нет</div>
         ) : (
-          <div style={{ overflow: 'auto', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 10 }}>
-            <table className="table table-sm" style={{ margin: 0, fontSize: 12, minWidth: 920 }}>
+          <div style={{ overflow: 'auto', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 10, maxHeight: 'min(60vh, 520px)' }}>
+            <table className="table table-sm" style={{ margin: 0, fontSize: 12, minWidth: 860 }}>
               <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>
                 <tr>
-                  <th style={{ width: 140 }}>feedback_id</th>
                   <th style={{ width: 260 }}>Товар</th>
                   <th style={{ width: 90 }}>Оценка</th>
                   <th>Отзыв</th>
                   <th>Ответ (можно править)</th>
-                  <th style={{ width: 140 }} />
+                  <th style={{ width: 160 }}>Статус</th>
                 </tr>
               </thead>
               <tbody>
@@ -666,9 +674,13 @@ function ReviewRepliesApproval({ open, onClose }) {
                   const fid = String(x?.feedback_id || '');
                   const disabled = Boolean(busyId) && busyId !== fid;
                   const busy = busyId === fid;
+                  const st = String(x?.status || 'pending');
+                  const ps = publishState?.[fid]?.status || '';
+                  const published = st === 'published' || ps === 'ok';
+                  const publishErr = st === 'error' || ps === 'error';
+                  const publishing = ps === 'publishing' || busy;
                   return (
                     <tr key={fid}>
-                      <td style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{fid || '—'}</td>
                       <td style={{ color: 'var(--text-secondary)' }}>{x?.product_name || '—'}</td>
                       <td style={{ fontWeight: 800 }}>{x?.rating || '—'}</td>
                       <td style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxWidth: 360 }}>
@@ -690,15 +702,61 @@ function ReviewRepliesApproval({ open, onClose }) {
                         />
                       </td>
                       <td style={{ verticalAlign: 'top' }}>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary"
-                          onClick={() => publish(fid)}
-                          disabled={busy || disabled || !String(drafts?.[fid] || '').trim()}
-                          style={{ width: '100%' }}
-                        >
-                          {busy ? 'Публикую…' : 'Опубликовать'}
-                        </button>
+                        {published ? (
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              padding: '4px 10px',
+                              borderRadius: 999,
+                              background: 'rgba(16,185,129,0.12)',
+                              border: '1px solid rgba(16,185,129,0.20)',
+                              color: '#047857',
+                              fontWeight: 900,
+                              fontSize: 12,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            Опубликовано
+                          </div>
+                        ) : publishErr ? (
+                          <div style={{ display: 'grid', gap: 8 }}>
+                            <div
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '4px 10px',
+                                borderRadius: 999,
+                                background: 'rgba(239,68,68,0.10)',
+                                border: '1px solid rgba(239,68,68,0.20)',
+                                color: '#b91c1c',
+                                fontWeight: 900,
+                                fontSize: 12,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              Ошибка публикации
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-secondary"
+                              onClick={() => publish(fid)}
+                              disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
+                            >
+                              {publishing ? 'Публикую…' : 'Повторить'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-primary"
+                            onClick={() => publish(fid)}
+                            disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
+                            style={{ width: '100%' }}
+                          >
+                            {publishing ? 'Публикую…' : 'Опубликовать'}
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
