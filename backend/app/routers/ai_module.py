@@ -306,6 +306,7 @@ def ai_review_replies_pending_list(
                 "status": r.status,
                 "last_error": r.last_error,
                 "first_seen_date": r.first_seen_date.isoformat() if r.first_seen_date else None,
+                "review_created_at": r.review_created_at.isoformat() if getattr(r, "review_created_at", None) else None,
                 "published_at": r.published_at.isoformat() if r.published_at else None,
             }
         )

@@ -118,6 +118,17 @@ def _upsert_review_row(
     if not feedback_id:
         raise ValueError("feedback_id is missing")
 
+    review_created_at = None
+    cd = fb.get("createdDate")
+    if cd:
+        raw = str(cd).strip()
+        try:
+            # WB example: "2024-09-26T10:20:48+03:00"
+            # datetime.fromisoformat supports offsets; normalize trailing Z just in case.
+            review_created_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:  # noqa: BLE001
+            review_created_at = None
+
     product_name = None
     pd = fb.get("productDetails") or {}
     if isinstance(pd, dict):
@@ -150,6 +161,7 @@ def _upsert_review_row(
             status="pending",
             last_error=None,
             first_seen_date=today,
+            review_created_at=review_created_at,
             published_at=None,
         )
         db.add(row)
@@ -160,6 +172,8 @@ def _upsert_review_row(
         row.author = author_s
         row.rating = rating_s
         row.review_text = review_text_s
+        if review_created_at is not None:
+            row.review_created_at = review_created_at
         if row.status == "error":
             # allow recovering back to pending if WB still shows it unanswered
             row.status = "pending"

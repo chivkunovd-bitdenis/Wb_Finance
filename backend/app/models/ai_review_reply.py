@@ -33,6 +33,8 @@ class AiReviewReply(Base):
     last_error = Column(Text, nullable=True)
 
     first_seen_date = Column(Date, nullable=False)
+    # Real WB review datetime (createdDate from WB feedbacks API). May be null for legacy rows.
+    review_created_at = Column(DateTime(timezone=True), nullable=True)
     published_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

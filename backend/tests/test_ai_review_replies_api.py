@@ -86,6 +86,42 @@ def test_review_replies_pending_empty(client: TestClient) -> None:
     assert isinstance(data.get("items"), list)
 
 
+def test_review_replies_pending_includes_review_created_at_field(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    feedback_id = f"fb-{__import__('uuid').uuid4()}"
+
+    db = SessionLocal()
+    try:
+        db.add(
+            AiReviewReply(
+                user_id=user_id,
+                feedback_id=feedback_id,
+                product_name="Test",
+                author="Anon",
+                rating="5",
+                review_text="ok",
+                suggested_reply="thanks",
+                edited_reply=None,
+                status="pending",
+                last_error=None,
+                first_seen_date=date.today(),
+                review_created_at=None,
+                published_at=None,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get("/ai/review-replies/pending")
+    assert r.status_code == 200
+    items = r.json().get("items")
+    assert isinstance(items, list)
+    row = next((x for x in items if x.get("feedback_id") == feedback_id), None)
+    assert row is not None
+    assert "review_created_at" in row
+
+
 def test_review_reply_publish_marks_published(client: TestClient) -> None:
     user_id = "00000000-0000-0000-0000-000000000111"
     feedback_id = f"fb-{__import__('uuid').uuid4()}"
@@ -105,6 +141,7 @@ def test_review_reply_publish_marks_published(client: TestClient) -> None:
             status="pending",
             last_error=None,
             first_seen_date=date.today(),
+            review_created_at=None,
             published_at=None,
         )
         db.add(row)
@@ -154,6 +191,7 @@ def test_review_reply_publish_dry_run_does_not_call_wb(client: TestClient) -> No
                 status="pending",
                 last_error=None,
                 first_seen_date=date.today(),
+                review_created_at=None,
                 published_at=None,
             )
         )

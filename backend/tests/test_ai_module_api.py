@@ -173,6 +173,7 @@ def _ensure_ai_module_schema() -> None:
             status VARCHAR(24) NOT NULL DEFAULT 'pending',
             last_error TEXT NULL,
             first_seen_date DATE NOT NULL,
+            review_created_at TIMESTAMPTZ NULL,
             published_at TIMESTAMPTZ NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -181,6 +182,7 @@ def _ensure_ai_module_schema() -> None:
         """,
         "CREATE INDEX IF NOT EXISTS ix_ai_review_replies_user_id ON ai_review_replies (user_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_review_replies_user_feedback ON ai_review_replies (user_id, feedback_id)",
+        "ALTER TABLE ai_review_replies ADD COLUMN IF NOT EXISTS review_created_at TIMESTAMPTZ",
     ]
     with engine.begin() as conn:
         for stmt in ddl:

@@ -682,7 +682,7 @@ function ReviewRepliesApproval({ open, onClose }) {
               const published = st === 'published' || ps === 'ok';
               const publishErr = st === 'error' || ps === 'error';
               const publishing = ps === 'publishing' || busy;
-              const dateText = formatDateCell(x?.first_seen_date);
+              const dateText = formatDateCell(x?.review_created_at || x?.first_seen_date);
               const ratingText = String(x?.rating || '—');
 
               return (
