@@ -134,6 +134,38 @@ def test_product_generation_crud_happy_path(client_admin: TestClient) -> None:
     assert r5.json()["status"] == "in_progress"
 
 
+def test_product_generation_wb_subject_id_optional_and_patch(client_admin: TestClient) -> None:
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "X", "brand": "B", "vendor_code": "v"})
+    assert r.status_code == 201
+    job_id = r.json()["id"]
+    assert r.json().get("wb_subject_id") is None
+
+    r2 = client_admin.post(
+        "/ai/product-generation/jobs",
+        json={
+            "title": "Y",
+            "brand": "B",
+            "vendor_code": "v2",
+            "wb_subject_id": 105,
+        },
+    )
+    assert r2.status_code == 201
+    assert r2.json().get("wb_subject_id") == 105
+
+    r3 = client_admin.patch(f"/ai/product-generation/jobs/{job_id}", json={"wb_subject_id": 200})
+    assert r3.status_code == 200
+    assert r3.json().get("wb_subject_id") == 200
+
+    r4 = client_admin.patch(f"/ai/product-generation/jobs/{job_id}", json={"wb_subject_id": None})
+    assert r4.status_code == 200
+    assert r4.json().get("wb_subject_id") is None
+
+
+def test_product_generation_wb_subject_id_zero_rejected(client_admin: TestClient) -> None:
+    r = client_admin.post("/ai/product-generation/jobs", json={"wb_subject_id": 0})
+    assert r.status_code == 422
+
+
 def test_product_generation_patch_invalid_status(client_admin: TestClient) -> None:
     r = client_admin.post("/ai/product-generation/jobs", json={})
     job_id = r.json()["id"]

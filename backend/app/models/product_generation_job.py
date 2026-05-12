@@ -29,6 +29,8 @@ class ProductGenerationJob(Base):
     vendor_code = Column(String(255), nullable=True)
     title = Column(String(1000), nullable=True)
     brand = Column(String(500), nullable=True)
+    # WB «предмет» (категория карточки); публикация в PG-5 может потребовать заполнения позже.
+    wb_subject_id = Column(Integer, nullable=True)
     description_user = Column(Text, nullable=True)
     seo_description = Column(Text, nullable=True)
 

@@ -16,6 +16,11 @@ class ProductGenerationJobCreate(BaseModel):
     vendor_code: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, max_length=1000)
     brand: str | None = Field(default=None, max_length=500)
+    wb_subject_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ID предмета WB (категория); опционально — черновик без него валиден (PG-2.4).",
+    )
     description_user: str | None = None
     seo_description: str | None = None
     price_kopeks: int | None = Field(default=None, ge=0)
@@ -31,6 +36,11 @@ class ProductGenerationJobUpdate(BaseModel):
     vendor_code: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, max_length=1000)
     brand: str | None = Field(default=None, max_length=500)
+    wb_subject_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="ID предмета WB; null сбрасывает значение при PATCH.",
+    )
     description_user: str | None = None
     seo_description: str | None = None
     price_kopeks: int | None = Field(default=None, ge=0)
@@ -56,6 +66,7 @@ class ProductGenerationJobOut(BaseModel):
     vendor_code: str | None
     title: str | None
     brand: str | None
+    wb_subject_id: int | None
     description_user: str | None
     seo_description: str | None
     price_kopeks: int | None

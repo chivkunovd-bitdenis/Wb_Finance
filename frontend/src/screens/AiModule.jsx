@@ -76,6 +76,20 @@ function parsePriceRubToKopeks(raw) {
   return { ok: true, value: kopeks };
 }
 
+/** PG-2.4: ID предмета WB опционален; пустая строка — без ошибки. */
+function parseOptionalWbSubjectId(raw) {
+  const t = String(raw ?? '').trim();
+  if (!t) return { ok: true, value: undefined };
+  if (!/^\d+$/.test(t)) {
+    return { ok: false, error: 'ID предмета WB: только целое число (или оставьте пустым)' };
+  }
+  const n = Number(t);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    return { ok: false, error: 'Некорректный ID предмета WB' };
+  }
+  return { ok: true, value: n };
+}
+
 /** PG-2.1: мастер (шаблон B): 1) референсы + текст → 2) карточка → 3) проверка и создание черновика. */
 function ProductGenerationWizardModal({ open, onClose, onCreated }) {
   const [step, setStep] = useState(1);
@@ -89,6 +103,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
   const [vendorCode, setVendorCode] = useState('');
   const [title, setTitle] = useState('');
   const [brand, setBrand] = useState('');
+  const [wbSubjectId, setWbSubjectId] = useState('');
   const [sizeRows, setSizeRows] = useState([{ tech_size: '', wb_size: '' }]);
   const [fieldErrors, setFieldErrors] = useState({});
   const [submitError, setSubmitError] = useState('');
@@ -106,6 +121,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     setVendorCode('');
     setTitle('');
     setBrand('');
+    setWbSubjectId('');
     setSizeRows([{ tech_size: '', wb_size: '' }]);
     setFieldErrors({});
     setSubmitError('');
@@ -155,6 +171,9 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     if (!String(title || '').trim()) err.title = 'Укажите наименование';
     if (!String(brand || '').trim()) err.brand = 'Укажите бренд';
 
+    const sid = parseOptionalWbSubjectId(wbSubjectId);
+    if (!sid.ok) err.wbSubjectId = sid.error;
+
     const pr = parsePriceRubToKopeks(priceRub);
     if (!pr.ok) err.priceRub = pr.error;
 
@@ -189,7 +208,8 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     const dw = parseOptionalPositiveDecimal(dimensionsWidth);
     const dh = parseOptionalPositiveDecimal(dimensionsHeight);
     const wgt = parseOptionalPositiveDecimal(weightBrutto);
-    if (!pr.ok || !dl.ok || !dw.ok || !dh.ok || !wgt.ok) return null;
+    const sid = parseOptionalWbSubjectId(wbSubjectId);
+    if (!pr.ok || !dl.ok || !dw.ok || !dh.ok || !wgt.ok || !sid.ok) return null;
     const rows = Array.isArray(sizeRows) ? sizeRows : [];
     const sizes = rows
       .map((r) => ({
@@ -197,7 +217,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
         wb_size: String(r?.wb_size ?? '').trim(),
       }))
       .filter((r) => r.tech_size && r.wb_size);
-    return {
+    const body = {
       vendor_code: String(vendorCode || '').trim(),
       title: String(title || '').trim(),
       brand: String(brand || '').trim(),
@@ -209,6 +229,8 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
       weight_brutto: wgt.value,
       sizes,
     };
+    if (sid.value !== undefined) body.wb_subject_id = sid.value;
+    return body;
   };
 
   const goNext = () => {
@@ -488,6 +510,32 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
                 />
                 {fieldErrors.brand ? <div className="invalid-feedback d-block">{fieldErrors.brand}</div> : null}
               </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="form-label" style={{ fontSize: 12, fontWeight: 800 }}>
+                  Категория WB (ID предмета){' '}
+                  <span style={{ fontWeight: 600, color: 'var(--text-tertiary)' }}>— необязательно</span>
+                </label>
+                <input
+                  className={`form-control form-control-sm${fieldErrors.wbSubjectId ? ' is-invalid' : ''}`}
+                  value={wbSubjectId}
+                  onChange={(e) => {
+                    setWbSubjectId(e.target.value);
+                    setFieldErrors((m) => {
+                      const next = { ...(m || {}) };
+                      delete next.wbSubjectId;
+                      return next;
+                    });
+                  }}
+                  inputMode="numeric"
+                  placeholder="например 105 — можно оставить пустым"
+                />
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, lineHeight: 1.4 }}>
+                  Черновик и запуск генерации не блокируются, если категорию укажете позже (например перед публикацией в WB).
+                </div>
+                {fieldErrors.wbSubjectId ? (
+                  <div className="invalid-feedback d-block">{fieldErrors.wbSubjectId}</div>
+                ) : null}
+              </div>
             </div>
 
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 10 }}>
@@ -561,6 +609,14 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
               <InfoRow label="Артикул">{String(vendorCode || '').trim() || '—'}</InfoRow>
               <InfoRow label="Наименование">{String(title || '').trim() || '—'}</InfoRow>
               <InfoRow label="Бренд">{String(brand || '').trim() || '—'}</InfoRow>
+              <InfoRow label="Предмет WB (ID)">
+                {(() => {
+                  const p = parseOptionalWbSubjectId(wbSubjectId);
+                  if (!p.ok) return '—';
+                  if (p.value === undefined) return '— (не указано)';
+                  return String(p.value);
+                })()}
+              </InfoRow>
               <InfoRow label="Размеры">
                 {sizeRows
                   .filter((r) => String(r?.tech_size || '').trim() && String(r?.wb_size || '').trim())
