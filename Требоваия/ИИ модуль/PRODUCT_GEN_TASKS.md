@@ -45,7 +45,7 @@
 | ID | Задача | DoD |
 |----|--------|-----|
 | PG-3.1 | Своя БД сервиса: схема `runs`, `steps`, `assets` (минимум) + миграции в папке сервиса | [x] Таблицы `wip_runs` / `wip_steps` / `wip_assets`, Alembic `a1b2c3d4e501`, entrypoint `upgrade`, volume `wip_data:/data`, pytest |
-| PG-3.2 | Celery: цепочка-заглушка `run_created → step_done` с реальным Redis | Логи воркера; ретраи не ломают статус |
+| PG-3.2 | Celery: цепочка-заглушка `run_created → step_done` с реальным Redis | [x] Задачи `wb_image_pipeline.run_created` / `wb_image_pipeline.step_done`, Redis в `docker-compose.example`, идемпотентные обновления `wip_*`, pytest (eager + двойной вызов) |
 | PG-3.3 | HTTP: `POST /internal/v1/runs`, `GET /internal/v1/runs/{id}` (статус + метаданные) | Документация в README сервиса |
 | PG-3.4 | Связка монолит ↔ сервис: создание run при «Создать»; сохранение `run_id`; поллинг статуса в карточке задачи | Pytest монолита с моком HTTP сервиса |
 | PG-3.5 | **mTLS** или зафиксированный промежуточный режим (только private network + HMAC) — как в `docs/mtls.md` | Инструкция для прода; dev не блокируется |

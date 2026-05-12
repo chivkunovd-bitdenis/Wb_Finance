@@ -136,6 +136,7 @@
 
 - Расширить скелет: модели SQLAlchemy + Alembic **внутри папки сервиса** (отдельный `alembic.ini` или скрипт migrate).
 - **PG-3.1 (факт):** таблицы `wip_runs`, `wip_steps`, `wip_assets` (поле связи с монолитом — `wip_runs.monolith_job_id`); миграция `a1b2c3d4e501`; старт контейнера — `alembic upgrade head`; dev SQLite на общем volume `wip_data:/data` вместе с `WIP_MEDIA_ROOT`.
+- **PG-3.2 (факт):** Celery `chain(run_created → step_done)` — заглушка: run `created`→`running`→`completed`, один шаг `pg32_stub` `pending`→`running`→`done`; брокер `WIP_REDIS_URL` (в примере compose — `wip_redis`); идемпотентность под ретраи (`SQLAlchemyError` autoretry).
 - Redis: отдельный DB index от монолита (`/1` vs `/0`).
 - Не публиковать порт 9100 наружу в прод compose без proxy.
 

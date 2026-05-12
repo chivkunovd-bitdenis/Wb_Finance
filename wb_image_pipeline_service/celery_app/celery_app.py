@@ -8,6 +8,7 @@ celery_app = Celery(
     "wb_image_pipeline",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=["celery_app.pipeline_tasks"],
 )
 
 celery_app.conf.update(

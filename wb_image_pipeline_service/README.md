@@ -56,7 +56,8 @@
 ## Статус
 
 - **PG-3.1:** своя БД сервиса — таблицы `wip_runs`, `wip_steps`, `wip_assets` (SQLAlchemy + Alembic `a1b2c3d4e501`). При старте контейнера выполняется `alembic upgrade head`. `docker-compose.example` монтирует **`wip_data:/data`** (общий SQLite и каталог `media` для API и worker).
-- Дальше по плану wb-finance: **PG-3.2+** (цепочка Celery, HTTP `POST/GET /internal/v1/runs`, связка с монолитом).
+- **PG-3.2:** Celery-цепочка-заглушка **`wb_image_pipeline.run_created` → `wb_image_pipeline.step_done`** (модуль `celery_app/pipeline_tasks.py`, постановка `enqueue_pg32_stub_chain(run_id)`). Воркер в compose — `celery -A celery_app.celery_app worker`; брокер/backend — **Redis** (`wip_redis` в примере). Логи на INFO; повторы задач идемпотентны по строкам `wip_runs` / `wip_steps` (шаг `pg32_stub`).
+- Дальше по плану wb-finance: **PG-3.3+** (HTTP `POST/GET /internal/v1/runs`, связка с монолитом).
 
 ### Миграции (локально)
 
