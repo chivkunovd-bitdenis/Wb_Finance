@@ -2294,7 +2294,11 @@ export default function AiModule() {
   }, [selectedNmId, reportStatus, calloutHidden]);
 
   const remoteSessionActive = useMemo(() => Boolean(remoteStatus?.active), [remoteStatus]);
-  const hasSavedAccess = useMemo(() => Boolean(accessStatus?.has_storage_state), [accessStatus]);
+  const hasSavedAccess = useMemo(() => {
+    if (!accessStatus?.has_storage_state) return false;
+    if (accessStatus?.reconnect_required) return false;
+    return true;
+  }, [accessStatus]);
   const needsWbAccess = useMemo(() => {
     // Blocking rule: only block when access is not saved and remote session is not active.
     // Credentials presence is not a reliable signal (storage_state is).
@@ -2412,7 +2416,7 @@ export default function AiModule() {
           // Optimistic: hide onboarding immediately after successful save/upload,
           // then refresh status from server.
           setCredsStatus({ status: 'ok' });
-          setAccessStatus({ status: 'ok', has_storage_state: true });
+          setAccessStatus({ status: 'ok', has_storage_state: true, reconnect_required: false });
           loadCreds();
           loadRemoteStatus();
           loadAccessStatus();

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
-from app.services.ai_wb_access_service import user_storage_state_path
+from app.services.ai_wb_access_service import clear_wb_access_reconnect_required, user_storage_state_path
 
 
 app = FastAPI(title="WB Auth Manager", version="1.0.0")
@@ -206,6 +206,8 @@ async def save(
         os.chmod(out, 0o600)
     except OSError:
         pass
+
+    clear_wb_access_reconnect_required(user_id=user_id)
 
     return {"status": "ok", "path": str(out)}
 

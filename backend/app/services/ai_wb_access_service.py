@@ -27,6 +27,40 @@ def user_storage_state_path(*, user_id: str) -> Path:
     return p
 
 
+def user_wb_reconnect_flag_path(*, user_id: str) -> Path:
+    """
+    Sentinel: storage_state файл есть, но headless-забор отчёта попросил человека перелогиниться.
+    """
+    base = (os.getenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR") or "").strip() or "tmp/wb_storage_states"
+    return Path(base) / f"{user_id}.reconnect_required"
+
+
+def set_wb_access_reconnect_required(*, user_id: str) -> None:
+    p = user_wb_reconnect_flag_path(user_id=user_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("1\n", encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+def clear_wb_access_reconnect_required(*, user_id: str) -> None:
+    user_wb_reconnect_flag_path(user_id=user_id).unlink(missing_ok=True)
+
+
+def wb_reconnect_required(*, user_id: str) -> bool:
+    return user_wb_reconnect_flag_path(user_id=user_id).is_file()
+
+
+def wb_headless_access_effective(*, user_id: str) -> bool:
+    """Файл storage_state валиден и нет маркера принудительного переподключения."""
+    p = user_storage_state_path(user_id=user_id)
+    if not p.is_file() or p.stat().st_size < 50:
+        return False
+    return not wb_reconnect_required(user_id=user_id)
+
+
 def interactive_grant_wb_access(*, user_id: str) -> dict[str, Any]:
     """
     Interactive, headed Playwright login flow:
@@ -72,6 +106,7 @@ def interactive_grant_wb_access(*, user_id: str) -> dict[str, Any]:
 
             # Persist session state for future headless fetches.
             context.storage_state(path=str(out))
+            clear_wb_access_reconnect_required(user_id=user_id)
             return {"status": "ok", "storage_state_path": str(out)}
         except Exception as exc:  # noqa: BLE001
             raise InteractiveAuthFailedError(str(exc)) from exc

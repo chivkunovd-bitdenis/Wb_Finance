@@ -94,7 +94,11 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         PlaywrightBlockedError,
         fetch_comparison_excel_bytes,
     )
-    from app.services.ai_wb_access_service import user_storage_state_path
+    from app.services.ai_wb_access_service import (
+        clear_wb_access_reconnect_required,
+        set_wb_access_reconnect_required,
+        user_storage_state_path,
+    )
 
     def _parse_periods(raw: str) -> list[str]:
         items = []
@@ -165,6 +169,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
         report_date = date_type.today()
         periods = _periods_to_fetch(period)
         results: list[dict] = []
+        used_storage_state = bool(storage_state_path and Path(storage_state_path).is_file())
 
         for p2 in periods:
             # Single "today+period" report row: created/updated as running before fetch.
@@ -209,6 +214,8 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                 excel_bytes = _maybe_extract_xlsx(excel_bytes, raw_meta or {})
             except PlaywrightAuthError as exc:
                 mark_error(db=db, user_id=user_id, status="invalid", message=str(exc))
+                if used_storage_state:
+                    set_wb_access_reconnect_required(user_id=user_id)
                 rep_row.status = "error"
                 rep_row.last_error = str(exc)[:900]
                 db.add(rep_row)
@@ -221,6 +228,8 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                 enabled = (os.getenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
                 if not enabled:
                     mark_error(db=db, user_id=user_id, status="disabled", message=str(exc))
+                elif used_storage_state:
+                    set_wb_access_reconnect_required(user_id=user_id)
                 rep_row.status = "error"
                 rep_row.last_error = str(exc)[:900]
                 db.add(rep_row)
@@ -229,6 +238,8 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                 return {"ok": False, "error": "blocked", "period": p2}
             except Exception as exc:  # noqa: BLE001
                 mark_error(db=db, user_id=user_id, status="needs_reauth", message=str(exc))
+                if used_storage_state:
+                    set_wb_access_reconnect_required(user_id=user_id)
                 rep_row.status = "error"
                 rep_row.last_error = str(exc)[:900]
                 db.add(rep_row)
@@ -305,6 +316,7 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
             )
             _log_action(db, user_id, str(rep.id), action="refresh", ok=True, err=None)
 
+        clear_wb_access_reconnect_required(user_id=user_id)
         mark_verified(db=db, user_id=user_id)
         primary_res = next((x for x in results if x.get("period") == period), results[0] if results else None)
         out = {"ok": True, "reports": results}

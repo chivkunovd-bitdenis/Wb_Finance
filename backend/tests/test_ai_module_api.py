@@ -1019,6 +1019,128 @@ def test_ai_tasks_list_auto_creates_wb_access_task_when_missing(client: TestClie
     assert any(x.get("task_type") == "wb_access_grant" and x.get("status") in {"new", "in_progress"} for x in items)
 
 
+def test_ai_tasks_list_creates_wb_access_when_reconnect_required_despite_storage(client: TestClient, monkeypatch, tmp_path) -> None:
+    """После сбоя Playwright в режиме storage_state маркер reconnect → задача wb_access_grant снова видна."""
+    user_id = "00000000-0000-0000-0000-000000000111"
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR", str(tmp_path))
+    from app.services.ai_wb_access_service import (
+        clear_wb_access_reconnect_required,
+        set_wb_access_reconnect_required,
+        user_storage_state_path,
+    )
+
+    p = user_storage_state_path(user_id=user_id)
+    p.write_text('{"cookies":[],"origins":[],"pad":"' + "x" * 80 + '"}', encoding="utf-8")
+    set_wb_access_reconnect_required(user_id=user_id)
+    try:
+        r = client.get("/ai/tasks")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert any(
+            x.get("task_type") == "wb_access_grant" and x.get("status") in {"new", "in_progress"} for x in items
+        )
+    finally:
+        clear_wb_access_reconnect_required(user_id=user_id)
+        if p.is_file():
+            p.unlink()
+        db_cleanup = SessionLocal()
+        try:
+            db_cleanup.query(AiTask).filter(
+                AiTask.user_id == user_id,
+                AiTask.dedupe_key == "task:wb_access_grant",
+                AiTask.status.in_(["new", "in_progress"]),
+            ).delete()
+            db_cleanup.commit()
+        finally:
+            db_cleanup.close()
+
+
+def test_wb_access_grant_cannot_complete_while_reconnect_required(client: TestClient, monkeypatch, tmp_path) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR", str(tmp_path))
+    from app.services.ai_wb_access_service import (
+        clear_wb_access_reconnect_required,
+        set_wb_access_reconnect_required,
+        user_storage_state_path,
+    )
+
+    db = SessionLocal()
+    try:
+        db.query(AiTask).filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == "task:wb_access_grant",
+            AiTask.status.in_(["new", "in_progress"]),
+        ).delete()
+        db.commit()
+        t = AiTask(
+            user_id=user_id,
+            nm_id=None,
+            task_type="wb_access_grant",
+            title="Дать доступ к кабинету WB",
+            description="test",
+            reason=None,
+            priority=100,
+            status="new",
+            fingerprint=None,
+            dedupe_key="task:wb_access_grant",
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        task_id = str(t.id)
+    finally:
+        db.rollback()
+        db.close()
+
+    p = user_storage_state_path(user_id=user_id)
+    p.write_text('{"cookies":[],"origins":[],"pad":"' + "x" * 80 + '"}', encoding="utf-8")
+    set_wb_access_reconnect_required(user_id=user_id)
+    try:
+        r = client.patch(f"/ai/tasks/{task_id}", json={"status": "completed"})
+        assert r.status_code == 409
+    finally:
+        clear_wb_access_reconnect_required(user_id=user_id)
+        if p.is_file():
+            p.unlink()
+        db2 = SessionLocal()
+        try:
+            db2.query(AiTask).filter(AiTask.id == task_id).delete()
+            db2.commit()
+        finally:
+            db2.close()
+
+
+def test_competitor_report_playwright_failure_sets_reconnect_flag(client: TestClient, monkeypatch, tmp_path) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "1")
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_FETCH_PERIODS", "week")
+    from app.services.ai_wb_access_service import (
+        clear_wb_access_reconnect_required,
+        user_storage_state_path,
+        user_wb_reconnect_flag_path,
+    )
+
+    fp = user_storage_state_path(user_id=user_id)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text('{"cookies":[],"origins":[],"pad":"' + "x" * 80 + '"}', encoding="utf-8")
+    clear_wb_access_reconnect_required(user_id=user_id)
+
+    import app.services.ai_competitor_playwright as pw
+
+    def _boom(*, login: str, password: str, period: str, storage_state_path: str | None = None):
+        raise RuntimeError("Locator.click: Timeout 20000ms exceeded")
+
+    monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _boom)
+    from celery_app.tasks import ai_competitor_report_fetch_playwright
+
+    res = ai_competitor_report_fetch_playwright(user_id, "week")
+    assert res.get("ok") is False
+    assert user_wb_reconnect_flag_path(user_id=user_id).is_file()
+    user_wb_reconnect_flag_path(user_id=user_id).unlink(missing_ok=True)
+    fp.unlink(missing_ok=True)
+
+
 def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: TestClient, monkeypatch) -> None:
     from cryptography.fernet import Fernet
 

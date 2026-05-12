@@ -97,12 +97,11 @@ def ai_tasks_list(
 ) -> AiTaskListResponse:
     user_id = str(store_ctx.store_owner.id)
 
-    # UX: "WB access granted" == per-user Playwright storage_state exists.
-    # If access is missing, ensure there's a single open human-readable task.
-    from app.services.ai_wb_access_service import user_storage_state_path
+    # UX: "WB access granted" == per-user Playwright storage_state exists
+    # and нет маркера «нужно переподключиться» после сбоя headless-забора отчёта.
+    from app.services.ai_wb_access_service import wb_headless_access_effective
 
-    p = user_storage_state_path(user_id=user_id)
-    has_access = p.is_file() and p.stat().st_size >= 50
+    has_access = wb_headless_access_effective(user_id=user_id)
     dedupe_key = "task:wb_access_grant"
     existing = (
         db.query(AiTask)
@@ -593,7 +592,7 @@ def ai_wb_access_storage_state_upload(
 
     This is a fallback for environments where interactive headed auth cannot run (e.g. Docker without X server).
     """
-    from app.services.ai_wb_access_service import user_storage_state_path
+    from app.services.ai_wb_access_service import clear_wb_access_reconnect_required, user_storage_state_path
 
     name = (file.filename or "").lower()
     if not name.endswith(".json"):
@@ -609,9 +608,11 @@ def ai_wb_access_storage_state_upload(
     if not isinstance(payload, dict) or "cookies" not in payload or "origins" not in payload:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Это не похоже на файл доступа")
 
-    p = user_storage_state_path(user_id=str(store_ctx.store_owner.id))
+    uid = str(store_ctx.store_owner.id)
+    p = user_storage_state_path(user_id=uid)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(raw)
+    clear_wb_access_reconnect_required(user_id=uid)
     return {"status": "ok"}
 
 
@@ -623,11 +624,16 @@ def ai_wb_access_status(
     Check whether a saved Playwright storage_state snapshot exists for this user.
     This is the real signal of "access is granted" for headless/worker usage.
     """
-    from app.services.ai_wb_access_service import user_storage_state_path
+    from app.services.ai_wb_access_service import user_storage_state_path, wb_reconnect_required
 
-    p = user_storage_state_path(user_id=str(store_ctx.store_owner.id))
+    uid = str(store_ctx.store_owner.id)
+    p = user_storage_state_path(user_id=uid)
     ok = p.is_file() and p.stat().st_size >= 50
-    return {"status": "ok", "has_storage_state": ok}
+    return {
+        "status": "ok",
+        "has_storage_state": ok,
+        "reconnect_required": wb_reconnect_required(user_id=uid),
+    }
 
 
 @router.post("/wb-access/remote/start")

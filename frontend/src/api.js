@@ -888,7 +888,7 @@ export async function getAiWbAccessStatus() {
     const raw = await res.text();
     throw new Error(parseApiErrorText(raw, res.status));
   }
-  return res.json(); // { status: "ok", has_storage_state: boolean }
+  return res.json(); // { status: "ok", has_storage_state: boolean, reconnect_required?: boolean }
 }
 
 export async function updateWbApiKey(wbApiKey) {
