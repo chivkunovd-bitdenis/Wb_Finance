@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
+from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.models.product_generation_job import ProductGenerationJob
@@ -10,6 +12,10 @@ from app.models.user import User
 from app.schemas.product_generation import (
     ProductGenerationJobCreate,
     ProductGenerationJobUpdate,
+)
+from app.services.product_generation_assets import (
+    resolve_reference_path,
+    save_reference_uploads,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +68,58 @@ def get_job_for_user(*, db: Session, user: User, job_id: str) -> ProductGenerati
         .filter(ProductGenerationJob.user_id == user.id)
         .first()
     )
+
+
+async def append_job_references(
+    *,
+    db: Session,
+    user: User,
+    job_id: str,
+    uploads: list[UploadFile],
+) -> ProductGenerationJob:
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        raise ValueError("not_found")
+    if job.status != "draft":
+        raise ValueError("bad_status_upload")
+    records, _written = await save_reference_uploads(
+        user_id=str(user.id),
+        job_id=str(job.id),
+        uploads=uploads,
+    )
+    prev: list[Any] = list(job.reference_paths_json or [])
+    prev.extend(records)
+    job.reference_paths_json = prev
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    logger.info("product_generation: appended %s reference(s) to job %s", len(records), job.id)
+    return job
+
+
+def get_reference_file(
+    *,
+    db: Session,
+    user: User,
+    job_id: str,
+    asset_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        raise ValueError("not_found")
+    refs = list(job.reference_paths_json or [])
+    match: dict[str, Any] | None = None
+    for r in refs:
+        if isinstance(r, dict) and str(r.get("asset_id") or "") == asset_id:
+            match = r
+            break
+    if not match:
+        raise ValueError("asset_not_found")
+    stored = str(match.get("stored_name") or "")
+    path = resolve_reference_path(user_id=str(user.id), job_id=str(job.id), stored_name=stored)
+    if path is None or not path.is_file():
+        raise ValueError("missing_file")
+    return path, match
 
 
 def update_job(*, db: Session, user: User, job_id: str, payload: ProductGenerationJobUpdate) -> ProductGenerationJob:

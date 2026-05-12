@@ -240,7 +240,16 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     setSubmitting(true);
     setSubmitError('');
     try {
-      await api.createProductGenerationJob(payload);
+      const job = await api.createProductGenerationJob(payload);
+      const jid = job?.id;
+      if (referenceFiles.length && jid) {
+        try {
+          await api.uploadProductGenerationJobReferences(jid, referenceFiles);
+        } catch (e2) {
+          const hint = jid ? ` Черновик ${jid} создан без файлов — можно удалить его в БД позже или повторить загрузку, когда появится UI.` : '';
+          throw new Error((e2?.message || 'Ошибка загрузки файлов') + hint);
+        }
+      }
       onCreated?.();
       onClose?.();
     } catch (e) {
@@ -332,7 +341,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8 }}>
               <div style={{ fontWeight: 900, fontSize: 13 }}>Референсы</div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                Нужен хотя бы один файл. Несколько файлов можно выбрать за раз. Сохранение на сервер и привязка к черновику — этап PG-2.2 (пока файлы только в браузере до создания записи).
+                Нужен хотя бы один файл. Несколько файлов можно выбрать за раз. После нажатия «Создать черновик» файлы отправляются на сервер (каталог данных API, persist в Docker volume).
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input
@@ -536,10 +545,10 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
         {step === 3 && (
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Проверьте данные перед созданием черновика. После нажатия «Создать черновик» задача появится в списке; запуск фонового пайплайна — в PG-2.3.
+              Проверьте данные перед созданием черновика. Сначала создаётся запись, затем загружаются референсы на диск монолита. Запуск фонового пайплайна — в PG-2.3.
             </div>
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
-              <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов) выбрано локально` : 'Не выбраны'}</InfoRow>
+              <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов) — будут загружены после создания черновика` : 'Не выбраны'}</InfoRow>
               <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
               <InfoRow label="Габариты (Д×Ш×В)">
                 {[dimensionsLength, dimensionsWidth, dimensionsHeight].map((x) => String(x || '').trim()).join(' × ') || '—'}
@@ -685,7 +694,7 @@ function ProductGenerationAdminCard() {
         </button>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Мастер (PG-2.1): референсы, текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize. Фоновый старт пайплайна — PG-2.3; загрузка файлов на сервер — PG-2.2.
+        Мастер: референсы (загрузка на диск API, PG-2.2), текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize. Фоновый старт пайплайна — PG-2.3.
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (

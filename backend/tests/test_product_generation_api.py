@@ -141,6 +141,60 @@ def test_product_generation_patch_invalid_status(client_admin: TestClient) -> No
     assert bad.status_code == 400
 
 
+def test_product_generation_reference_upload_and_download(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "Ref job"})
+    assert r.status_code == 201
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    r2 = client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("shot.png", png, "image/png"))],
+    )
+    assert r2.status_code == 200
+    body = r2.json()
+    refs = body.get("reference_paths_json") or []
+    assert len(refs) == 1
+    assert refs[0].get("asset_id")
+    assert refs[0].get("stored_name", "").endswith(".png")
+    aid = str(refs[0]["asset_id"])
+    r3 = client_admin.get(f"/ai/product-generation/jobs/{job_id}/references/{aid}/file")
+    assert r3.status_code == 200
+    assert r3.content.startswith(b"\x89PNG")
+
+
+def test_product_generation_reference_rejects_non_image(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    bad = client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("x.txt", b"hello", "text/plain"))],
+    )
+    assert bad.status_code == 415
+
+
+def test_product_generation_reference_upload_only_draft(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    client_admin.patch(f"/ai/product-generation/jobs/{job_id}", json={"status": "in_progress"})
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    blocked = client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    assert blocked.status_code == 400
+
+
+def test_product_generation_reference_download_unknown_asset(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    nf = client_admin.get(f"/ai/product-generation/jobs/{job_id}/references/deadbeef/file")
+    assert nf.status_code == 404
+
+
 def test_product_generation_not_found_for_other_user(client_admin: TestClient) -> None:
     other_id = "00000000-0000-0000-0000-0000000000b1"
     _ensure_user(user_id=other_id, is_admin=True)

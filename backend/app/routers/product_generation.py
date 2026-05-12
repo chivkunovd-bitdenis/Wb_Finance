@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -50,6 +51,65 @@ def get_job(
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена")
     return ProductGenerationJobOut.model_validate(job)
+
+
+@router.post("/jobs/{job_id}/references", response_model=ProductGenerationJobOut)
+async def upload_job_references(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+    files: list[UploadFile] = File(...),
+) -> ProductGenerationJobOut:
+    try:
+        job = await pg_service.append_job_references(
+            db=db,
+            user=current_user,
+            job_id=job_id,
+            uploads=files,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена") from exc
+        if code == "bad_status_upload":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Загрузка референсов только для черновика (draft)",
+            ) from exc
+        if code == "no_files":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нет файлов") from exc
+        if code == "too_many_files":
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Слишком много файлов") from exc
+        if code == "file_too_large":
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Файл слишком большой") from exc
+        if code == "bad_content_type":
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Допустимы только изображения: JPEG, PNG, WebP, GIF",
+            ) from exc
+        logger.exception("product_generation: unexpected ValueError on upload")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
+    return ProductGenerationJobOut.model_validate(job)
+
+
+@router.get("/jobs/{job_id}/references/{asset_id}/file")
+def download_job_reference_file(
+    job_id: str,
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+) -> FileResponse:
+    try:
+        path, meta = pg_service.get_reference_file(db=db, user=current_user, job_id=job_id, asset_id=asset_id)
+    except ValueError as exc:
+        code = str(exc)
+        if code in {"not_found", "asset_not_found", "missing_file"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден") from exc
+        logger.exception("product_generation: unexpected ValueError on download")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
+    media = str(meta.get("content_type") or "application/octet-stream")
+    name = str(meta.get("original_filename") or "reference")
+    return FileResponse(path=str(path), media_type=media, filename=name)
 
 
 @router.patch("/jobs/{job_id}", response_model=ProductGenerationJobOut)

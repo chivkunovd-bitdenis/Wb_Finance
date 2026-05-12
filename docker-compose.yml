@@ -62,6 +62,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       # Shared per-user WB storage_state snapshots (must be the same across api/worker/wb_auth)
       WB_PLAYWRIGHT_STORAGE_STATE_DIR: /app/data/wb_storage_states
+      # ИИ: референсы полной генерации товара (PG-2.2), тот же volume ./backend/data:/app/data
+      PRODUCT_GENERATION_REFERENCES_DIR: /app/data/product_generation_references
       # Internal-only auth between api -> wb_auth manager (used for remote noVNC login flow)
       WB_AUTH_INTERNAL_TOKEN: ${WB_AUTH_INTERNAL_TOKEN:-dev-internal-token}
       # AI daily brief + внешние вызовы к LLM выключены по умолчанию

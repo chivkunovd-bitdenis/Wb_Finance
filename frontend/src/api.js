@@ -65,6 +65,16 @@ function headers(withAuth = true) {
   return h;
 }
 
+/** multipart/form-data: без Content-Type, чтобы браузер выставил boundary */
+function headersMultipart(withAuth = true) {
+  const h = {};
+  const t = getToken();
+  if (withAuth && t) h['Authorization'] = `Bearer ${t}`;
+  const storeOwnerId = (lsGet(ACTIVE_STORE_KEY) || '').trim();
+  if (storeOwnerId) h['X-Store-Owner-Id'] = storeOwnerId;
+  return h;
+}
+
 export async function login(email, password) {
   const res = await apiFetch(`${API_BASE}/auth/login`, {
     method: 'POST',
@@ -545,6 +555,29 @@ export async function createProductGenerationJob(body = {}) {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify(body || {}),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Загрузить референсы (изображения) в черновик PG-2.2; только draft, admin. */
+export async function uploadProductGenerationJobReferences(jobId, files) {
+  const list = Array.isArray(files) ? files.filter(Boolean) : [];
+  if (!list.length) {
+    throw new Error('Нет файлов для загрузки');
+  }
+  const fd = new FormData();
+  for (const f of list) {
+    fd.append('files', f, f.name);
+  }
+  const res = await apiFetch(`${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/references`, {
+    method: 'POST',
+    headers: headersMultipart(),
+    body: fd,
   });
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {

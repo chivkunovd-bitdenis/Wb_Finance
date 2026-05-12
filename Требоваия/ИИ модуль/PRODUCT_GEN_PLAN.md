@@ -124,9 +124,11 @@
 | `GET /ai/product-generation/jobs` | Список текущего админа |
 | `GET /ai/product-generation/jobs/{id}` | Деталка |
 | `PATCH /ai/product-generation/jobs/{id}` | Обновление полей (SEO, цена, выборы — по мере фаз) |
+| `POST /ai/product-generation/jobs/{id}/references` | Multipart: референсы на диск монолита + `reference_paths_json` (PG-2.2) |
+| `GET /ai/product-generation/jobs/{id}/references/{asset_id}/file` | Скачать/превью референса (admin) |
 | `POST /ai/product-generation/jobs/{id}/start` | Старт pipeline (PG-2.3 / PG-3.4) |
 
-Прокси файлов и publish — отдельные маршруты в PG-4 / PG-5.
+Прокси **сгенерированных** файлов из image-сервиса и publish — отдельные маршруты в PG-4 / PG-5.
 
 ---
 
