@@ -16,7 +16,6 @@ from app.schemas.product_generation import (
     ProductGenerationJobUpdate,
 )
 from app.services import product_generation_service as pg_service
-from celery_app.tasks import product_generation_pipeline_stub
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +137,9 @@ def start_job_pipeline(
         logger.exception("product_generation: unexpected ValueError on start")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
     try:
-        product_generation_pipeline_stub.delay(str(job.id))
+        from celery_app.tasks import product_generation_pipeline_stub as pipeline_stub
+
+        pipeline_stub.delay(str(job.id))
     except Exception as exc:
         logger.exception("product_generation: Celery enqueue failed for job %s", job_id)
         pg_service.revert_local_pipeline_start(db=db, user=current_user, job_id=job_id)

@@ -273,8 +273,8 @@ def test_product_generation_start_celery_enqueue_failure_reverts(
         f"/ai/product-generation/jobs/{job_id}/references",
         files=[("files", ("a.png", png, "image/png"))],
     )
-    with patch("app.routers.product_generation.product_generation_pipeline_stub") as mock_stub:
-        mock_stub.delay.side_effect = RuntimeError("broker down")
+    with patch("celery_app.tasks.product_generation_pipeline_stub.delay") as mock_delay:
+        mock_delay.side_effect = RuntimeError("broker down")
         rs = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
     assert rs.status_code == 503
     rg = client_admin.get(f"/ai/product-generation/jobs/{job_id}")

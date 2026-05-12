@@ -35,7 +35,7 @@
 |----|--------|-----|
 | PG-2.1 | UI: мастер по шагам (**B**): референсы (multi-file), текст, габариты отдельными полями, цена, артикул, **наименование**, **бренд**, таблица размеров **techSize + wbSize** (шаблон **B**) | [x] `AiModule.jsx`: шаги 1–3, валидация; `POST /jobs` + `POST .../references` (PG-2.2) |
 | PG-2.2 | Загрузка файлов: сохранение в хранилище **монолита** или передача в сервис по контракту (зафиксировать в PG-0.1) + `asset_id` в черновике | [x] `POST/GET .../references`, `product_generation_assets`, `reference_paths_json` с `asset_id`; Docker: `PRODUCT_GENERATION_REFERENCES_DIR` на `/app/data/...`; pytest |
-| PG-2.3 | Последний шаг **«Создать»**: создаётся задача, **фон** запускается, форма закрывается; в списке задач статус «В процессе» | [x] `POST /jobs/{id}/start`, Celery `product_generation_pipeline_stub`, pytest; UI вызывает start после upload |
+| PG-2.3 | Последний шаг **«Создать»**: создаётся задача, **фон** запускается, форма закрывается; в списке задач статус «В процессе» | [x] `POST /jobs/{id}/start`, Celery `product_generation_pipeline_stub`, pytest; UI вызывает start после upload; опционально Playwright `e2e/product-generation-wizard.spec.js` (admin + `E2E_*`) |
 | PG-2.4 | Категория WB: **не обязательна** в форме; при отсутствии — не блокируем черновик (поведение зафиксировать в контракте) | Нет обязательной ошибки по категории |
 
 ---
