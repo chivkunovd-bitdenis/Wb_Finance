@@ -9,6 +9,38 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-34
+Дата: 2026-05-12
+Статус: fixed
+Автоматизация: нет (обнаружено при `docker compose exec api alembic upgrade head` на локальной БД)
+
+## Бизнес-описание
+После поднятия Docker API мог не стартовать из‑за падения миграции Alembic при уже существующей колонке `review_created_at` (рассинхрон: колонка добавлена DDL тестов/ручной правкой, а `alembic_version` ещё не на head).
+
+## Процесс / сценарий
+1) `alembic upgrade head` на контейнере `api`.
+2) Ожидание: миграция проходит, API healthy.
+3) Факт (до фикса): `DuplicateColumn: review_created_at already exists` → контейнер `api` в restart loop.
+
+## Техническое описание
+Ревизия `2d4f3a1c0b11` делала безусловный `ADD COLUMN`.
+
+## Root cause (почему произошло)
+- Локальная БД уже имела колонку (например из `ALTER TABLE ... IF NOT EXISTS` в тестовом DDL), а миграция не была идемпотентной.
+
+## Исправление (что сделали)
+В `upgrade`/`downgrade` ревизии `2d4f3a1c0b11` добавлена проверка через `inspect`: колонку добавляем/удаляем только если её ещё нет/есть.
+
+## Профилактика (как не повторить)
+- Для additive-колонок в окружениях с возможным дрейфом схемы — идемпотентный `ADD COLUMN` (как для `ai_review_replies` table migration).
+
+## Проверка
+- Команды: `docker compose exec api alembic upgrade head`, `docker compose exec api alembic current`, `curl http://localhost:8000/health`
+- Сценарии: API `healthy`, revision `2d4f3a1c0b11 (head)`.
+
+Затронутые файлы: `backend/alembic/versions/2d4f3a1c0b11_ai_review_replies_review_created_at.py`, `BUGLOG.md`
+
+---
 ID: BUG-33
 Дата: 2026-05-12
 Статус: fixed
