@@ -134,3 +134,40 @@ def test_review_reply_publish_marks_published(client: TestClient) -> None:
     finally:
         db.close()
 
+
+def test_review_reply_publish_dry_run_does_not_call_wb(client: TestClient) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    feedback_id = f"fb-{__import__('uuid').uuid4()}"
+
+    db = SessionLocal()
+    try:
+        db.add(
+            AiReviewReply(
+                user_id=user_id,
+                feedback_id=feedback_id,
+                product_name="Test",
+                author="Anon",
+                rating="5",
+                review_text="ok",
+                suggested_reply="thanks",
+                edited_reply=None,
+                status="pending",
+                last_error=None,
+                first_seen_date=date.today(),
+                published_at=None,
+            )
+        )
+        u = db.query(User).filter_by(id=user_id).first()
+        assert u is not None
+        u.wb_api_key = "test-key"
+        db.add(u)
+        db.commit()
+    finally:
+        db.close()
+
+    with patch("app.services.ai_review_replies_service.httpx.post") as mock_post:
+        r = client.post(f"/ai/review-replies/{feedback_id}/publish?dry_run=true", json={"text": "edited"})
+        assert r.status_code == 200
+        assert r.json().get("status") == "dry_run"
+        assert mock_post.call_count == 0
+

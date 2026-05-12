@@ -316,6 +316,7 @@ def ai_review_replies_pending_list(
 def ai_review_reply_publish(
     feedback_id: str,
     body: dict = Body(...),
+    dry_run: bool = Query(False),
     store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -334,6 +335,27 @@ def ai_review_reply_publish(
     from app.services.ai_review_replies_service import publish_review_reply
 
     try:
+        if dry_run:
+            fid = str(feedback_id or "").strip()
+            reply = (text or "").strip()
+            if not fid:
+                raise ValueError("feedback_id is required")
+            if not reply:
+                raise ValueError("reply text is required")
+            from app.services.ai_review_replies_service import WB_FEEDBACKS_ANSWER_URL
+
+            return {
+                "status": "dry_run",
+                "wb_request": {
+                    "method": "POST",
+                    "url": WB_FEEDBACKS_ANSWER_URL,
+                    "headers": {
+                        "Authorization": "***",
+                        "Content-Type": "application/json",
+                    },
+                    "json": {"id": fid, "text": reply},
+                },
+            }
         row = publish_review_reply(db=db, user_id=user_id, wb_api_key=wb_key, feedback_id=feedback_id, text=text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
