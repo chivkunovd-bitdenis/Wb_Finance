@@ -928,6 +928,13 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
     setLoading(true);
     setError('');
     try {
+      // Best-effort: auto-sync unanswered reviews so the daily approval task appears
+      // without manual actions. Never block tasks list on sync failures.
+      try {
+        await api.syncAiReviewReplies({ take: 20 });
+      } catch {
+        // ignore
+      }
       const data = await api.getAiTasks();
       setItems(Array.isArray(data?.items) ? data.items : []);
     } catch (e) {
