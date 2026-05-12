@@ -560,12 +560,6 @@ function ReviewRepliesApproval({ open, onClose }) {
   const [busyId, setBusyId] = useState('');
   const [publishState, setPublishState] = useState({});
 
-  const renderHeader = (text) => (
-    <div style={{ textAlign: 'center', fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
-      {text}
-    </div>
-  );
-
   const formatDateCell = (isoOrDate) => {
     const s = String(isoOrDate || '').trim();
     if (!s) return '—';
@@ -678,118 +672,155 @@ function ReviewRepliesApproval({ open, onClose }) {
         ) : rows.length === 0 ? (
           <div style={{ color: 'var(--text-tertiary)' }}>Неотвеченных отзывов нет</div>
         ) : (
-          <div style={{ overflowY: 'auto', overflowX: 'hidden', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 12, maxHeight: 'min(60vh, 520px)' }}>
-            <table className="table table-sm table-striped" style={{ margin: 0, fontSize: 12, width: '100%', tableLayout: 'fixed' }}>
-              <thead style={{ position: 'sticky', top: 0, background: 'rgba(248,250,252,0.98)', backdropFilter: 'blur(6px)' }}>
-                <tr>
-                  <th style={{ width: 96, verticalAlign: 'middle' }}>{renderHeader('Дата')}</th>
-                  <th style={{ width: 190, verticalAlign: 'middle' }}>{renderHeader('Товар')}</th>
-                  <th style={{ width: 72, verticalAlign: 'middle' }}>{renderHeader('Оценка')}</th>
-                  <th style={{ verticalAlign: 'middle' }}>{renderHeader('Отзыв')}</th>
-                  <th style={{ width: 280, verticalAlign: 'middle' }}>{renderHeader('Ответ (можно править)')}</th>
-                  <th style={{ width: 160, verticalAlign: 'middle' }}>{renderHeader('Статус')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((x) => {
-                  const fid = String(x?.feedback_id || '');
-                  const disabled = Boolean(busyId) && busyId !== fid;
-                  const busy = busyId === fid;
-                  const st = String(x?.status || 'pending');
-                  const ps = publishState?.[fid]?.status || '';
-                  const published = st === 'published' || ps === 'ok';
-                  const publishErr = st === 'error' || ps === 'error';
-                  const publishing = ps === 'publishing' || busy;
-                  return (
-                    <tr key={fid}>
-                      <td style={{ color: 'var(--text-tertiary)', fontSize: 12, textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        {formatDateCell(x?.first_seen_date)}
-                      </td>
-                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.25 }}>
-                        {x?.product_name || '—'}
-                      </td>
-                      <td style={{ fontWeight: 900, textAlign: 'center' }}>{x?.rating || '—'}</td>
-                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.35 }}>
+          <div style={{ display: 'grid', gap: 10, maxHeight: 'min(60vh, 520px)', overflow: 'auto', paddingRight: 2 }}>
+            {rows.map((x) => {
+              const fid = String(x?.feedback_id || '');
+              const disabled = Boolean(busyId) && busyId !== fid;
+              const busy = busyId === fid;
+              const st = String(x?.status || 'pending');
+              const ps = publishState?.[fid]?.status || '';
+              const published = st === 'published' || ps === 'ok';
+              const publishErr = st === 'error' || ps === 'error';
+              const publishing = ps === 'publishing' || busy;
+              const dateText = formatDateCell(x?.first_seen_date);
+              const ratingText = String(x?.rating || '—');
+
+              return (
+                <div
+                  key={fid}
+                  style={{
+                    ...softCardStyle(),
+                    padding: 12,
+                    borderRadius: 14,
+                    background: '#fff',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 900 }}>
+                        {dateText}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>•</span>
+                      <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 900 }}>
+                        Оценка: {ratingText}
+                      </span>
+                    </div>
+                    <div style={{ marginLeft: 'auto' }}>
+                      {published ? (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            padding: '4px 10px',
+                            borderRadius: 999,
+                            background: 'rgba(16,185,129,0.12)',
+                            border: '1px solid rgba(16,185,129,0.20)',
+                            color: '#047857',
+                            fontWeight: 900,
+                            fontSize: 12,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Опубликовано
+                        </span>
+                      ) : publishErr ? (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            padding: '4px 10px',
+                            borderRadius: 999,
+                            background: 'rgba(239,68,68,0.10)',
+                            border: '1px solid rgba(239,68,68,0.20)',
+                            color: '#b91c1c',
+                            fontWeight: 900,
+                            fontSize: 12,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Ошибка публикации
+                        </span>
+                      ) : publishing ? (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            padding: '4px 10px',
+                            borderRadius: 999,
+                            background: 'rgba(59,130,246,0.10)',
+                            border: '1px solid rgba(59,130,246,0.18)',
+                            color: '#1d4ed8',
+                            fontWeight: 900,
+                            fontSize: 12,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Публикуем…
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 8, fontWeight: 950, fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.25 }}>
+                    {x?.product_name || '—'}
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                    <div style={{ ...softCardStyle(), padding: 10, background: 'rgba(2,6,23,0.02)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6 }}>
+                        Отзыв
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.4 }}>
                         {x?.review_text || '—'}
-                        {x?.last_error ? (
-                          <div style={{ marginTop: 6, color: '#b91c1c', fontSize: 11 }}>
-                            Ошибка AI/WB: {String(x.last_error).slice(0, 200)}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td>
-                        <textarea
-                          className="form-control form-control-sm"
-                          rows={4}
-                          value={String(drafts?.[fid] ?? '')}
-                          onChange={(e) => setDrafts((m) => ({ ...(m || {}), [fid]: e.target.value }))}
-                          placeholder="Ответ…"
-                          disabled={busy || disabled}
-                          style={{ resize: 'vertical', minHeight: 92 }}
-                        />
-                      </td>
-                      <td style={{ verticalAlign: 'top' }}>
-                        {published ? (
-                          <div
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              padding: '4px 10px',
-                              borderRadius: 999,
-                              background: 'rgba(16,185,129,0.12)',
-                              border: '1px solid rgba(16,185,129,0.20)',
-                              color: '#047857',
-                              fontWeight: 900,
-                              fontSize: 12,
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            Опубликовано
-                          </div>
-                        ) : publishErr ? (
-                          <div style={{ display: 'grid', gap: 8 }}>
-                            <div
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                padding: '4px 10px',
-                                borderRadius: 999,
-                                background: 'rgba(239,68,68,0.10)',
-                                border: '1px solid rgba(239,68,68,0.20)',
-                                color: '#b91c1c',
-                                fontWeight: 900,
-                                fontSize: 12,
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              Ошибка публикации
-                            </div>
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-secondary"
-                              onClick={() => publish(fid)}
-                              disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
-                            >
-                              {publishing ? 'Публикую…' : 'Повторить'}
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-primary"
-                            onClick={() => publish(fid)}
-                            disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
-                            style={{ width: '100%' }}
-                          >
-                            {publishing ? 'Публикую…' : 'Опубликовать'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </div>
+                      {x?.last_error ? (
+                        <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>
+                          Ошибка AI/WB: {String(x.last_error).slice(0, 200)}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6 }}>
+                        Ответ (можно править)
+                      </div>
+                      <textarea
+                        className="form-control form-control-sm"
+                        rows={4}
+                        value={String(drafts?.[fid] ?? '')}
+                        onChange={(e) => setDrafts((m) => ({ ...(m || {}), [fid]: e.target.value }))}
+                        placeholder="Ответ…"
+                        disabled={busy || disabled}
+                        style={{ resize: 'vertical', minHeight: 92 }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
+                    {publishErr ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={() => publish(fid)}
+                        disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
+                      >
+                        {publishing ? 'Публикую…' : 'Повторить'}
+                      </button>
+                    ) : null}
+                    {!published && !publishErr ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        onClick={() => publish(fid)}
+                        disabled={publishing || disabled || !String(drafts?.[fid] || '').trim()}
+                      >
+                        {publishing ? 'Публикую…' : 'Опубликовать'}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
