@@ -560,6 +560,18 @@ function ReviewRepliesApproval({ open, onClose }) {
   const [busyId, setBusyId] = useState('');
   const [publishState, setPublishState] = useState({});
 
+  const renderHeader = (text) => (
+    <div style={{ textAlign: 'center', fontSize: 11, fontWeight: 900, letterSpacing: '0.02em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
+      {text}
+    </div>
+  );
+
+  const formatDateCell = (isoOrDate) => {
+    const s = String(isoOrDate || '').trim();
+    if (!s) return '—';
+    return s.length >= 10 ? s.slice(0, 10) : s;
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -648,8 +660,16 @@ function ReviewRepliesApproval({ open, onClose }) {
       )}
     >
       <div style={{ display: 'grid', gap: 10, maxHeight: 'min(78vh, 720px)' }}>
-        <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
-          Здесь показаны <strong>неотвеченные</strong> отзывы из WB и предложенный ответ от AI. Можно отредактировать текст и нажать “Опубликовать”.
+        <div style={{ ...softCardStyle(), padding: 12, background: 'linear-gradient(180deg, rgba(124,58,237,0.06), rgba(124,58,237,0.02))', borderColor: 'rgba(124,58,237,0.16)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontWeight: 950, fontSize: 15, color: 'var(--text-primary)' }}>Неотвеченные отзывы</div>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+              {rows.length ? `Найдено: ${rows.length}` : ' '}
+            </div>
+          </div>
+          <div style={{ marginTop: 6, color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
+            Можно отредактировать текст ответа и нажать “Опубликовать”. После ответа WB в строке появится статус “Опубликовано” или “Ошибка публикации”.
+          </div>
         </div>
         {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
 
@@ -658,15 +678,16 @@ function ReviewRepliesApproval({ open, onClose }) {
         ) : rows.length === 0 ? (
           <div style={{ color: 'var(--text-tertiary)' }}>Неотвеченных отзывов нет</div>
         ) : (
-          <div style={{ overflow: 'auto', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 10, maxHeight: 'min(60vh, 520px)' }}>
-            <table className="table table-sm" style={{ margin: 0, fontSize: 12, minWidth: 860 }}>
-              <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-secondary)' }}>
+          <div style={{ overflowY: 'auto', overflowX: 'hidden', border: '1px solid rgba(2,6,23,0.08)', borderRadius: 12, maxHeight: 'min(60vh, 520px)' }}>
+            <table className="table table-sm table-striped" style={{ margin: 0, fontSize: 12, width: '100%', tableLayout: 'fixed' }}>
+              <thead style={{ position: 'sticky', top: 0, background: 'rgba(248,250,252,0.98)', backdropFilter: 'blur(6px)' }}>
                 <tr>
-                  <th style={{ width: 260 }}>Товар</th>
-                  <th style={{ width: 90 }}>Оценка</th>
-                  <th>Отзыв</th>
-                  <th>Ответ (можно править)</th>
-                  <th style={{ width: 160 }}>Статус</th>
+                  <th style={{ width: 96, verticalAlign: 'middle' }}>{renderHeader('Дата')}</th>
+                  <th style={{ width: 190, verticalAlign: 'middle' }}>{renderHeader('Товар')}</th>
+                  <th style={{ width: 72, verticalAlign: 'middle' }}>{renderHeader('Оценка')}</th>
+                  <th style={{ verticalAlign: 'middle' }}>{renderHeader('Отзыв')}</th>
+                  <th style={{ width: 280, verticalAlign: 'middle' }}>{renderHeader('Ответ (можно править)')}</th>
+                  <th style={{ width: 160, verticalAlign: 'middle' }}>{renderHeader('Статус')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -681,9 +702,14 @@ function ReviewRepliesApproval({ open, onClose }) {
                   const publishing = ps === 'publishing' || busy;
                   return (
                     <tr key={fid}>
-                      <td style={{ color: 'var(--text-secondary)' }}>{x?.product_name || '—'}</td>
-                      <td style={{ fontWeight: 800 }}>{x?.rating || '—'}</td>
-                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxWidth: 360 }}>
+                      <td style={{ color: 'var(--text-tertiary)', fontSize: 12, textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        {formatDateCell(x?.first_seen_date)}
+                      </td>
+                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.25 }}>
+                        {x?.product_name || '—'}
+                      </td>
+                      <td style={{ fontWeight: 900, textAlign: 'center' }}>{x?.rating || '—'}</td>
+                      <td style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.35 }}>
                         {x?.review_text || '—'}
                         {x?.last_error ? (
                           <div style={{ marginTop: 6, color: '#b91c1c', fontSize: 11 }}>
@@ -691,7 +717,7 @@ function ReviewRepliesApproval({ open, onClose }) {
                           </div>
                         ) : null}
                       </td>
-                      <td style={{ minWidth: 320 }}>
+                      <td>
                         <textarea
                           className="form-control form-control-sm"
                           rows={4}
@@ -699,6 +725,7 @@ function ReviewRepliesApproval({ open, onClose }) {
                           onChange={(e) => setDrafts((m) => ({ ...(m || {}), [fid]: e.target.value }))}
                           placeholder="Ответ…"
                           disabled={busy || disabled}
+                          style={{ resize: 'vertical', minHeight: 92 }}
                         />
                       </td>
                       <td style={{ verticalAlign: 'top' }}>
