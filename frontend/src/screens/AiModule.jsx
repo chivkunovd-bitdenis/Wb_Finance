@@ -54,6 +54,158 @@ function statusBadge(status) {
   );
 }
 
+const VITE_PRODUCT_GEN_UI_STUB = import.meta.env.VITE_PRODUCT_GEN_UI_STUB === '1';
+
+function productGenerationStatusBadge(status) {
+  const s = String(status || '');
+  const map = {
+    draft: { bg: 'rgba(59,130,246,0.10)', color: '#1d4ed8', label: 'Черновик' },
+    in_progress: { bg: 'rgba(124,58,237,0.10)', color: '#6d28d9', label: 'В процессе' },
+    error: { bg: 'rgba(239,68,68,0.10)', color: '#b91c1c', label: 'Ошибка' },
+    ready_to_publish: { bg: 'rgba(245,158,11,0.14)', color: '#b45309', label: 'К публикации' },
+    published: { bg: 'rgba(16,172,132,0.12)', color: '#0f766e', label: 'Опубликовано' },
+  };
+  const v = map[s] || { bg: 'rgba(0,0,0,0.06)', color: 'var(--text-secondary)', label: s || '—' };
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '4px 10px',
+        borderRadius: 999,
+        background: v.bg,
+        color: v.color,
+        border: '1px solid rgba(0,0,0,0.06)',
+        fontSize: 12,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {v.label}
+    </span>
+  );
+}
+
+function ProductGenerationAdminCard() {
+  const [meChecked, setMeChecked] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await api.getMe();
+        if (cancelled) return;
+        setIsAdmin(Boolean(me?.is_admin));
+      } catch {
+        if (cancelled) return;
+        setIsAdmin(false);
+      } finally {
+        if (!cancelled) setMeChecked(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.listProductGenerationJobs();
+      setItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (e) {
+      setError(e?.message || 'Не удалось загрузить задачи');
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!meChecked || !isAdmin || VITE_PRODUCT_GEN_UI_STUB) return undefined;
+    load();
+    return undefined;
+  }, [meChecked, isAdmin, load]);
+
+  if (!meChecked || !isAdmin) return null;
+
+  if (VITE_PRODUCT_GEN_UI_STUB) {
+    return (
+      <div style={{ ...softCardStyle(), padding: 14 }}>
+        <div style={{ fontWeight: 900, marginBottom: 6 }}>Полная генерация товара</div>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+          Скоро: мастер создания карточки с ИИ (фаза 2). Доступ только для администратора.
+        </div>
+      </div>
+    );
+  }
+
+  const onCreateDraft = async () => {
+    setCreating(true);
+    setError('');
+    try {
+      await api.createProductGenerationJob({});
+      await load();
+    } catch (e) {
+      setError(e?.message || 'Не удалось создать черновик');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div style={{ ...softCardStyle(), padding: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
+        <button type="button" className="btn btn-primary btn-sm" onClick={onCreateDraft} disabled={creating || loading}>
+          {creating ? 'Создаю…' : 'Создать черновик'}
+        </button>
+        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={load} disabled={loading}>
+          {loading ? 'Обновление…' : 'Обновить'}
+        </button>
+      </div>
+      <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+        Пошаговый мастер и фоновый пайплайн — в следующих фазах (PG-2+). Сейчас доступен список черновиков и создание пустой задачи.
+      </div>
+      {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
+      {loading && items.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div>
+      ) : items.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)' }}>Пока нет задач. Нажмите «Создать черновик», чтобы проверить API.</div>
+      ) : (
+        <div className="table-wrapper" style={{ marginTop: 0 }}>
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th>Статус</th>
+                <th>Название</th>
+                <th>Артикул</th>
+                <th>Создана</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={String(row?.id)}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{productGenerationStatusBadge(row?.status)}</td>
+                  <td>{row?.title || '—'}</td>
+                  <td>{row?.vendor_code || '—'}</td>
+                  <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-tertiary)' }}>
+                    {row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InfoRow({ label, children }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(2,6,23,0.06)' }}>
@@ -1682,6 +1834,8 @@ export default function AiModule() {
         busy={comparisonBusy}
         errorText={comparisonError}
       />
+
+      <ProductGenerationAdminCard />
 
       {onboardingDone && (
         <>

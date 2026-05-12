@@ -9,6 +9,7 @@ from app.routers import auth, sync, dashboard, billing, stores
 from app.routers import daily_brief
 from app.routers import offer_ai
 from app.routers import ai_module
+from app.routers import product_generation
 from app.middleware.request_logging import RequestLoggingMiddleware
 
 app = FastAPI(title="WB Finance API", version="0.1.0")
@@ -44,6 +45,7 @@ app.include_router(daily_brief.router)
 app.include_router(stores.router)
 app.include_router(offer_ai.router)
 app.include_router(ai_module.router)
+app.include_router(product_generation.router)
 
 
 @app.get("/health")

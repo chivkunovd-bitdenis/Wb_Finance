@@ -34,6 +34,7 @@ from app.models import (  # noqa: F401
     AiTask,
     AiHypothesis,
     AiHypothesisDailyLog,
+    ProductGenerationJob,
 )
 
 

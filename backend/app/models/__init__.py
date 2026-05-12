@@ -32,6 +32,7 @@ from app.models.ai_competitor_metric import AiCompetitorMetric
 from app.models.ai_wb_cabinet_credential import AiWbCabinetCredential
 from app.models.ai_competitor_report_action import AiCompetitorReportAction
 from app.models.ai_review_reply import AiReviewReply
+from app.models.product_generation_job import ProductGenerationJob
 
 __all__ = [
     "Base",
@@ -68,4 +69,5 @@ __all__ = [
     "AiWbCabinetCredential",
     "AiCompetitorReportAction",
     "AiReviewReply",
+    "ProductGenerationJob",
 ]

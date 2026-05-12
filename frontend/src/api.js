@@ -528,6 +528,32 @@ export async function getAiTasks() {
   return res.json(); // { items: [...] }
 }
 
+/** Список задач полной ИИ-генерации товара (только admin на бэке). */
+export async function listProductGenerationJobs() {
+  const res = await apiFetch(`${API_BASE}/ai/product-generation/jobs`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Создать пустой черновик задачи генерации товара (admin). */
+export async function createProductGenerationJob(body = {}) {
+  const res = await apiFetch(`${API_BASE}/ai/product-generation/jobs`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(body || {}),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function updateAiTaskStatus(taskId, status) {
   const res = await apiFetch(`${API_BASE}/ai/tasks/${taskId}`, {
     method: 'PATCH',

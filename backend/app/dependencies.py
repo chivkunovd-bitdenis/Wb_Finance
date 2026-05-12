@@ -6,6 +6,7 @@ from app.db import get_db
 from app.models.user import User
 from app.core.security import decode_access_token
 from app.services.billing_service import require_access, start_trial_if_needed
+from app.services.offer_chat_service import require_admin
 from app.services.store_access_service import (
     StoreAccessDeniedError,
     StoreAccessNotFoundError,
@@ -75,6 +76,17 @@ def get_current_user(
                 detail=str(exc),
             ) from exc
     return user
+
+
+def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
+    try:
+        require_admin(current_user)
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    return current_user
 
 
 def get_store_context(
