@@ -164,3 +164,42 @@ def test_parse_pokazateli_median_excludes_zero_competitor_values() -> None:
     assert c12["our_value"] == 8.0
     assert c12["competitor_median_value"] == 10.0
 
+
+def test_parse_pokazateli_funnel_median_after_mixed_fraction_and_percent_points() -> None:
+    """Смесь п.п. (15) и долей Excel (0.12) в одной строке — медиана по конкурентам в п.п., не по сырым 0.12."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 10", "Артикул WB 20", "Артикул WB 30"])
+    ws.append(["Показы", 1000, 2000, 3000])
+    ws.append(["CTR", 3.0, 4.0, 5.0])
+    ws.append(["Конверсия в корзину, %", 8.0, 12.0, 10.0])
+    ws.append(["Конверсия в заказ, %", 15.0, 0.12, 0.18])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    o10 = next(i for i in out["items"] if i["nm_id"] == 10 and i["metric_code"] == "funnel_order")
+    assert o10["our_value"] == 15.0
+    assert o10["competitor_median_value"] == pytest.approx(15.0)
+
+
+def test_parse_pokazateli_funnel_all_open_fractions_become_percent_points() -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 1", "Артикул WB 2", "Артикул WB 3"])
+    ws.append(["Показы", 100, 200, 300])
+    ws.append(["CTR", 2.0, 3.0, 4.0])
+    ws.append(["Конверсия в корзину, %", 0.08, 0.10, 0.12])
+    ws.append(["Конверсия в заказ, %", 0.02, 0.03, 0.04])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    fo1 = next(i for i in out["items"] if i["nm_id"] == 1 and i["metric_code"] == "funnel_order")
+    assert fo1["our_value"] == pytest.approx(2.0)
+    assert fo1["competitor_median_value"] == pytest.approx(3.5)
+

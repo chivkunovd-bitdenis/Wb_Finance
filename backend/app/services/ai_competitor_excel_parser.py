@@ -27,7 +27,7 @@ def parse_wb_competitor_excel(
     Semantics (лист «Показатели», колонки «Артикул WB …» — один из артикулов это наш товар).
     **Только эти подписи в первой колонке** (без альтернатив и «похожих» строк):
     - **Показы** → `traffic`: абсолют; по конкурентам — **среднее арифметическое** (нули среди конкурентов не берём).
-    - **Конверсия в корзину, %** → `funnel_cart`: в ячейке число без «%» = процентные пункты; по конкурентам — **медиана** (нули не берём).
+    - **Конверсия в корзину, %** → `funnel_cart`: приводим всю строку к **процентным пунктам** (смешение п.п. и долей Excel как у CTR), затем по конкурентам — **медиана** (нули не берём).
     - **Конверсия в заказ, %** → `funnel_order`: то же.
     - **CTR** → `ctr`: как у конверсий — в БД **процентные пункты** (`unit` = «%»). Если в ячейке **доля** (строго между 0 и 1), умножаем на 100; иначе считаем, что уже п.п. По конкурентам — **медиана** (нули не берём).
 
@@ -141,6 +141,40 @@ def parse_wb_competitor_excel(
                     return fv * 100.0
                 return fv
 
+            def _normalize_funnel_row_to_percent_points(by_nm: dict[int, float | None]) -> dict[int, float | None]:
+                """
+                WB часто отдаёт конверсии в одной строке в одной шкале, но встречается смесь:
+                - числа 8, 12, 15 — уже процентные пункты;
+                - доли 0.08–0.99 — как в Excel «Процент» (0.12 = 12%);
+                - рядом с п.п. доля 1.0 часто означает отображаемые 100%, а не «1 п.п.».
+
+                Медиану по конкурентам считаем **после** приведения всех ячеек строки к п.п.,
+                иначе median(15, 0.12, 0.18) давала бы мусор вместо median(15, 12, 18).
+                """
+                vals = [float(v) for v in by_nm.values() if v is not None]
+                if not vals:
+                    return dict(by_nm)
+                mx = max(vals)
+                # Строго (0,1): доля Excel; ровно 1.0 без других долей — чаще «1 п.п.» в тестах/WB, не умножаем всю строку.
+                any_open_fraction = any(0.0 < v < 1.0 for v in vals)
+                mixed_scale = mx > 1.0 and any_open_fraction
+
+                def _one(v: float | None) -> float | None:
+                    if v is None:
+                        return None
+                    fv = float(v)
+                    if mx <= 1.0 and any_open_fraction:
+                        return fv * 100.0
+                    if mixed_scale:
+                        if 0.0 < fv < 1.0:
+                            return fv * 100.0
+                        if fv == 1.0:
+                            return 100.0
+                        return fv
+                    return fv
+
+                return {nm: _one(v) for nm, v in by_nm.items()}
+
             def _items_for_row(
                 *,
                 row_norm: str,
@@ -152,6 +186,8 @@ def parse_wb_competitor_excel(
                 if r_idx is None:
                     return []
                 by_nm = _cells_for_nm(_read_metric_row(r_idx))
+                if metric_code in {"funnel_cart", "funnel_order"}:
+                    by_nm = _normalize_funnel_row_to_percent_points(by_nm)
                 if metric_code == "ctr":
                     by_nm = {nm: _ctr_cell_to_percent_points(val) for nm, val in by_nm.items()}
                 out: list[dict[str, Any]] = []
