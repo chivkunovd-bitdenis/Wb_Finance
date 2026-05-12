@@ -1,0 +1,49 @@
+# Пример: поднять сервис отдельно или рядом с монолитом.
+# Скопируйте в свой репозиторий вместе с папкой wb_image_pipeline_service.
+
+services:
+  wb_image_pipeline_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9100:9100"
+    env_file:
+      - .env
+    environment:
+      WIP_REDIS_URL: redis://wip_redis:6379/0
+      WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
+      WIP_MEDIA_ROOT: /data/media
+    volumes:
+      - wip_data:/data
+    depends_on:
+      wip_redis:
+        condition: service_healthy
+
+  wb_image_pipeline_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      WIP_REDIS_URL: redis://wip_redis:6379/0
+      WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
+      WIP_MEDIA_ROOT: /data/media
+    volumes:
+      - wip_data:/data
+    command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=INFO"]
+    depends_on:
+      wip_redis:
+        condition: service_healthy
+
+  wip_redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  wip_data:

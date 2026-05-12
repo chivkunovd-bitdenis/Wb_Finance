@@ -44,7 +44,7 @@
 
 | ID | Задача | DoD |
 |----|--------|-----|
-| PG-3.1 | Своя БД сервиса: схема `runs`, `steps`, `assets` (минимум) + миграции в папке сервиса | Поднимается с `docker-compose.example` |
+| PG-3.1 | Своя БД сервиса: схема `runs`, `steps`, `assets` (минимум) + миграции в папке сервиса | [x] Таблицы `wip_runs` / `wip_steps` / `wip_assets`, Alembic `a1b2c3d4e501`, entrypoint `upgrade`, volume `wip_data:/data`, pytest |
 | PG-3.2 | Celery: цепочка-заглушка `run_created → step_done` с реальным Redis | Логи воркера; ретраи не ломают статус |
 | PG-3.3 | HTTP: `POST /internal/v1/runs`, `GET /internal/v1/runs/{id}` (статус + метаданные) | Документация в README сервиса |
 | PG-3.4 | Связка монолит ↔ сервис: создание run при «Создать»; сохранение `run_id`; поллинг статуса в карточке задачи | Pytest монолита с моком HTTP сервиса |
@@ -101,4 +101,4 @@ PG-5.4 → PG-6.1
 
 - **Фаза 0:** закрыта планом [`PRODUCT_GEN_PLAN.md`](./PRODUCT_GEN_PLAN.md).
 - **Код ветки «продукт» (монолит):** **PG-1 закрыта**; **PG-2.1–2.4 закрыты** (мастер + upload + старт фона + опциональная категория WB); следующий шаг — **PG-3*** (image-сервис).
-- **Папка `wb_image_pipeline_service/`:** скелет (health + celery ping); интеграция с **PG-3.4+**.
+- **Папка `wb_image_pipeline_service/`:** **PG-3.1** — своя схема БД + Alembic; **PG-3.2+** (Celery-цепочка, HTTP `/internal/v1/runs`, связка монолита) — дальше по таблице.

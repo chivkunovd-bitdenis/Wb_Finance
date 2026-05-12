@@ -23,11 +23,13 @@ jobs:
           cache-dependency-path: |
             backend/requirements.txt
             backend/requirements-dev.txt
+            wb_image_pipeline_service/requirements.txt
 
       - name: Install Python tooling
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -r backend/requirements-dev.txt ruff mypy
+          pip install -r wb_image_pipeline_service/requirements.txt pytest
 
       # Как локально: корень репо + mypy.ini / pytest.ini
       - name: Ruff
@@ -36,8 +38,11 @@ jobs:
       - name: Mypy
         run: mypy .
 
-      - name: Pytest
+      - name: Pytest (монолит)
         run: pytest -q
+
+      - name: Pytest (wb_image_pipeline_service)
+        run: cd wb_image_pipeline_service && python -m pytest tests -q
 
   deploy:
     name: Deploy via SSH
