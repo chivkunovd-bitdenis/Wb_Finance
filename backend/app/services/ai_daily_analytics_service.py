@@ -58,7 +58,7 @@ def run_daily_analytics(
       Показы — абсолют; по конкурентам — **среднее** показов. CTR и конверсии — в БД **процентные пункты** (доля 0–1 в ячейке CTR → ×100);
       по конкурентам — **медиана** (нули не берём). Для правил по воронке значения **строго < 100** п.п. считаются достоверными (ровно 100 — кэп/мусор, правило не стреляет).
     - **Наши финансы / операционка**: `sku_daily` — логистика и правила роста логистики vs база (не из Excel WB).
-    - optional stock/social maps for rules that depend on data not stored in DB yet.
+    - optional stock/social maps (догон, если в Excel нет строк отзывов); иначе **Количество отзывов** / **Рейтинг по отзывам** из импорта отчёта.
     """
     rep = _get_report(db=db, user_id=user_id, report_id=report_id)
     d_for = date_for or rep.report_date
@@ -97,8 +97,8 @@ def run_daily_analytics(
             if h is not None:
                 created_hyps.append(str(h.id))
 
-            # Self-buyouts task requires social proof (reviews/rating) -> optional map
-            if _needs_self_buyouts(social=social, nm_id=nm_id):
+            # Self-buyouts: слабые отзывы/рейтинг из импорта отчёта и/или из тела POST (social)
+            if _needs_self_buyouts(social=social, nm_id=nm_id, mm=mm):
                 t = _upsert_task(
                     db=db,
                     user_id=user_id,
@@ -407,14 +407,9 @@ def presentable_hypothesis_fields(
     return title, description, trigger_reason
 
 
-def _needs_self_buyouts(*, social: dict[int, dict] | None, nm_id: int) -> bool:
-    if not social:
-        return False
-    s = social.get(int(nm_id)) or {}
-    reviews = s.get("reviews")
-    rating = s.get("rating")
+def _reviews_or_rating_weak(*, reviews: object | None, rating: object | None) -> bool:
     try:
-        if reviews is not None and int(reviews) < 13:
+        if reviews is not None and int(float(reviews)) < 13:
             return True
     except (TypeError, ValueError):
         pass
@@ -423,6 +418,26 @@ def _needs_self_buyouts(*, social: dict[int, dict] | None, nm_id: int) -> bool:
             return True
     except (TypeError, ValueError):
         pass
+    return False
+
+
+def _needs_self_buyouts(
+    *,
+    social: dict[int, dict] | None,
+    nm_id: int,
+    mm: dict[str, AiCompetitorMetric] | None = None,
+) -> bool:
+    if social:
+        s = social.get(int(nm_id)) or {}
+        if _reviews_or_rating_weak(reviews=s.get("reviews"), rating=s.get("rating")):
+            return True
+    if mm:
+        rc_m = mm.get("review_count")
+        rr_m = mm.get("review_rating")
+        rev = None if rc_m is None or rc_m.our_value is None else rc_m.our_value
+        rat = None if rr_m is None or rr_m.our_value is None else rr_m.our_value
+        if _reviews_or_rating_weak(reviews=rev, rating=rat):
+            return True
     return False
 
 

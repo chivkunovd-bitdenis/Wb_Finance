@@ -30,6 +30,8 @@ def parse_wb_competitor_excel(
     - **Конверсия в корзину, %** → `funnel_cart`: приводим всю строку к **процентным пунктам** (смешение п.п. и долей Excel как у CTR), затем по конкурентам — **медиана** (нули не берём).
     - **Конверсия в заказ, %** → `funnel_order`: то же.
     - **CTR** → `ctr`: как у конверсий — в БД **процентные пункты** (`unit` = «%»). Если в ячейке **доля** (строго между 0 и 1), умножаем на 100; иначе считаем, что уже п.п. По конкурентам — **медиана** (нули не берём).
+    - **Количество отзывов** → `review_count` (целое; по конкурентам — медиана, для правил берётся **наше** значение).
+    - **Рейтинг по отзывам** → `review_rating` (по конкурентам — медиана; для правил — **наше** значение).
 
     NOTE: Логистика и прочие затраты из финблока приложения сюда не входят — они берутся из `sku_daily` / аналитики, не из этого Excel.
 
@@ -231,6 +233,18 @@ def parse_wb_competitor_excel(
             items.extend(_items_for_row(row_norm=row_cart, metric_code="funnel_cart", unit="%", aggregate="median"))
             items.extend(_items_for_row(row_norm=row_order, metric_code="funnel_order", unit="%", aggregate="median"))
             items.extend(_items_for_row(row_norm=row_ctr, metric_code="ctr", unit="%", aggregate="median"))
+
+            # Опционально (новые выгрузки WB): отзывы и рейтинг — для правила self_buyouts без ручного social.
+            row_reviews = _norm("Количество отзывов")
+            row_rating = _norm("Рейтинг по отзывам")
+            if row_reviews in row_by_norm:
+                items.extend(
+                    _items_for_row(row_norm=row_reviews, metric_code="review_count", unit="шт", aggregate="median")
+                )
+            if row_rating in row_by_norm:
+                items.extend(
+                    _items_for_row(row_norm=row_rating, metric_code="review_rating", unit=None, aggregate="median")
+                )
 
             if not items:
                 raise ParseError("Показатели: no metrics parsed")

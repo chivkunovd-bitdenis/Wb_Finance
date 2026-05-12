@@ -25,7 +25,14 @@ class NotFoundError(Exception):
 
 _ALLOWED_PERIODS = {"week", "month", "quarter", "unknown"}
 _ALLOWED_SOURCES = {"manual", "playwright"}
-_ALLOWED_CODES = {"ctr", "traffic", "funnel_cart", "funnel_order"}
+_ALLOWED_CODES = {
+    "ctr",
+    "traffic",
+    "funnel_cart",
+    "funnel_order",
+    "review_count",
+    "review_rating",
+}
 
 
 def import_competitor_report(

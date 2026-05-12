@@ -203,3 +203,27 @@ def test_parse_pokazateli_funnel_all_open_fractions_become_percent_points() -> N
     assert fo1["our_value"] == pytest.approx(2.0)
     assert fo1["competitor_median_value"] == pytest.approx(3.5)
 
+
+def test_parse_pokazateli_review_count_and_rating_rows() -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Показатели"
+    ws.append(["x"])
+    ws.append(["Показатели", "Артикул WB 10", "Артикул WB 20"])
+    ws.append(["Показы", 1000, 2000])
+    ws.append(["CTR", 3.0, 4.0])
+    ws.append(["Конверсия в корзину, %", 8.0, 12.0])
+    ws.append(["Конверсия в заказ, %", 2.0, 3.0])
+    ws.append(["Количество отзывов", 42, 100])
+    ws.append(["Рейтинг по отзывам", 4.5, 4.8])
+    buf = BytesIO()
+    wb.save(buf)
+
+    out = parse_wb_competitor_excel(content=buf.getvalue(), report_date=date(2026, 5, 11), period="week")
+    rc = next(i for i in out["items"] if i["nm_id"] == 10 and i["metric_code"] == "review_count")
+    assert rc["our_value"] == 42.0
+    assert rc["competitor_median_value"] == 100.0
+    rr = next(i for i in out["items"] if i["nm_id"] == 20 and i["metric_code"] == "review_rating")
+    assert rr["our_value"] == 4.8
+    assert rr["competitor_median_value"] == 4.5
+

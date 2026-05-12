@@ -1344,3 +1344,51 @@ def test_ai_daily_analytics_does_not_trigger_content_change_on_funnel_median_cei
     finally:
         db2.close()
 
+
+def test_ai_self_buyouts_from_imported_review_rows_without_social(client: TestClient) -> None:
+    """Строки отчёта «Количество отзывов» / «Рейтинг» в импорте — достаточно для self_buyouts при слабой воронке."""
+    user_id = "00000000-0000-0000-0000-000000000111"
+    report_date = "2026-05-15"
+    period = "week"
+    nm_id = 90123
+    fp_self = f"task:self_buyouts:{nm_id}:{report_date}:{period}"
+    fp_hyp_c = f"hyp:content_change:{nm_id}:{report_date}:{period}"
+    fp_hyp_a = f"hyp:ab_test:{nm_id}:{report_date}:{period}"
+
+    db = SessionLocal()
+    try:
+        db.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp_self).delete(synchronize_session=False)
+        for fp in (fp_hyp_c, fp_hyp_a):
+            db.query(AiHypothesis).filter(AiHypothesis.user_id == user_id, AiHypothesis.fingerprint == fp).delete(
+                synchronize_session=False
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    body = {
+        "report_date": report_date,
+        "period": period,
+        "source": "manual",
+        "items": [
+            {"nm_id": nm_id, "metric_code": "ctr", "our_value": 3.1, "competitor_median_value": 4.2, "unit": "%"},
+            {"nm_id": nm_id, "metric_code": "funnel_cart", "our_value": 1.0, "competitor_median_value": 2.0},
+            {"nm_id": nm_id, "metric_code": "review_count", "our_value": 10.0, "competitor_median_value": 200.0},
+            {"nm_id": nm_id, "metric_code": "review_rating", "our_value": 4.5, "competitor_median_value": 4.8},
+        ],
+    }
+    r = client.post("/ai/competitor-reports/import", json=body)
+    assert r.status_code == 200
+    rep_id = r.json()["id"]
+
+    r2 = client.post("/ai/analytics/run", json={"report_id": rep_id, "date_for": report_date})
+    assert r2.status_code == 200
+
+    db2 = SessionLocal()
+    try:
+        row = db2.query(AiTask).filter(AiTask.user_id == user_id, AiTask.fingerprint == fp_self).first()
+        assert row is not None
+        assert row.task_type == "self_buyouts"
+    finally:
+        db2.close()
+

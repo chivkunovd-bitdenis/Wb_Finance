@@ -101,9 +101,10 @@ class AiCompetitorMetricImportItem(BaseModel):
     metric_code: str = Field(
         ...,
         description=(
-            "ctr|traffic|funnel_cart|funnel_order — из Excel «Показатели»: "
+            "ctr|traffic|funnel_cart|funnel_order|review_count|review_rating — из Excel «Показатели»: "
             "Показы (абсолют) — по конкурентам среднее; "
-            "CTR и конверсии — процентные пункты (CTR: доля 0–1 в ячейке → ×100), по конкурентам медиана."
+            "CTR и конверсии — процентные пункты (CTR: доля 0–1 в ячейке → ×100), по конкурентам медиана; "
+            "Количество отзывов / Рейтинг по отзывам — опционально, для аналитики self_buyouts."
         ),
     )
     our_value: float | None = None
