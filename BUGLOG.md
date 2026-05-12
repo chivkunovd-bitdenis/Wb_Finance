@@ -148,6 +148,40 @@ ID: BUG-30
 Затронутые файлы: `frontend/src/screens/AiModule.jsx`, `frontend/dist/*`, `BUGLOG.md`
 
 ---
+ID: BUG-31
+Дата: 2026-05-12
+Статус: fixed
+Автоматизация: да (pytest: публикация вызывает httpx.post на правильный WB endpoint)
+
+## Бизнес-описание
+При нажатии “Опубликовать” ответ на отзыв не публиковался в WB, а UI показывал ошибку `405 Method Not Allowed`.
+
+## Процесс / сценарий
+1) Открыть “ИИ → Задачи” → “Ответить на отзывы”.
+2) Нажать “Опубликовать” у конкретного отзыва.
+3) Ожидание: WB принимает ответ, статус строки становится “Опубликовано”.
+4) Факт (до фикса): WB отвечал 405, публикации не происходило.
+
+## Техническое описание
+Сервис `publish_review_reply` отправлял запрос `PATCH /api/v1/feedbacks`, тогда как по контракту WB публикация ответа делается через `POST /api/v1/feedbacks/answer` (а `PATCH /feedbacks/answer` — это редактирование ответа).
+
+## Root cause (почему произошло)
+- Перепутан endpoint/HTTP method WB API для публикации ответа.
+
+## Исправление (что сделали)
+- Публикация переведена на `POST https://feedbacks-api.wildberries.ru/api/v1/feedbacks/answer` с payload `{id, text}`.
+- Обновлён тест: мокается `httpx.post`, проверяется успешное выставление `published`.
+
+## Профилактика (как не повторить)
+- Контрактный pytest на HTTP method/endpoint публикации.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest`
+- Сценарии: publish с реальным токеном WB должен возвращать 200 и менять статус на “Опубликовано”.
+
+Затронутые файлы: `backend/app/services/ai_review_replies_service.py`, `backend/tests/test_ai_review_replies_api.py`, `BUGLOG.md`
+
+---
 ID: BUG-26
 Дата: 2026-05-11
 Статус: fixed
