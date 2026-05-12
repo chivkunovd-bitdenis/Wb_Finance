@@ -270,7 +270,8 @@ def publish_review_reply(
     payload = {"id": fid, "text": reply}
     # WB contract (Customer Communication → Feedbacks): publish via POST /feedbacks/answer
     resp = httpx.post(WB_FEEDBACKS_ANSWER_URL, headers=headers, json=payload, timeout=30.0)
-    if resp.status_code != 200:
+    # WB may return 204 No Content on success (no response body).
+    if resp.status_code not in {200, 204}:
         msg = f"WB publish failed: http={resp.status_code} body={resp.text[:300]}"
         row.status = "error"
         row.last_error = msg[:800]
