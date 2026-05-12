@@ -928,15 +928,20 @@ function TasksTab({ selectedNmId, onGrantAccess }) {
     setLoading(true);
     setError('');
     try {
+      const fetchTasks = async () => {
+        const data = await api.getAiTasks();
+        setItems(Array.isArray(data?.items) ? data.items : []);
+      };
+
       // Best-effort: auto-sync unanswered reviews so the daily approval task appears
-      // without manual actions. Never block tasks list on sync failures.
-      try {
-        await api.syncAiReviewReplies({ take: 20 });
-      } catch {
-        // ignore
-      }
-      const data = await api.getAiTasks();
-      setItems(Array.isArray(data?.items) ? data.items : []);
+      // without manual actions. IMPORTANT: never block rendering tasks list on this call.
+      // We do a background refresh after sync completes (also best-effort).
+      api
+        .syncAiReviewReplies({ take: 20 })
+        .then(fetchTasks)
+        .catch(() => {});
+
+      await fetchTasks();
     } catch (e) {
       setError(e?.message || 'Ошибка загрузки');
     } finally {
