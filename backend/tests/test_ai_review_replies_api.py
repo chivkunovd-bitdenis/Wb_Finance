@@ -117,9 +117,9 @@ def test_review_reply_publish_marks_published(client: TestClient) -> None:
     finally:
         db.close()
 
-    with patch("app.services.ai_review_replies_service.httpx.patch") as mock_patch:
-        mock_patch.return_value.status_code = 200
-        mock_patch.return_value.text = "{}"
+    with patch("app.services.ai_review_replies_service.httpx.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.text = "{}"
         r = client.post(f"/ai/review-replies/{feedback_id}/publish", json={"text": "edited"})
         assert r.status_code == 200
 

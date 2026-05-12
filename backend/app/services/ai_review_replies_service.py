@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru/api/v1/feedbacks"
+WB_FEEDBACKS_ANSWER_URL = "https://feedbacks-api.wildberries.ru/api/v1/feedbacks/answer"
 
 # Reuse existing "OpenAI-compatible" LLM config used by daily_brief/offer_rag
 _AI_API_BASE = (os.getenv("AI_API_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
@@ -267,7 +268,8 @@ def publish_review_reply(
 
     headers = {"Authorization": wb_api_key, "Content-Type": "application/json"}
     payload = {"id": fid, "text": reply}
-    resp = httpx.patch(WB_FEEDBACKS_URL, headers=headers, json=payload, timeout=30.0)
+    # WB contract (Customer Communication → Feedbacks): publish via POST /feedbacks/answer
+    resp = httpx.post(WB_FEEDBACKS_ANSWER_URL, headers=headers, json=payload, timeout=30.0)
     if resp.status_code != 200:
         msg = f"WB publish failed: http={resp.status_code} body={resp.text[:300]}"
         row.status = "error"
