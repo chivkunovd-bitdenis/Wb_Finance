@@ -20,6 +20,25 @@ def test_presentable_hypothesis_repairs_legacy_funnel_technical_line() -> None:
     assert "200" in (d or "") or "недостоверно" in (d or "").lower()
 
 
+def test_presentable_hypothesis_repairs_human_copy_when_median_is_ceiling_100() -> None:
+    """Новый формат trigger_reason без «vs median»; медиана 100 п.п. — в API не показываем как факт."""
+    t, d, tr = presentable_hypothesis_fields(
+        hypothesis_type="content_change",
+        title="Обновить текст и медиа внутри карточки",
+        description="Конверсии в корзину или в заказ заметно слабее…",
+        trigger_reason=(
+            "Рекомендуется обновить наполнение карточки, потому что конверсия в заказ — ниже, "
+            "чем у конкурентов в сравнении примерно на 85% (у вас 15.0, по медиане конкурентов 100.0)."
+        ),
+        competitor_median_metrics={
+            "funnel_order": {"our_value": 15.0, "competitor_median_value": 100.0, "unit": "%"},
+        },
+    )
+    assert "100.0" not in (tr or "")
+    assert "по медиане конкурентов 100" not in (tr or "").lower()
+    assert "недостоверно" in (d or "").lower()
+
+
 def test_presentable_hypothesis_rebuilds_human_text_when_metrics_sane() -> None:
     t, d, tr = presentable_hypothesis_fields(
         hypothesis_type="content_change",

@@ -315,6 +315,9 @@ def hypothesis_api_copy_needs_repair(
         )
     ):
         return True
+    # Человекочитаемый текст из старых прогонов с кэпом медианы 100 п.п. — пересобрать из метрик или показать «недостоверно».
+    if hypothesis_type == "content_change" and "по медиане конкурентов 100" in tr_l:
+        return True
     if title.strip() in {"Поменять внутренний контент карточки", "Провести A/B-тест"}:
         return True
     desc = description or ""
@@ -332,6 +335,32 @@ def presentable_hypothesis_fields(
     competitor_median_metrics: dict[str, Any] | None,
 ) -> tuple[str, str | None, str | None]:
     """Убирает из ответа API устаревший «технический» текст (без UPDATE в БД)."""
+    raw_mm = competitor_median_metrics or {}
+    mm = _mm_json_to_views(competitor_median_metrics)
+
+    def _content_change_unreliable_copy() -> tuple[str, str | None, str | None]:
+        return (
+            "Обновить текст и медиа внутри карточки",
+            "В сохранённом отчёте конверсии выглядят недостоверно: для строк «Конверсия …, %» ожидаются процентные пункты (обычно 0–100). "
+            "Число вроде «медиана 200» не означает 200% — чаще всего в Excel попали штуки или не та строка. Обновите выгрузку «Сравнение карточек» из WB и снова запустите аналитику.",
+            "Система сравнивает только процентные конверсии из отчёта WB. Перезагрузите сравнение и импорт — после этого подпись пересчитается.",
+        )
+
+    # Сначала: по JSON метрик (даже если trigger_reason уже «человеческий» и без маркеров repair).
+    if hypothesis_type == "content_change" and raw_mm and any(k in raw_mm for k in ("funnel_cart", "funnel_order")):
+        cart_ok = (
+            mm.get("funnel_cart") is not None
+            and _funnel_conversion_plausible(mm.get("funnel_cart"))
+            and _below_competitor_threshold(mm.get("funnel_cart"))
+        )
+        order_ok = (
+            mm.get("funnel_order") is not None
+            and _funnel_conversion_plausible(mm.get("funnel_order"))
+            and _below_competitor_threshold(mm.get("funnel_order"))
+        )
+        if not (cart_ok or order_ok):
+            return _content_change_unreliable_copy()
+
     if not hypothesis_api_copy_needs_repair(
         hypothesis_type=hypothesis_type,
         title=title,
@@ -340,22 +369,19 @@ def presentable_hypothesis_fields(
     ):
         return title, description, trigger_reason
 
-    mm = _mm_json_to_views(competitor_median_metrics)
-
     if hypothesis_type == "content_change":
-        cart_ok = _funnel_conversion_plausible(mm.get("funnel_cart")) and _below_competitor_threshold(
-            mm.get("funnel_cart")
+        cart_ok = (
+            mm.get("funnel_cart") is not None
+            and _funnel_conversion_plausible(mm.get("funnel_cart"))
+            and _below_competitor_threshold(mm.get("funnel_cart"))
         )
-        order_ok = _funnel_conversion_plausible(mm.get("funnel_order")) and _below_competitor_threshold(
-            mm.get("funnel_order")
+        order_ok = (
+            mm.get("funnel_order") is not None
+            and _funnel_conversion_plausible(mm.get("funnel_order"))
+            and _below_competitor_threshold(mm.get("funnel_order"))
         )
         if not (cart_ok or order_ok):
-            return (
-                "Обновить текст и медиа внутри карточки",
-                "В сохранённом отчёте конверсии выглядят недостоверно: для строк «Конверсия …, %» ожидаются процентные пункты (обычно 0–100). "
-                "Число вроде «медиана 200» не означает 200% — чаще всего в Excel попали штуки или не та строка. Обновите выгрузку «Сравнение карточек» из WB и снова запустите аналитику.",
-                "Система сравнивает только процентные конверсии из отчёта WB. Перезагрузите сравнение и импорт — после этого подпись пересчитается.",
-            )
+            return _content_change_unreliable_copy()
         tr = _human_funnel_trigger(mm)
         return (
             "Обновить текст и медиа внутри карточки",
