@@ -587,6 +587,20 @@ export async function uploadProductGenerationJobReferences(jobId, files) {
   return res.json();
 }
 
+/** PG-2.3: старт фонового пайплайна (draft + референсы → in_progress), admin. */
+export async function startProductGenerationJob(jobId) {
+  const res = await apiFetch(
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/start`,
+    { method: 'POST', headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 export async function updateAiTaskStatus(taskId, status) {
   const res = await apiFetch(`${API_BASE}/ai/tasks/${taskId}`, {
     method: 'PATCH',

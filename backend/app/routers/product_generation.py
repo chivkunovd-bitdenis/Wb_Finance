@@ -16,6 +16,7 @@ from app.schemas.product_generation import (
     ProductGenerationJobUpdate,
 )
 from app.services import product_generation_service as pg_service
+from celery_app.tasks import product_generation_pipeline_stub
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,42 @@ def download_job_reference_file(
     media = str(meta.get("content_type") or "application/octet-stream")
     name = str(meta.get("original_filename") or "reference")
     return FileResponse(path=str(path), media_type=media, filename=name)
+
+
+@router.post("/jobs/{job_id}/start", response_model=ProductGenerationJobOut)
+def start_job_pipeline(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+) -> ProductGenerationJobOut:
+    try:
+        job = pg_service.start_job_pipeline(db=db, user=current_user, job_id=job_id)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена") from exc
+        if code == "bad_status_start":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Старт пайплайна только из черновика (draft)",
+            ) from exc
+        if code == "no_references":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Сначала загрузите хотя бы один референс",
+            ) from exc
+        logger.exception("product_generation: unexpected ValueError on start")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
+    try:
+        product_generation_pipeline_stub.delay(str(job.id))
+    except Exception as exc:
+        logger.exception("product_generation: Celery enqueue failed for job %s", job_id)
+        pg_service.revert_local_pipeline_start(db=db, user=current_user, job_id=job_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Не удалось поставить задачу в очередь (celery/redis недоступны)",
+        ) from exc
+    return ProductGenerationJobOut.model_validate(job)
 
 
 @router.patch("/jobs/{job_id}", response_model=ProductGenerationJobOut)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,42 @@ def get_reference_file(
     if path is None or not path.is_file():
         raise ValueError("missing_file")
     return path, match
+
+
+def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenerationJob:
+    """
+    Переводит черновик в in_progress и назначает локальный pipeline_run_id.
+    Реальный run в image-сервисе подключается в PG-3.4.
+    """
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        raise ValueError("not_found")
+    if job.status != "draft":
+        raise ValueError("bad_status_start")
+    refs = list(job.reference_paths_json or [])
+    if len(refs) == 0:
+        raise ValueError("no_references")
+    job.status = "in_progress"
+    job.pipeline_run_id = f"local-{uuid.uuid4()}"
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    logger.info("product_generation: pipeline start job=%s run=%s", job.id, job.pipeline_run_id)
+    return job
+
+
+def revert_local_pipeline_start(*, db: Session, user: User, job_id: str) -> None:
+    """Откат, если Celery не принял задачу (только placeholder-run local-*)."""
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        return
+    rid = job.pipeline_run_id or ""
+    if job.status == "in_progress" and rid.startswith("local-"):
+        job.status = "draft"
+        job.pipeline_run_id = None
+        db.add(job)
+        db.commit()
+        logger.warning("product_generation: reverted pipeline start (enqueue failed) job=%s", job_id)
 
 
 def update_job(*, db: Session, user: User, job_id: str, payload: ProductGenerationJobUpdate) -> ProductGenerationJob:

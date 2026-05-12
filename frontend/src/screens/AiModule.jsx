@@ -250,6 +250,9 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
           throw new Error((e2?.message || 'Ошибка загрузки файлов') + hint);
         }
       }
+      if (jid) {
+        await api.startProductGenerationJob(jid);
+      }
       onCreated?.();
       onClose?.();
     } catch (e) {
@@ -545,7 +548,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
         {step === 3 && (
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Проверьте данные перед созданием черновика. Сначала создаётся запись, затем загружаются референсы на диск монолита. Запуск фонового пайплайна — в PG-2.3.
+              Проверьте данные. После «Создать»: запись, загрузка референсов на диск API и старт фонового пайплайна; в списке задача будет «В процессе».
             </div>
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
               <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов) — будут загружены после создания черновика` : 'Не выбраны'}</InfoRow>
@@ -694,7 +697,7 @@ function ProductGenerationAdminCard() {
         </button>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Мастер: референсы (загрузка на диск API, PG-2.2), текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize. Фоновый старт пайплайна — PG-2.3.
+        Мастер: референсы (загрузка на диск API), текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize; после создания — POST /start и фон Celery (заглушка до image-сервиса).
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (

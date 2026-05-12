@@ -2789,3 +2789,27 @@ def index_offer_document(file_path: str, version: str) -> dict:
         mark_failed(error_message=str(exc))
         logger.exception("offer_ai: indexing failed version=%s path=%s err=%s", version, file_path, type(exc).__name__)
         return {"ok": False, "error": str(exc)}
+
+
+@celery_app.task(name="product_generation_pipeline_stub")
+def product_generation_pipeline_stub(job_id: str) -> dict:
+    """
+    PG-2.3: фон после «Создать» в мастере. Заглушка до PG-3.4 (run в image-сервисе).
+    """
+    from app.models.product_generation_job import ProductGenerationJob
+
+    db = SessionLocal()
+    try:
+        job = db.query(ProductGenerationJob).filter(ProductGenerationJob.id == job_id).first()
+        if not job:
+            logger.warning("product_generation_stub: job %s not found", job_id)
+            return {"ok": False, "error": "not_found"}
+        logger.info(
+            "product_generation_stub: job=%s status=%s run=%s",
+            job_id,
+            job.status,
+            job.pipeline_run_id,
+        )
+        return {"ok": True, "job_id": job_id}
+    finally:
+        db.close()

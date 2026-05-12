@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -217,3 +217,67 @@ def test_product_generation_not_found_for_other_user(client_admin: TestClient) -
             db2.commit()
         finally:
             db2.close()
+
+
+def test_product_generation_start_pipeline_sets_in_progress(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "Pipeline job"})
+    assert r.status_code == 201
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    up = client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    assert up.status_code == 200
+    rs = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+    assert rs.status_code == 200
+    body = rs.json()
+    assert body["status"] == "in_progress"
+    assert body["pipeline_run_id"] and str(body["pipeline_run_id"]).startswith("local-")
+    rlist = client_admin.get("/ai/product-generation/jobs")
+    assert rlist.status_code == 200
+    row = next(item for item in rlist.json()["items"] if item["id"] == job_id)
+    assert row["status"] == "in_progress"
+
+
+def test_product_generation_start_requires_references(client_admin: TestClient) -> None:
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    rs = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+    assert rs.status_code == 400
+
+
+def test_product_generation_start_only_once(client_admin: TestClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    assert client_admin.post(f"/ai/product-generation/jobs/{job_id}/start").status_code == 200
+    again = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+    assert again.status_code == 400
+
+
+def test_product_generation_start_celery_enqueue_failure_reverts(
+    client_admin: TestClient, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    r = client_admin.post("/ai/product-generation/jobs", json={})
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    with patch("app.routers.product_generation.product_generation_pipeline_stub") as mock_stub:
+        mock_stub.delay.side_effect = RuntimeError("broker down")
+        rs = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+    assert rs.status_code == 503
+    rg = client_admin.get(f"/ai/product-generation/jobs/{job_id}")
+    assert rg.status_code == 200
+    assert rg.json()["status"] == "draft"
+    assert rg.json()["pipeline_run_id"] is None
