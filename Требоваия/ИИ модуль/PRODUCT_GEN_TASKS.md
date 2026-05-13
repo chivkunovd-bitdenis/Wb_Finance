@@ -101,4 +101,4 @@ PG-5.4 → PG-6.1
 
 - **Фаза 0:** закрыта планом [`PRODUCT_GEN_PLAN.md`](./PRODUCT_GEN_PLAN.md).
 - **Код ветки «продукт» (монолит):** **PG-1 закрыта**; **PG-2.1–2.4 закрыты** (мастер + upload + старт фона + опциональная категория WB); следующий шаг — **PG-3*** (image-сервис).
-- **Папка `wb_image_pipeline_service/`:** **PG-3.1** — своя схема БД + Alembic; **PG-3.2+** (Celery-цепочка, HTTP `/internal/v1/runs`, связка монолита) — дальше по таблице.
+- **Папка `wb_image_pipeline_service/`:** **PG-3.1–3.3** — БД + Alembic, Celery-заглушка PG-3.2, HTTP `POST/GET /internal/v1/runs`; следующий шаг по таблице — **PG-3.4** (связка монолит ↔ сервис).
