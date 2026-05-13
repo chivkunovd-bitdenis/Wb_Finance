@@ -47,7 +47,7 @@
 | PG-3.1 | Своя БД сервиса: схема `runs`, `steps`, `assets` (минимум) + миграции в папке сервиса | [x] Таблицы `wip_runs` / `wip_steps` / `wip_assets`, Alembic `a1b2c3d4e501`, entrypoint `upgrade`, volume `wip_data:/data`, pytest |
 | PG-3.2 | Celery: цепочка-заглушка `run_created → step_done` с реальным Redis | [x] Задачи `wb_image_pipeline.run_created` / `wb_image_pipeline.step_done`, Redis в `docker-compose.example`, идемпотентные обновления `wip_*`, pytest (eager + двойной вызов) |
 | PG-3.3 | HTTP: `POST /internal/v1/runs`, `GET /internal/v1/runs/{id}` (статус + метаданные) | [x] `app/api/internal_runs.py`, сервис `internal_runs_service`, Bearer `WIP_INTERNAL_HMAC_SECRET`, pytest `test_internal_runs_http.py`, README |
-| PG-3.4 | Связка монолит ↔ сервис: создание run при «Создать»; сохранение `run_id`; поллинг статуса в карточке задачи | Pytest монолита с моком HTTP сервиса |
+| PG-3.4 | Связка монолит ↔ сервис: создание run при «Создать»; сохранение `run_id`; поллинг статуса в карточке задачи | [x] `PRODUCT_GEN_IMAGE_PIPELINE_*`, `product_generation_image_pipeline.py`, старт/обогащение list+get, pytest с моком httpx; фронт: колонка + poll 4s |
 | PG-3.5 | **mTLS** или зафиксированный промежуточный режим (только private network + HMAC) — как в `docs/mtls.md` | Инструкция для прода; dev не блокируется |
 
 ---
@@ -100,5 +100,5 @@ PG-5.4 → PG-6.1
 ## Честный статус реализации на сейчас
 
 - **Фаза 0:** закрыта планом [`PRODUCT_GEN_PLAN.md`](./PRODUCT_GEN_PLAN.md).
-- **Код ветки «продукт» (монолит):** **PG-1 закрыта**; **PG-2.1–2.4 закрыты** (мастер + upload + старт фона + опциональная категория WB); следующий шаг — **PG-3*** (image-сервис).
-- **Папка `wb_image_pipeline_service/`:** **PG-3.1–3.3** — БД + Alembic, Celery-заглушка PG-3.2, HTTP `POST/GET /internal/v1/runs`; следующий шаг по таблице — **PG-3.4** (связка монолит ↔ сервис).
+- **Код ветки «продукт» (монолит):** **PG-1–2.4** закрыты; **PG-3.4** — опциональная связка с image-сервисом (`PRODUCT_GEN_IMAGE_PIPELINE_*`, поле `image_pipeline`, поллинг UI); дальше по продукту — **PG-4*** (LLM в воркере) и **PG-5** (WB); **PG-3.5** — усиление связки (mTLS).
+- **Папка `wb_image_pipeline_service/`:** **PG-3.1–3.4** — БД, Celery-заглушка, HTTP runs, связка с монолитом (`PRODUCT_GEN_IMAGE_PIPELINE_*` + поллинг); следующий шаг — **PG-3.5** (mTLS / прод-HMAC).

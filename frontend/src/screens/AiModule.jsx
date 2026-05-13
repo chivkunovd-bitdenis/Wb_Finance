@@ -707,6 +707,26 @@ function ProductGenerationAdminCard() {
     return undefined;
   }, [meChecked, isAdmin, load]);
 
+  const needsImagePipelinePoll = useMemo(
+    () =>
+      items.some(
+        (r) =>
+          r?.status === 'in_progress' &&
+          r?.pipeline_run_id &&
+          !String(r.pipeline_run_id).startsWith('local-'),
+      ),
+    [items],
+  );
+
+  useEffect(() => {
+    if (!meChecked || !isAdmin || VITE_PRODUCT_GEN_UI_STUB) return undefined;
+    if (!needsImagePipelinePoll) return undefined;
+    const timer = setInterval(() => {
+      load();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [meChecked, isAdmin, needsImagePipelinePoll, load]);
+
   if (!meChecked || !isAdmin) return null;
 
   if (VITE_PRODUCT_GEN_UI_STUB) {
@@ -753,7 +773,10 @@ function ProductGenerationAdminCard() {
         </button>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Мастер: референсы (загрузка на диск API), текст, габариты, цена, артикул, наименование, бренд и таблица techSize/wbSize; после создания — POST /start и фон Celery (заглушка до image-сервиса).
+        Мастер: референсы на диск API, затем POST /start. Если заданы{' '}
+        <code style={{ fontSize: 12 }}>PRODUCT_GEN_IMAGE_PIPELINE_*</code>
+        {' '}на бэке — создаётся run в wb_image_pipeline_service; иначе локальный{' '}
+        <code style={{ fontSize: 12 }}>local-*</code> и Celery-заглушка. Таблица раз в 4 с опрашивает статус image-run.
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (
@@ -766,6 +789,7 @@ function ProductGenerationAdminCard() {
             <thead>
               <tr>
                 <th>Статус</th>
+                <th>Image run</th>
                 <th>Название</th>
                 <th>Артикул</th>
                 <th>Создана</th>
@@ -775,6 +799,15 @@ function ProductGenerationAdminCard() {
               {items.map((row) => (
                 <tr key={String(row?.id)}>
                   <td style={{ whiteSpace: 'nowrap' }}>{productGenerationStatusBadge(row?.status)}</td>
+                  <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {row?.image_pipeline?.remote_status
+                      ? String(row.image_pipeline.remote_status)
+                      : row?.pipeline_run_id && String(row.pipeline_run_id).startsWith('local-')
+                        ? 'локально'
+                        : row?.pipeline_run_id
+                          ? '…'
+                          : '—'}
+                  </td>
                   <td>{row?.title || '—'}</td>
                   <td>{row?.vendor_code || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-tertiary)' }}>

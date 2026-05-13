@@ -18,6 +18,12 @@ from app.services.product_generation_assets import (
     resolve_reference_path,
     save_reference_uploads,
 )
+from app.services.product_generation_image_pipeline import (
+    ImagePipelineClientError,
+    build_image_pipeline_payload,
+    create_remote_run,
+    is_image_pipeline_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +131,11 @@ def get_reference_file(
 
 def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenerationJob:
     """
-    Переводит черновик в in_progress и назначает локальный pipeline_run_id.
-    Реальный run в image-сервисе подключается в PG-3.4.
+    Переводит черновик в in_progress и назначает pipeline_run_id.
+
+    Если заданы `PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL` и `PRODUCT_GEN_IMAGE_PIPELINE_SECRET`,
+    создаётся run в wb_image_pipeline_service (POST /internal/v1/runs). Иначе — локальный
+    placeholder `local-*` и Celery-заглушка монолита (PG-2.3).
     """
     job = get_job_for_user(db=db, user=user, job_id=job_id)
     if not job:
@@ -136,6 +145,26 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
     refs = list(job.reference_paths_json or [])
     if len(refs) == 0:
         raise ValueError("no_references")
+
+    if is_image_pipeline_enabled():
+        payload = build_image_pipeline_payload(job)
+        try:
+            run_id = create_remote_run(str(job.id), payload)
+        except ImagePipelineClientError as exc:
+            logger.warning("product_generation: remote pipeline create failed job=%s: %s", job_id, exc)
+            raise ValueError("image_pipeline_unavailable") from exc
+        job.status = "in_progress"
+        job.pipeline_run_id = run_id
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        logger.info(
+            "product_generation: remote pipeline start job=%s run=%s",
+            job.id,
+            job.pipeline_run_id,
+        )
+        return job
+
     job.status = "in_progress"
     job.pipeline_run_id = f"local-{uuid.uuid4()}"
     db.add(job)
@@ -143,6 +172,12 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
     db.refresh(job)
     logger.info("product_generation: pipeline start job=%s run=%s", job.id, job.pipeline_run_id)
     return job
+
+
+def should_enqueue_monolith_celery_stub(job: ProductGenerationJob) -> bool:
+    """True, если нужна Celery-заглушка монолита (локальный run)."""
+    rid = job.pipeline_run_id or ""
+    return rid.startswith("local-")
 
 
 def revert_local_pipeline_start(*, db: Session, user: User, job_id: str) -> None:

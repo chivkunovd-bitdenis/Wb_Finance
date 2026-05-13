@@ -58,7 +58,8 @@
 - **PG-3.1:** своя БД сервиса — таблицы `wip_runs`, `wip_steps`, `wip_assets` (SQLAlchemy + Alembic `a1b2c3d4e501`). При старте контейнера выполняется `alembic upgrade head`. `docker-compose.example` монтирует **`wip_data:/data`** (общий SQLite и каталог `media` для API и worker).
 - **PG-3.2:** Celery-цепочка-заглушка **`wb_image_pipeline.run_created` → `wb_image_pipeline.step_done`** (модуль `celery_app/pipeline_tasks.py`, постановка `enqueue_pg32_stub_chain(run_id)`). Воркер в compose — `celery -A celery_app.celery_app worker`; брокер/backend — **Redis** (`wip_redis` в примере). Логи на INFO; повторы задач идемпотентны по строкам `wip_runs` / `wip_steps` (шаг `pg32_stub`).
 - **PG-3.3:** HTTP **`POST /internal/v1/runs`**, **`GET /internal/v1/runs/{id}`** — реализация в `app/api/internal_runs.py`, логика в `app/services/internal_runs_service.py`, схемы в `app/schemas/internal_runs.py`. Аутентификация: `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`. После успешного `POST` ставится очередь PG-3.2. Подробный контракт — ниже.
-- Дальше по плану wb-finance: **PG-3.4** (связка монолит ↔ сервис: реальный `POST` при «Создать», сохранение `run_id`, поллинг).
+- **PG-3.4:** связка с монолитом wb-finance — при старте задачи (`POST /ai/product-generation/jobs/{id}/start`) монолит может вызвать этот сервис (см. **`PRODUCT_GEN_IMAGE_PIPELINE_*`** в `backend/.env.example`); `pipeline_run_id` в монолите = UUID run; поллинг статуса — через `GET` jobs в монолите (он проксирует `GET /internal/v1/runs/{id}` в поле `image_pipeline`).
+- Дальше по плану wb-finance: **PG-3.5** (mTLS / прод-HMAC, см. `docs/mtls.md`).
 
 ### HTTP внутренний API (PG-3.3)
 

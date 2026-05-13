@@ -16,6 +16,7 @@ from app.schemas.product_generation import (
     ProductGenerationJobUpdate,
 )
 from app.services import product_generation_service as pg_service
+from app.services.product_generation_image_pipeline import enrich_job_out_with_image_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ def list_jobs(
     current_user: User = Depends(require_admin_user),
 ) -> ProductGenerationJobListResponse:
     rows = pg_service.list_jobs(db=db, user=current_user)
-    return ProductGenerationJobListResponse(items=[ProductGenerationJobOut.model_validate(r) for r in rows])
+    items = [enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(r)) for r in rows]
+    return ProductGenerationJobListResponse(items=items)
 
 
 @router.get("/jobs/{job_id}", response_model=ProductGenerationJobOut)
@@ -50,7 +52,7 @@ def get_job(
     job = pg_service.get_job_for_user(db=db, user=current_user, job_id=job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена")
-    return ProductGenerationJobOut.model_validate(job)
+    return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
 
 
 @router.post("/jobs/{job_id}/references", response_model=ProductGenerationJobOut)
@@ -134,20 +136,26 @@ def start_job_pipeline(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Сначала загрузите хотя бы один референс",
             ) from exc
+        if code == "image_pipeline_unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось создать run в image-сервисе",
+            ) from exc
         logger.exception("product_generation: unexpected ValueError on start")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
-    try:
-        from celery_app.tasks import product_generation_pipeline_stub as pipeline_stub
+    if pg_service.should_enqueue_monolith_celery_stub(job):
+        try:
+            from celery_app.tasks import product_generation_pipeline_stub as pipeline_stub
 
-        pipeline_stub.delay(str(job.id))
-    except Exception as exc:
-        logger.exception("product_generation: Celery enqueue failed for job %s", job_id)
-        pg_service.revert_local_pipeline_start(db=db, user=current_user, job_id=job_id)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Не удалось поставить задачу в очередь (celery/redis недоступны)",
-        ) from exc
-    return ProductGenerationJobOut.model_validate(job)
+            pipeline_stub.delay(str(job.id))
+        except Exception as exc:
+            logger.exception("product_generation: Celery enqueue failed for job %s", job_id)
+            pg_service.revert_local_pipeline_start(db=db, user=current_user, job_id=job_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось поставить задачу в очередь (celery/redis недоступны)",
+            ) from exc
+    return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
 
 
 @router.patch("/jobs/{job_id}", response_model=ProductGenerationJobOut)

@@ -2806,7 +2806,8 @@ def index_offer_document(file_path: str, version: str) -> dict:
 @celery_app.task(name="product_generation_pipeline_stub")
 def product_generation_pipeline_stub(job_id: str) -> dict:
     """
-    PG-2.3: фон после «Создать» в мастере. Заглушка до PG-3.4 (run в image-сервисе).
+    PG-2.3: фон после «Создать» для локального run (`local-*`).
+    При удалённом `pipeline_run_id` (PG-3.4) работу делает wb_image_pipeline_service — no-op.
     """
     from app.models.product_generation_job import ProductGenerationJob
 
@@ -2816,6 +2817,14 @@ def product_generation_pipeline_stub(job_id: str) -> dict:
         if not job:
             logger.warning("product_generation_stub: job %s not found", job_id)
             return {"ok": False, "error": "not_found"}
+        rid = job.pipeline_run_id or ""
+        if rid and not rid.startswith("local-"):
+            logger.info(
+                "product_generation_stub: skip (remote image pipeline) job=%s run=%s",
+                job_id,
+                rid,
+            )
+            return {"ok": True, "job_id": job_id, "skipped": "remote_pipeline"}
         logger.info(
             "product_generation_stub: job=%s status=%s run=%s",
             job_id,

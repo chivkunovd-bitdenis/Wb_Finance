@@ -82,6 +82,10 @@ class ProductGenerationJobOut(BaseModel):
     wb_response_json: dict[str, Any] | list[Any] | None
     created_at: datetime
     updated_at: datetime
+    image_pipeline: dict[str, Any] | None = Field(
+        default=None,
+        description="Снимок GET image-сервиса /internal/v1/runs/{id} (PG-3.4), только для удалённого run.",
+    )
 
     model_config = {"from_attributes": True}
 
