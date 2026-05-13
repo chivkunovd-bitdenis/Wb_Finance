@@ -11,6 +11,7 @@
 
 | ID | Дата | Название | Что менялось (подробно) | Что НЕ менялось | Коммит |
 |---|---|---|---|---|---|
+| TASK-120 | 2026-05-13 | Док: Errno 111 при выключенном прокси на 7890 | `КАК_ЗАПУСТИТЬ.md`, `backend/.env.example`: прокси в `.env` только когда на хосте слушает порт; иначе Connection refused. Локальный `backend/.env`: `HTTP(S)_PROXY` закомментированы. | Код — не менялся. |  |
 | TASK-119 | 2026-05-13 | Док: NO_PROXY при HTTPS_PROXY для WIP Docker (healthcheck 127.0.0.1) | `backend/.env.example`, `КАК_ЗАПУСТИТЬ.md`: при прокси для OpenAI обязателен `NO_PROXY` для localhost/redis/… и recreate `wb_image_pipeline_api` + worker. Локальный `backend/.env` — прокси 7890 + `NO_PROXY` (не в git). | Код приложений — не менялся. | ffff981 |
 | TASK-118 | 2026-05-13 | PG: last_error из WIP в API/UI + дока 403 региона / прокси | `product_generation_image_pipeline.enrich_job_out_with_image_pipeline`: `image_pipeline.last_error`, `error_message` по шагам; тест; `AiModule.jsx`; `frontend/dist`; `.env.example` + `КАК_ЗАПУСТИТЬ` про 403 и прокси. | Схема БД — не менялась. | 5dad4b7 |
 | TASK-117 | 2026-05-13 | ИИ PG UI: открыть задачу из таблицы + бейдж при failed WIP | `AiModule.jsx`: «Открыть», `resumeJobId`, `effectiveProductGenerationListStatus`; `frontend/dist`. | Бэкенд — не менялся. | 47d9760 |
