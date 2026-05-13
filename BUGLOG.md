@@ -9,6 +9,38 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-36
+Дата: 2026-05-13
+Статус: fixed
+Автоматизация: нет (ручной репорт: 502 после `docker compose up`; логи `api`)
+
+## Бизнес-описание
+После перезапуска Docker весь фронт через Caddy получал **502 Bad Gateway** — приложение как «упало».
+
+## Процесс / сценарий
+1) `docker compose up -d --build`.
+2) Ожидание: `https://localhost:8444` и API отвечают.
+3) Факт: контейнер `api` в цикле **Restarting**, Caddy не достучался до upstream.
+
+## Техническое описание
+`docker_entrypoint_api.py` вызывает `alembic upgrade head`. Ревизия `9e1f2a3b4c5d` делала безусловный `CREATE TABLE product_generation_jobs`; в БД таблица уже существовала (дрейф/ручной прогон), а версия Alembic была ниже — миграция падала с `DuplicateTable`, процесс завершался до uvicorn.
+
+## Root cause (почему произошло)
+- Неидемпотентная миграция при уже существующей таблице; расхождение `alembic_version` и фактической схемы.
+
+## Исправление (что сделали)
+- В `9e1f2a3b4c5d_product_generation_jobs.py`: перед `create_table` — `inspect.has_table`; если таблица есть — выходим из `upgrade()` без ошибки.
+
+## Профилактика (как не повторить)
+- Для DDL-миграций на существующих окружениях предпочитать проверку `has_table` / `IF NOT EXISTS` там, где допустим дрейф.
+
+## Проверка
+- Команды: `docker compose run --rm api python -m alembic upgrade head`; `docker compose restart api`; `docker compose ps api` (healthy).
+- Сценарии: старт API после upgrade на БД с уже существующей `product_generation_jobs`.
+
+Затронутые файлы: `backend/alembic/versions/9e1f2a3b4c5d_product_generation_jobs.py`
+
+---
 ID: BUG-35
 Дата: 2026-05-12
 Статус: fixed

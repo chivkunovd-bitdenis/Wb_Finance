@@ -20,6 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table("product_generation_jobs"):
+        # Таблица уже есть (дрейф схемы / ручной DDL / частичный прогон) — не падаем на DuplicateTable.
+        return
+
     op.create_table(
         "product_generation_jobs",
         sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
