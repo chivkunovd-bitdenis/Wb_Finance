@@ -1,0 +1,107 @@
+"""PG-B.2: вызов OpenAI chat.completions для структуризации (JSON)."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+import httpx
+
+from app.schemas.structure_main import StructureMainResult
+
+logger = logging.getLogger(__name__)
+
+_STRUCTURE_SYSTEM = """Ты помощник для маркетплейса. По входному тексту продавца верни ТОЛЬКО один JSON-объект без markdown и без пояснений.
+Ключи:
+- "seo_title" — короткое название товара для карточки (строка, до 200 символов);
+- "seo_description" — описание для карточки (строка, 1–3 абзаца);
+- "main_prompts" — ровно 4 строки: каждая — отдельный текстовый промпт для генерации изображения главного вида товара (ракурс, фон, стиль могут отличаться). Пиши на русском.
+Все строки непустые."""
+
+
+def _openai_api_key() -> str | None:
+    raw = (os.getenv("WIP_OPENAI_API_KEY") or "").strip()
+    return raw or None
+
+
+def _structure_model() -> str:
+    return (os.getenv("WIP_OPENAI_MODEL_STRUCTURE") or "gpt-4.1-mini").strip()
+
+
+def _timeout_sec() -> float:
+    raw = (os.getenv("WIP_OPENAI_TIMEOUT_SEC") or "120").strip()
+    try:
+        return max(15.0, float(raw))
+    except ValueError:
+        return 120.0
+
+
+def call_structure_main_model(*, user_prompt: str) -> StructureMainResult:
+    """
+    Вызывает OpenAI и возвращает провалидированный результат.
+
+    Raises:
+        ValueError: нет ключа API, пустой промпт, невалидный ответ.
+        httpx.HTTPError: сетевые ошибки.
+    """
+    key = _openai_api_key()
+    if not key:
+        raise ValueError("WIP_OPENAI_API_KEY is not set")
+    text = (user_prompt or "").strip()
+    if not text:
+        raise ValueError("user_prompt is empty")
+
+    model = _structure_model()
+    url = "https://api.openai.com/v1/chat/completions"
+    body: dict[str, Any] = {
+        "model": model,
+        "temperature": 0.35,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": _STRUCTURE_SYSTEM},
+            {"role": "user", "content": text},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    with httpx.Client(timeout=_timeout_sec()) as client:
+        r = client.post(url, json=body, headers=headers)
+
+    if r.status_code != 200:
+        logger.warning(
+            "wip_structure_openai: status=%s body=%s",
+            r.status_code,
+            r.text[:800],
+        )
+        raise ValueError(f"OpenAI HTTP {r.status_code}")
+
+    try:
+        envelope = r.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError("OpenAI response is not JSON") from exc
+
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("OpenAI response missing choices")
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("OpenAI empty content")
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("OpenAI content is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("OpenAI JSON root must be an object")
+
+    out = StructureMainResult.model_validate(parsed)
+    logger.info(
+        "wip_structure_openai: ok model=%s prompts=%s title_len=%s",
+        model,
+        len(out.main_prompts),
+        len(out.seo_title),
+    )
+    return out

@@ -48,6 +48,8 @@
 
 **PG-B.1 (фаза IMAGE):** `WIP_IMAGE_PROMPT_TEMPLATE` (полный текст с `{user_text}`; пусто — встроенный шаблон), `WIP_IMAGE_PROMPT_USER_TEXT_MAX_CHARS`. После `run_created` в `GET /internal/v1/runs/{id}` в `payload` появляются `wip_effective_image_prompt`, `wip_prompt_template_version`, `wip_prompt_template_hash`.
 
+**PG-B.2:** `WIP_OPENAI_API_KEY`, `WIP_OPENAI_MODEL_STRUCTURE`, `WIP_OPENAI_TIMEOUT_SEC` — вызов OpenAI на шаге `structure_main`; при ошибке шаг `failed`, текст в `error_message`.
+
 ## Вынос в новый проект
 
 1. Скопировать всю папку `wb_image_pipeline_service/` в корень нового репо.
@@ -58,7 +60,7 @@
 ## Статус
 
 - **PG-3.1:** своя БД сервиса — таблицы `wip_runs`, `wip_steps`, `wip_assets` (SQLAlchemy + Alembic `a1b2c3d4e501`). При старте контейнера выполняется `alembic upgrade head`. `docker-compose.example` монтирует **`wip_data:/data`** (общий SQLite и каталог `media` для API и worker).
-- **PG-3.2:** Celery-цепочка-заглушка **`wb_image_pipeline.run_created` → `wb_image_pipeline.step_done`** (модуль `celery_app/pipeline_tasks.py`, постановка `enqueue_pg32_stub_chain(run_id)`). Воркер в compose — `celery -A celery_app.celery_app worker`; брокер/backend — **Redis** (`wip_redis` в примере). Логи на INFO; повторы задач идемпотентны по строкам `wip_runs` / `wip_steps` (шаг `pg32_stub`).
+- **PG-3.2:** Celery-цепочка **`wb_image_pipeline.run_created` → `wb_image_pipeline.structure_main` → `wb_image_pipeline.step_done`** (`celery_app/pipeline_tasks.py`, `enqueue_pg32_stub_chain`). Шаг **`structure_main`** (PG-B.2): OpenAI `chat/completions` с `response_format: json_object`, модель `WIP_OPENAI_MODEL_STRUCTURE`, результат в `wip_steps.meta_json` (`seo_title`, `seo_description`, `main_prompts` ×4). Шаг **`pg32_stub`** по-прежнему финализирует run для dev. Воркер — `celery -A celery_app.celery_app worker`; Redis — брокер. Идемпотентность по `wip_runs` / `wip_steps`.
 - **PG-3.3:** HTTP **`POST /internal/v1/runs`**, **`GET /internal/v1/runs/{id}`** — реализация в `app/api/internal_runs.py`, логика в `app/services/internal_runs_service.py`, схемы в `app/schemas/internal_runs.py`. Аутентификация: `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`. После успешного `POST` ставится очередь PG-3.2. Подробный контракт — ниже.
 - **PG-3.4:** связка с монолитом wb-finance — при старте задачи (`POST /ai/product-generation/jobs/{id}/start`) монолит может вызвать этот сервис (см. **`PRODUCT_GEN_IMAGE_PIPELINE_*`** в `backend/.env.example`); `pipeline_run_id` в монолите = UUID run; поллинг статуса — через `GET` jobs в монолите (он проксирует `GET /internal/v1/runs/{id}` в поле `image_pipeline`).
 - Дальше по плану wb-finance: **PG-3.5** (mTLS / прод-HMAC, см. `docs/mtls.md`).

@@ -134,12 +134,19 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     importlib.reload(pt)
     from celery import chain
     from celery_app.celery_app import celery_app
-    from celery_app.pipeline_tasks import run_created, step_done
+    from celery_app.pipeline_tasks import run_created, step_done, structure_main
 
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
 
     import app.main as mm
+    from app.schemas.structure_main import StructureMainResult
+
+    fake = StructureMainResult(
+        seo_title="T",
+        seo_description="D " * 30,
+        main_prompts=["a", "b", "c", "d"],
+    )
 
     client = TestClient(mm.app)
     with patch("app.api.internal_runs.enqueue_pg32_stub_chain"):
@@ -154,15 +161,18 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     assert res.status_code == 201
     run_id = res.json()["id"]
 
-    chain(run_created.s(run_id), step_done.s()).apply_async().get(timeout=10)
+    with patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
+        chain(run_created.s(run_id), structure_main.s(), step_done.s()).apply_async().get(timeout=10)
 
     got = client.get(f"/internal/v1/runs/{run_id}", headers=_auth_headers())
     assert got.status_code == 200
     body = got.json()
     assert body["status"] == "completed"
-    assert len(body["steps"]) == 1
-    assert body["steps"][0]["step_key"] == "pg32_stub"
-    assert body["steps"][0]["status"] == "done"
+    assert len(body["steps"]) == 2
+    keys = {s["step_key"] for s in body["steps"]}
+    assert keys == {"structure_main", "pg32_stub"}
+    for s in body["steps"]:
+        assert s["status"] == "done"
 
 
 def test_internal_runs_post_422_when_payload_missing(http_runs_env: str) -> None:
