@@ -632,6 +632,24 @@ export async function downloadProductGenerationReference(jobId, assetId) {
   return { blob, filename };
 }
 
+/** Скачать сгенерированное WIP-фото (`main_frame`) задачи генерации товара (admin). */
+export async function downloadProductGenerationGeneratedAsset(jobId, assetId) {
+  const res = await apiFetch(
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/generated-assets/${encodeURIComponent(assetId)}/file`,
+    { headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd);
+  const filename = m ? decodeURIComponent(m[1].replace(/"/g, '')) : '';
+  const blob = await res.blob();
+  return { blob, filename };
+}
+
 /** Обновить поля карточки товара в существующей задаче генерации (admin). */
 export async function updateProductGenerationJob(jobId, body = {}) {
   const res = await apiFetch(

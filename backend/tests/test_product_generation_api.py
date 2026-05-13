@@ -446,6 +446,15 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
                 "status": "completed",
                 "updated_at": "2026-05-13T12:00:00Z",
                 "steps": [{"step_key": "pg32_stub", "status": "done", "ordinal": 0}],
+                "assets": [
+                    {
+                        "id": "asset-1",
+                        "kind": "main_frame",
+                        "mime_type": "image/png",
+                        "meta_json": {"frame_index": 0},
+                        "created_at": "2026-05-13T12:01:00Z",
+                    }
+                ],
             },
         )
 
@@ -469,6 +478,8 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
     assert len(row["image_pipeline"]["steps"]) == 1
     assert row["image_pipeline"]["steps"][0].get("error_message") is None
     assert row["image_pipeline"].get("last_error") is None
+    assert row["image_pipeline"]["generated_assets"][0]["asset_id"] == "asset-1"
+    assert row["image_pipeline"]["generated_assets"][0]["frame_index"] == 0
     tl = row["image_pipeline"].get("timeline")
     assert isinstance(tl, list) and len(tl) >= 2
     assert any("Финализация" in (e.get("title") or "") for e in tl)
@@ -524,3 +535,44 @@ def test_product_generation_list_image_pipeline_last_error_on_failed_step(
     assert row["image_pipeline"]["steps"][0]["error_message"] == "OpenAI HTTP 403"
     tl = row["image_pipeline"].get("timeline")
     assert isinstance(tl, list) and any("OpenAI HTTP 403" in str(e.get("body", "")) for e in tl)
+
+
+def test_product_generation_download_generated_asset_proxies_wip_file(
+    client_admin: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    run_uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+    def fake_post(url: str, **_kwargs: object) -> httpx.Response:
+        assert url == "http://wip.test/internal/v1/runs"
+        return httpx.Response(201, json={"id": run_uuid, "status": "created"})
+
+    def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+        if url == f"http://wip.test/internal/v1/runs/{run_uuid}/assets/asset-1/file":
+            return httpx.Response(
+                200,
+                content=b"generated-image",
+                headers={
+                    "content-type": "image/png",
+                    "content-disposition": 'attachment; filename="main_frame_0.png"',
+                },
+            )
+        raise AssertionError(url)
+
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "Generated"})
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        assert client_admin.post(f"/ai/product-generation/jobs/{job_id}/start").status_code == 200
+
+    with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+        rfile = client_admin.get(f"/ai/product-generation/jobs/{job_id}/generated-assets/asset-1/file")
+    assert rfile.status_code == 200
+    assert rfile.content == b"generated-image"
+    assert rfile.headers["content-type"].startswith("image/png")

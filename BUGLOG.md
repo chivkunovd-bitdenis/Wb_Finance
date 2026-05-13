@@ -9,6 +9,43 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-39
+Дата: 2026-05-13
+Статус: fixed
+Автоматизация: да (`backend/tests/test_product_generation_api.py`, `wb_image_pipeline_service/tests/test_internal_runs_http.py`)
+
+## Бизнес-описание
+После успешной генерации фото пользователь видел статус **«К публикации»**, но кнопка **«Скачать фото»** скачивала исходные референсы или не давала доступ к новым картинкам. Сами сгенерированные файлы были спрятаны внутри volume WIP.
+
+## Процесс / сценарий
+1) Пользователь запускает полную генерацию товара.
+2) WIP создаёт 4 `main_frame` ассета в `/data/media/<run_id>/`.
+3) Ожидание: кнопка «Скачать фото» скачивает эти 4 сгенерированные картинки.
+4) Факт: монолит не имел endpoint для generated assets, UI работал с `reference_paths_json`.
+
+## Техническое описание
+`wb_image_pipeline_service` отдавал assets только в JSON `GET /internal/v1/runs/{id}`, но не отдавал файл ассета. Монолит не проксировал WIP media, а фронт вызывал download референса.
+
+## Root cause (почему произошло)
+- Не был реализован контур доставки WIP-generated files до пользователя.
+- Название кнопки «Скачать фото» подразумевало generated фото, а код скачивал uploaded references.
+
+## Исправление (что сделали)
+- WIP: `GET /internal/v1/runs/{run_id}/assets/{asset_id}/file`.
+- Монолит: `GET /ai/product-generation/jobs/{job_id}/generated-assets/{asset_id}/file`.
+- `image_pipeline.generated_assets` в ответе API.
+- UI: «Скачать фото» скачивает `generated_assets`, а не `reference_paths_json`.
+
+## Профилактика (как не повторить)
+- API-тест проксирования generated asset.
+- WIP-тест file endpoint для asset.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest -q`; `python3 -m pytest tests -q` в `wb_image_pipeline_service`; `npm run lint`, `npm run build`.
+- Сценарии: smoke задачи `05e0b11e...`: `generated_assets=4`; скачан `main_frame_0.png` через монолит, PNG 1024×1024, 1 752 985 байт.
+
+Затронутые файлы: `wb_image_pipeline_service/app/api/internal_runs.py`, `wb_image_pipeline_service/tests/test_internal_runs_http.py`, `backend/app/services/product_generation_image_pipeline.py`, `backend/app/routers/product_generation.py`, `backend/tests/test_product_generation_api.py`, `frontend/src/api.js`, `frontend/src/screens/AiModule.jsx`, `frontend/dist/*`, `BUGLOG.md`, `TASKLOG.md`
+---
 ID: BUG-38
 Дата: 2026-05-13
 Статус: fixed

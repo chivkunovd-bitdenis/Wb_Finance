@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -16,7 +16,11 @@ from app.schemas.product_generation import (
     ProductGenerationJobUpdate,
 )
 from app.services import product_generation_service as pg_service
-from app.services.product_generation_image_pipeline import enrich_job_out_with_image_pipeline
+from app.services.product_generation_image_pipeline import (
+    ImagePipelineClientError,
+    enrich_job_out_with_image_pipeline,
+    fetch_remote_asset_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +116,33 @@ def download_job_reference_file(
     media = str(meta.get("content_type") or "application/octet-stream")
     name = str(meta.get("original_filename") or "reference")
     return FileResponse(path=str(path), media_type=media, filename=name)
+
+
+@router.get("/jobs/{job_id}/generated-assets/{asset_id}/file")
+def download_generated_asset_file(
+    job_id: str,
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+) -> Response:
+    job = pg_service.get_job_for_user(db=db, user=current_user, job_id=job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена")
+    run_id = str(job.pipeline_run_id or "").strip()
+    if not run_id or run_id.startswith("local-"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Удалённый image-run не найден")
+    try:
+        content, media_type, filename = fetch_remote_asset_file(run_id, asset_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сгенерированное фото не найдено") from exc
+    except ImagePipelineClientError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Image-сервис недоступен") from exc
+    safe_name = filename.replace('"', "")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
 
 
 @router.post("/jobs/{job_id}/start", response_model=ProductGenerationJobOut)

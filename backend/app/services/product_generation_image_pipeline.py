@@ -275,6 +275,39 @@ def fetch_remote_run(run_id: str) -> dict[str, Any] | None:
         return None
 
 
+def fetch_remote_asset_file(run_id: str, asset_id: str) -> tuple[bytes, str, str]:
+    base = image_pipeline_base_url()
+    secret = image_pipeline_secret()
+    if not base or not secret:
+        raise ImagePipelineClientError("image pipeline env not configured")
+    url = f"{base}/internal/v1/runs/{run_id}/assets/{asset_id}/file"
+    headers = {"Authorization": f"Bearer {secret}"}
+    try:
+        r = httpx.get(url, headers=headers, timeout=_timeout_sec(), trust_env=False)
+    except httpx.HTTPError as exc:
+        logger.warning("product_generation: image pipeline asset GET failed run_id=%s asset_id=%s: %s", run_id, asset_id, exc)
+        raise ImagePipelineClientError(str(exc)) from exc
+    if r.status_code == 404:
+        raise FileNotFoundError(asset_id)
+    if r.status_code != 200:
+        logger.warning(
+            "product_generation: image pipeline asset GET status=%s run_id=%s asset_id=%s",
+            r.status_code,
+            run_id,
+            asset_id,
+        )
+        raise ImagePipelineClientError(f"unexpected status {r.status_code}")
+    media_type = (r.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+    cd = r.headers.get("content-disposition") or ""
+    filename = "generated-photo.png"
+    marker = "filename="
+    if marker in cd:
+        raw_name = cd.split(marker, 1)[1].split(";", 1)[0].strip().strip('"')
+        if raw_name:
+            filename = raw_name
+    return r.content, media_type or "application/octet-stream", filename
+
+
 def _is_remote_pipeline_run_id(run_id: str | None) -> bool:
     if not run_id:
         return False
@@ -324,6 +357,33 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
                 if ua is not None:
                     row["updated_at"] = ua
                 compact_steps.append(row)
+    assets = remote.get("assets") or []
+    generated_assets: list[dict[str, Any]] = []
+    if isinstance(assets, list):
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("kind") or "") != "main_frame":
+                continue
+            aid = str(a.get("id") or "").strip()
+            if not aid:
+                continue
+            raw_meta = a.get("meta_json")
+            meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+            generated_assets.append(
+                {
+                    "asset_id": aid,
+                    "kind": a.get("kind"),
+                    "frame_index": meta.get("frame_index"),
+                    "mime_type": a.get("mime_type"),
+                    "created_at": a.get("created_at"),
+                }
+            )
+    def _asset_sort_key(item: dict[str, Any]) -> int:
+        frame_index = item.get("frame_index")
+        return frame_index if isinstance(frame_index, int) else 999
+
+    generated_assets.sort(key=_asset_sort_key)
     last_error: str | None = None
     for s in compact_steps:
         if str(s.get("status") or "") == "failed" and s.get("error_message"):
@@ -345,6 +405,7 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
         "created_at": remote.get("created_at"),
         "monolith_job_id": remote.get("monolith_job_id"),
         "steps": compact_steps,
+        "generated_assets": generated_assets,
         "last_error": last_error,
         "timeline": timeline,
     }

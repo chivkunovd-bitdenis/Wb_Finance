@@ -67,7 +67,7 @@ def test_call_structure_posts_to_resolved_url(monkeypatch: pytest.MonkeyPatch) -
 
     import app.services.structure_main_openai as smo
 
-    with patch.object(smo.httpx, "Client", return_value=mock_cm):
+    with patch.object(smo, "openai_httpx_client", return_value=mock_cm):
         out = smo.call_structure_main_model(user_prompt="hello")
 
     assert out.seo_title == "T"

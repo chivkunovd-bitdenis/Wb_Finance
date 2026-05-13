@@ -600,21 +600,26 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     setInfoMessage('');
     try {
       const current = await api.getProductGenerationJob(jid);
-      const refs = Array.isArray(current?.reference_paths_json) ? current.reference_paths_json : [];
-      const rows = refs.filter((r) => r && r.asset_id);
-      if (!rows.length) throw new Error('Нет доступных фото для скачивания');
+      const assets = Array.isArray(current?.image_pipeline?.generated_assets)
+        ? current.image_pipeline.generated_assets
+        : [];
+      const rows = assets.filter((r) => r && r.asset_id);
+      if (!rows.length) {
+        throw new Error('Сгенерированные фото ещё не доступны. Нажмите «Проверить готовность» и откройте лог пайплайна.');
+      }
       for (const row of rows) {
         const aid = String(row.asset_id || '').trim();
         if (!aid) continue;
-        const file = await api.downloadProductGenerationReference(jid, aid);
+        const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
         const href = URL.createObjectURL(file.blob);
         const a = document.createElement('a');
         a.href = href;
-        a.download = file.filename || `photo-${aid}.png`;
+        const idx = Number.isInteger(row?.frame_index) ? row.frame_index + 1 : '';
+        a.download = file.filename || `generated-${idx || aid}.png`;
         a.click();
         URL.revokeObjectURL(href);
       }
-      setInfoMessage('Фото сохранены на компьютер.');
+      setInfoMessage(`Сгенерированные фото сохранены на компьютер: ${rows.length} файл(ов).`);
     } catch (e) {
       setSubmitError(e?.message || 'Не удалось скачать фото');
     } finally {

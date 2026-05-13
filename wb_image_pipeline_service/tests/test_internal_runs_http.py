@@ -192,6 +192,12 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
         assert s["status"] == "done"
     assert len(body["assets"]) == 4
 
+    asset_id = body["assets"][0]["id"]
+    file_res = client.get(f"/internal/v1/runs/{run_id}/assets/{asset_id}/file", headers=_auth_headers())
+    assert file_res.status_code == 200
+    assert file_res.content == mini_png
+    assert file_res.headers["content-type"].startswith("image/png")
+
 
 def test_internal_runs_post_422_when_payload_missing(http_runs_env: str) -> None:
     with patch("app.api.internal_runs.enqueue_pg32_stub_chain") as enq:

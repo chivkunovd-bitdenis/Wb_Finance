@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.deps import InternalAuth
 from app.schemas.internal_runs import (
@@ -88,3 +91,32 @@ def get_run(
         steps=[PipelineStepOut.model_validate(s) for s in steps],
         assets=[PipelineAssetOut.model_validate(a) for a in run.assets],
     )
+
+
+@router.get("/runs/{run_id}/assets/{asset_id}/file")
+def get_run_asset_file(
+    _auth: InternalAuth,
+    run_id: str,
+    asset_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> FileResponse:
+    run = get_run_by_id(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    asset = next((a for a in run.assets if str(a.id) == str(asset_id)), None)
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+
+    root = Path(settings.media_root).resolve()
+    rel = str(asset.storage_rel_path or "").strip()
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Asset path escapes media root") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset file not found")
+
+    filename = Path(rel).name or f"{asset.id}.png"
+    media_type = asset.mime_type or "application/octet-stream"
+    return FileResponse(path=str(path), media_type=media_type, filename=filename)
