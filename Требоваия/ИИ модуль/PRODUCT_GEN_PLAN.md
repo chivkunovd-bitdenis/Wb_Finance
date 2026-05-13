@@ -26,7 +26,7 @@
 | Связь сервисов | Цель: **mTLS**; до внедрения — private network + HMAC (см. `wb_image_pipeline_service/docs/mtls.md`) |
 | LLM (env) | `WIP_OPENAI_MODEL_STRUCTURE=gpt-4.1-mini`, `WIP_OPENAI_MODEL_PROMPT_PACK=gpt-4.1`, image model в `WIP_OPENAI_IMAGE_MODEL` |
 | TTL медиа | 14 дней после успешной публикации |
-| Скелет `wb_image_pipeline_service/` | **Оставить** как заготовку PG-3; не подключать к монолиту до PG-3.4 |
+| Скелет `wb_image_pipeline_service/` | Связка с монолитом **PG-3.4** — факт; дальше **фаза B** (реальный каскад вместо stub) |
 
 ---
 
