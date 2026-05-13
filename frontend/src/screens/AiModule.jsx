@@ -1351,9 +1351,11 @@ function ProductGenerationAdminCard() {
     return () => { cancelled = true; };
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const data = await api.listProductGenerationJobs();
       setItems(Array.isArray(data?.items) ? data.items : []);
@@ -1361,7 +1363,7 @@ function ProductGenerationAdminCard() {
       setError(e?.message || 'Не удалось загрузить задачи');
       setItems([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -1384,12 +1386,13 @@ function ProductGenerationAdminCard() {
 
   useEffect(() => {
     if (!meChecked || !isAdmin || VITE_PRODUCT_GEN_UI_STUB) return undefined;
+    if (wizardOpen || pipelineLogOpen) return undefined;
     if (!needsImagePipelinePoll) return undefined;
     const timer = setInterval(() => {
-      load();
+      load({ silent: true });
     }, 4000);
     return () => clearInterval(timer);
-  }, [meChecked, isAdmin, needsImagePipelinePoll, load]);
+  }, [meChecked, isAdmin, needsImagePipelinePoll, wizardOpen, pipelineLogOpen, load]);
 
   if (!meChecked || !isAdmin) return null;
 
@@ -1506,6 +1509,7 @@ function ModalShell({ open, title, onClose, children, footer, width }) {
         alignItems: 'center',
         justifyContent: 'center',
         padding: 16,
+        overflow: 'hidden',
       }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose?.();
@@ -1515,6 +1519,10 @@ function ModalShell({ open, title, onClose, children, footer, width }) {
         style={{
           width: w,
           maxWidth: '100%',
+          maxHeight: 'calc(100vh - 32px)',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
           background: '#fff',
           borderRadius: 12,
           border: '1px solid rgba(2,6,23,0.08)',
@@ -1522,17 +1530,17 @@ function ModalShell({ open, title, onClose, children, footer, width }) {
           overflow: 'hidden',
         }}
       >
-        <div style={{ padding: 14, borderBottom: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ padding: 14, borderBottom: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 }}>
           <div style={{ fontWeight: 900 }}>{title}</div>
           <button type="button" className="btn btn-sm btn-outline-secondary" onClick={onClose} style={{ marginLeft: 'auto' }}>
             Закрыть
           </button>
         </div>
-        <div style={{ padding: 14 }}>
+        <div style={{ padding: 14, overflowY: 'auto', minHeight: 0, overscrollBehavior: 'contain' }}>
           {children}
         </div>
         {footer && (
-          <div style={{ padding: 14, borderTop: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ padding: 14, borderTop: '1px solid rgba(2,6,23,0.08)', display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap', flexShrink: 0 }}>
             {footer}
           </div>
         )}
