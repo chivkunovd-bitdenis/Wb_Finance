@@ -1155,6 +1155,16 @@ function ProductGenerationAssetGallery({
     triggerBlobDownload(file.url, file.filename);
   };
 
+  const openOrSelect = (row, index, file) => {
+    const aid = String(row?.asset_id || '').trim();
+    if (!file?.url) return;
+    if (selectable && selectedAssetId !== aid) {
+      onSelect?.(aid);
+      return;
+    }
+    setPreviewAsset({ row, index, file });
+  };
+
   const downloadAll = () => {
     downloadReadyRows.forEach((row, idx) => {
       const aid = String(row.asset_id || '').trim();
@@ -1202,6 +1212,11 @@ function ProductGenerationAssetGallery({
           const url = file?.url;
           const checked = selectedAssetId === aid;
           const itemLabel = row.kind === 'content_frame' ? `Контент ${idx + 1}` : `Вариант ${idx + 1}`;
+          const imageActionLabel = selectable
+            ? checked
+              ? `Открыть предпросмотр: ${itemLabel}`
+              : `Выбрать фото: ${itemLabel}`
+            : `Открыть предпросмотр: ${itemLabel}`;
           return (
             <div
               key={aid}
@@ -1210,29 +1225,30 @@ function ProductGenerationAssetGallery({
                 width: 168,
                 textAlign: 'left',
                 borderRadius: 14,
-                border: checked ? '2px solid var(--accent)' : '1px solid rgba(2,6,23,0.10)',
-                background: checked ? 'var(--accent-light)' : '#fff',
-                padding: 8,
+                border: checked ? '2px solid var(--accent)' : '1px solid rgba(2,6,23,0.08)',
+                background: '#fff',
+                padding: 6,
                 position: 'relative',
-                boxShadow: checked ? '0 10px 24px rgba(91,79,212,0.16)' : 'none',
+                boxShadow: checked ? '0 10px 24px rgba(91,79,212,0.14)' : '0 8px 20px rgba(15,23,42,0.03)',
               }}
             >
               {selectable ? (
                 <span
                   style={{
                     position: 'absolute',
-                    top: 10,
-                    right: 10,
+                    top: 12,
+                    left: 12,
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    width: 24,
-                    height: 24,
+                    width: 22,
+                    height: 22,
                     borderRadius: 999,
                     background: checked ? 'var(--accent)' : 'rgba(255,255,255,0.92)',
                     color: checked ? '#fff' : 'var(--text-tertiary)',
                     border: '1px solid rgba(2,6,23,0.14)',
-                    fontWeight: 900,
+                    fontSize: 13,
+                    fontWeight: 950,
                     zIndex: 2,
                     pointerEvents: 'none',
                   }}
@@ -1240,58 +1256,71 @@ function ProductGenerationAssetGallery({
                   {checked ? '✓' : ''}
                 </span>
               ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  if (url) setPreviewAsset({ row, index: idx, file });
-                }}
-                disabled={!url}
-                aria-label={`Открыть предпросмотр: ${itemLabel}`}
-                style={{
-                  width: '100%',
-                  aspectRatio: '1 / 1',
-                  borderRadius: 10,
-                  overflow: 'hidden',
-                  background: 'rgba(2,6,23,0.04)',
-                  border: '1px solid rgba(2,6,23,0.06)',
-                  padding: 0,
-                  display: 'block',
-                  cursor: url ? 'zoom-in' : 'default',
-                }}
-              >
-                {url ? (
-                  <img
-                    src={url}
-                    alt={itemLabel}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                  />
-                ) : (
-                  <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'var(--text-tertiary)', fontSize: 12 }}>
-                    …
-                  </div>
-                )}
-              </button>
-              <div style={{ marginTop: 7, fontSize: 12, fontWeight: 800, color: checked ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                {itemLabel}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                {selectable ? (
-                  <button
-                    type="button"
-                    className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'}`}
-                    onClick={() => onSelect?.(aid)}
-                  >
-                    {checked ? 'Выбрано' : 'Выбрать'}
-                  </button>
-                ) : null}
+              <div style={{ position: 'relative' }}>
                 <button
                   type="button"
-                  className="btn btn-sm btn-outline-secondary"
-                  onClick={() => downloadOne(row)}
+                  onClick={() => openOrSelect(row, idx, file)}
                   disabled={!url}
+                  aria-label={imageActionLabel}
+                  title={selectable && !checked ? 'Выбрать фото' : 'Открыть предпросмотр'}
+                  style={{
+                    width: '100%',
+                    aspectRatio: '1 / 1',
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                    background: 'rgba(2,6,23,0.04)',
+                    border: '1px solid rgba(2,6,23,0.06)',
+                    padding: 0,
+                    display: 'block',
+                    cursor: url ? (selectable && !checked ? 'pointer' : 'zoom-in') : 'default',
+                  }}
                 >
-                  Скачать
+                  {url ? (
+                    <img
+                      src={url}
+                      alt={itemLabel}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                  ) : (
+                    <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'var(--text-tertiary)', fontSize: 12 }}>
+                      …
+                    </div>
+                  )}
                 </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadOne(row);
+                  }}
+                  disabled={!url}
+                  aria-label={`Скачать: ${itemLabel}`}
+                  title={`Скачать ${itemLabel.toLowerCase()}`}
+                  style={{
+                    position: 'absolute',
+                    top: 6,
+                    right: 6,
+                    width: 28,
+                    height: 28,
+                    borderRadius: 999,
+                    border: '1px solid rgba(2,6,23,0.14)',
+                    background: 'rgba(255,255,255,0.94)',
+                    color: 'var(--text-secondary)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 15,
+                    fontWeight: 950,
+                    lineHeight: 1,
+                    boxShadow: '0 6px 14px rgba(15,23,42,0.12)',
+                    cursor: url ? 'pointer' : 'default',
+                  }}
+                >
+                  ↓
+                </button>
+              </div>
+              <div style={{ marginTop: 7, padding: '0 2px 1px', fontSize: 12, fontWeight: 800, color: checked ? 'var(--accent)' : 'var(--text-secondary)' }}>
+                {itemLabel}
               </div>
             </div>
           );

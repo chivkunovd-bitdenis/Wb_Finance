@@ -97,14 +97,22 @@ test.describe('Product generation asset gallery', () => {
     await expect(wizard.getByText('Шаг 2 из 2')).toBeVisible();
     await expect(wizard.getByRole('button', { name: 'Скачать все 4 фото' })).toBeEnabled();
     await expect(wizard.getByRole('button', { name: 'Скачать все 7 фото' })).toBeEnabled();
+    await expect(wizard.getByRole('button', { name: 'Выбрать', exact: true })).toHaveCount(0);
 
-    await wizard.getByRole('button', { name: 'Открыть предпросмотр: Вариант 1' }).click();
-    const preview = page.getByRole('dialog', { name: 'Вариант 1' });
-    await expect(preview.getByRole('img', { name: 'Вариант 1' })).toBeVisible();
+    const tileDownload = page.waitForEvent('download');
+    await wizard.getByRole('button', { name: 'Скачать: Вариант 1' }).click();
+    expect((await tileDownload).suggestedFilename()).toBe('main-1.png');
+
+    await wizard.getByRole('button', { name: 'Выбрать фото: Вариант 3' }).click();
+    await expect(wizard.getByRole('button', { name: 'Открыть предпросмотр: Вариант 3' })).toBeVisible();
+
+    await wizard.getByRole('button', { name: 'Открыть предпросмотр: Вариант 3' }).click();
+    const preview = page.getByRole('dialog', { name: 'Вариант 3' });
+    await expect(preview.getByRole('img', { name: 'Вариант 3' })).toBeVisible();
 
     const singleDownload = page.waitForEvent('download');
-    await preview.getByRole('button', { name: 'Скачать' }).click();
-    expect((await singleDownload).suggestedFilename()).toBe('main-1.png');
+    await preview.getByRole('button', { name: 'Скачать', exact: true }).click();
+    expect((await singleDownload).suggestedFilename()).toBe('main-3.png');
 
     await preview.getByRole('button', { name: 'Закрыть' }).last().click();
 
