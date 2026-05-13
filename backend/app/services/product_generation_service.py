@@ -133,6 +133,9 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
     """
     Переводит черновик в in_progress и назначает pipeline_run_id.
 
+    Условия старта (PG-A.1): статус `draft`, есть ≥1 референс в `reference_paths_json`.
+    Не требуются `title`, `vendor_code`, размеры, цена, габариты — они для публикации/WB позже.
+
     Если заданы `PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL` и `PRODUCT_GEN_IMAGE_PIPELINE_SECRET`,
     создаётся run в wb_image_pipeline_service (POST /internal/v1/runs). Иначе — локальный
     placeholder `local-*` и Celery-заглушка монолита (PG-2.3).

@@ -63,7 +63,10 @@ def test_internal_runs_post_get_mock_enqueue(http_runs_env: str) -> None:
         client = TestClient(mm.app)
         res = client.post(
             "/internal/v1/runs",
-            json={"monolith_job_id": "job-abc-1", "payload": {"refs": [1]}},
+            json={
+                "monolith_job_id": "job-abc-1",
+                "payload": {"reference_asset_ids": ["ref-1"], "title": None},
+            },
             headers=_auth_headers(),
         )
         assert res.status_code == 201
@@ -78,7 +81,8 @@ def test_internal_runs_post_get_mock_enqueue(http_runs_env: str) -> None:
         assert body["id"] == run_id
         assert body["status"] == "created"
         assert body["monolith_job_id"] == "job-abc-1"
-        assert body["payload"] == {"refs": [1]}
+        assert body["payload"]["reference_asset_ids"] == ["ref-1"]
+        assert body["payload"].get("title") is None
         assert body["steps"] == []
         assert body["assets"] == []
 
@@ -91,7 +95,10 @@ def test_internal_runs_post_enqueue_503(http_runs_env: str) -> None:
         client = TestClient(mm.app)
         res = client.post(
             "/internal/v1/runs",
-            json={"monolith_job_id": "job-x"},
+            json={
+                "monolith_job_id": "job-x",
+                "payload": {"reference_asset_ids": ["r1"]},
+            },
             headers=_auth_headers(),
         )
         assert res.status_code == 503
@@ -138,7 +145,10 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     with patch("app.api.internal_runs.enqueue_pg32_stub_chain"):
         res = client.post(
             "/internal/v1/runs",
-            json={"monolith_job_id": "job-eager"},
+            json={
+                "monolith_job_id": "job-eager",
+                "payload": {"reference_asset_ids": ["r1"]},
+            },
             headers=_auth_headers(),
         )
     assert res.status_code == 201
@@ -153,3 +163,64 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     assert len(body["steps"]) == 1
     assert body["steps"][0]["step_key"] == "pg32_stub"
     assert body["steps"][0]["status"] == "done"
+
+
+def test_internal_runs_post_422_when_payload_missing(http_runs_env: str) -> None:
+    with patch("app.api.internal_runs.enqueue_pg32_stub_chain") as enq:
+        enq.return_value = None
+        import app.main as mm
+
+        client = TestClient(mm.app)
+        res = client.post(
+            "/internal/v1/runs",
+            json={"monolith_job_id": "job-no-payload"},
+            headers=_auth_headers(),
+        )
+    assert res.status_code == 422
+    enq.assert_not_called()
+
+
+def test_internal_runs_post_422_when_reference_asset_ids_empty(http_runs_env: str) -> None:
+    with patch("app.api.internal_runs.enqueue_pg32_stub_chain") as enq:
+        enq.return_value = None
+        import app.main as mm
+
+        client = TestClient(mm.app)
+        res = client.post(
+            "/internal/v1/runs",
+            json={"monolith_job_id": "job-empty-refs", "payload": {"reference_asset_ids": []}},
+            headers=_auth_headers(),
+        )
+    assert res.status_code == 422
+    enq.assert_not_called()
+
+
+def test_internal_runs_post_201_minimal_payload_without_card_fields(http_runs_env: str) -> None:
+    with patch("app.api.internal_runs.enqueue_pg32_stub_chain") as enq:
+        enq.return_value = None
+        import app.main as mm
+
+        client = TestClient(mm.app)
+        res = client.post(
+            "/internal/v1/runs",
+            json={
+                "monolith_job_id": "job-min",
+                "payload": {
+                    "reference_asset_ids": ["a1"],
+                    "description_user": "Текст для промпта",
+                    "title": None,
+                    "vendor_code": None,
+                    "brand": None,
+                    "price_kopeks": None,
+                    "sizes_json": None,
+                },
+            },
+            headers=_auth_headers(),
+        )
+    assert res.status_code == 201
+    run_id = res.json()["id"]
+    got = client.get(f"/internal/v1/runs/{run_id}", headers=_auth_headers())
+    assert got.status_code == 200
+    assert got.json()["payload"]["reference_asset_ids"] == ["a1"]
+    assert got.json()["payload"]["description_user"] == "Текст для промпта"
+    enq.assert_called_once_with(run_id)

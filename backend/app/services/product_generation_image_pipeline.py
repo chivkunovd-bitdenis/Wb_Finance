@@ -1,4 +1,11 @@
-"""PG-3.4: HTTP-клиент к wb_image_pipeline_service (internal runs API)."""
+"""PG-3.4: HTTP-клиент к wb_image_pipeline_service (internal runs API).
+
+Поток **IMAGE** (PG-A.1): для старта run монолиту достаточно ≥1 загруженного референса
+(даёт `reference_asset_ids`) и статуса `draft` → `POST .../start`. Поля карточки товара
+(`title`, `vendor_code`, `brand`, габариты, `price_kopeks`, `sizes_json`, …) **не обязательны**
+на этом этапе и уходят в payload как `null`/опущенные значения — заполнение карточки
+относится к потоку **PRODUCT/WB** (PATCH после фото).
+"""
 
 from __future__ import annotations
 
@@ -48,6 +55,7 @@ def _json_safe_decimal(val: Decimal | None) -> str | None:
 
 
 def build_image_pipeline_payload(job: ProductGenerationJob) -> dict[str, Any]:
+    """Собирает JSON `payload` для `POST /internal/v1/runs` (фаза IMAGE, без требований к карточке)."""
     refs = list(job.reference_paths_json or [])
     asset_ids: list[str] = []
     for r in refs:

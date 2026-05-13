@@ -3,7 +3,48 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class MonolithImageRunPayload(BaseModel):
+    """
+    JSON `payload` от монолита для фазы IMAGE (PG-A.2).
+
+    Обязательны только идентификаторы референсов, уже загруженных в монолит.
+    Поля карточки WB опциональны и могут быть null — воркер не должен от них зависеть
+    на этапе структуризации/картинок.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    reference_asset_ids: list[str] = Field(..., min_length=1)
+    description_user: str | None = None
+    title: str | None = None
+    vendor_code: str | None = None
+    brand: str | None = None
+    wb_subject_id: int | None = Field(default=None, ge=1)
+    seo_description: str | None = None
+    price_kopeks: int | None = Field(default=None, ge=0)
+    dimensions_length: str | None = None
+    dimensions_width: str | None = None
+    dimensions_height: str | None = None
+    weight_brutto: str | None = None
+    sizes_json: Any | None = None
+
+    @field_validator("reference_asset_ids", mode="before")
+    @classmethod
+    def _reference_ids_non_empty_strings(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError("reference_asset_ids must be a list")
+        out: list[str] = []
+        for item in value:
+            s = str(item).strip()
+            if not s:
+                raise ValueError("reference_asset_ids must contain only non-empty strings")
+            out.append(s)
+        if not out:
+            raise ValueError("reference_asset_ids must not be empty")
+        return out
 
 
 class RunCreateBody(BaseModel):

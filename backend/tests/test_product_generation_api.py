@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -352,6 +353,53 @@ def test_product_generation_start_remote_image_pipeline(
     assert not str(body["pipeline_run_id"]).startswith("local-")
     mock_delay.assert_not_called()
     m_post.assert_called_once()
+
+
+def test_product_generation_start_remote_minimal_card_fields_in_payload(
+    client_admin: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """PG-A.1: старт run с пустой карточкой — в image-сервис уходит payload без title/vendor/price/sizes."""
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    run_uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: Any) -> httpx.Response:
+        captured["json"] = kwargs.get("json")
+        assert url == "http://wip.test/internal/v1/runs"
+        return httpx.Response(201, json={"id": run_uuid, "status": "created"})
+
+    def fake_get(url: str, **_kwargs: Any) -> httpx.Response:
+        assert run_uuid in url
+        return httpx.Response(
+            200,
+            json={"status": "running", "steps": [], "updated_at": "2026-05-13T12:00:00Z"},
+        )
+
+    r = client_admin.post("/ai/product-generation/jobs", json={"description_user": "Кроссовки белые"})
+    assert r.status_code == 201
+    job_id = r.json()["id"]
+    assert r.json().get("title") is None
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+            rs = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+    assert rs.status_code == 200
+    posted = captured.get("json")
+    assert posted is not None
+    payload = posted.get("payload") or {}
+    assert payload.get("description_user") == "Кроссовки белые"
+    assert payload.get("title") is None
+    assert payload.get("vendor_code") is None
+    assert payload.get("brand") is None
+    assert payload.get("price_kopeks") is None
+    assert payload.get("sizes_json") is None
+    assert len(payload.get("reference_asset_ids") or []) == 1
 
 
 def test_product_generation_start_remote_image_pipeline_503_on_http_error(

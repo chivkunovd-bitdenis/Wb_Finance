@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import InternalAuth
 from app.schemas.internal_runs import (
+    MonolithImageRunPayload,
     PipelineAssetOut,
     PipelineStepOut,
     RunCreateBody,
@@ -33,11 +36,23 @@ def post_run(
     body: RunCreateBody,
     db: Annotated[Session, Depends(get_db)],
 ) -> RunCreateResponse:
+    if body.payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="payload is required",
+        )
+    try:
+        normalized = MonolithImageRunPayload.model_validate(body.payload).model_dump(mode="json")
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=json.loads(exc.json(include_url=False)),
+        ) from exc
     try:
         run = create_run(
             db,
             monolith_job_id=body.monolith_job_id,
-            payload=body.payload,
+            payload=normalized,
             enqueue_chain=enqueue_pg32_stub_chain,
         )
     except PipelineEnqueueError:
