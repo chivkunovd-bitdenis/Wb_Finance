@@ -1255,6 +1255,8 @@ def test_real_wb_sales_response_structure():
     import requests
     try:
         rows = fetch_sales(date_from, date_to, wb_key)
+    except requests.exceptions.InvalidSchema as exc:
+        pytest.skip(f"Прокси из окружения не поддержан requests без зависимостей: {exc}")
     except requests.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else None
         if code == 429:

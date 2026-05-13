@@ -468,6 +468,9 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
     assert len(row["image_pipeline"]["steps"]) == 1
     assert row["image_pipeline"]["steps"][0].get("error_message") is None
     assert row["image_pipeline"].get("last_error") is None
+    tl = row["image_pipeline"].get("timeline")
+    assert isinstance(tl, list) and len(tl) >= 2
+    assert any("Финализация" in (e.get("title") or "") for e in tl)
 
 
 def test_product_generation_list_image_pipeline_last_error_on_failed_step(
@@ -517,3 +520,5 @@ def test_product_generation_list_image_pipeline_last_error_on_failed_step(
     assert row["image_pipeline"]["remote_status"] == "failed"
     assert row["image_pipeline"]["last_error"] == "OpenAI HTTP 403"
     assert row["image_pipeline"]["steps"][0]["error_message"] == "OpenAI HTTP 403"
+    tl = row["image_pipeline"].get("timeline")
+    assert isinstance(tl, list) and any("OpenAI HTTP 403" in str(e.get("body", "")) for e in tl)

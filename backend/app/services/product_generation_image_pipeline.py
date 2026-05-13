@@ -21,6 +21,128 @@ from app.schemas.product_generation import ProductGenerationJobOut
 
 logger = logging.getLogger(__name__)
 
+_STEP_TITLE_RU: dict[str, str] = {
+    "structure_main": "Структура карточки (OpenAI JSON: SEO, промпты к картинкам)",
+    "images_main": "Генерация изображений (OpenAI / сохранение ассетов)",
+    "pg32_stub": "Финализация run (сервисный шаг)",
+}
+
+_RUN_STATUS_HINT_RU: dict[str, str] = {
+    "created": "Run создан; дальше Celery ставит цепочку `run_created` → `structure_main` → `images_main` → `step_done`.",
+    "queued": "Run в очереди воркера.",
+    "running": "Воркер выполняет шаги пайплайна.",
+    "in_progress": "Воркер выполняет шаги пайплайна.",
+    "completed": "Удалённый пайплайн завершён успешно.",
+    "failed": "Пайплайн остановился с ошибкой — смотрите шаги ниже.",
+    "cancelled": "Run отменён.",
+}
+
+_STEP_STATUS_RU: dict[str, str] = {
+    "pending": "ожидает запуска",
+    "running": "выполняется",
+    "done": "завершён успешно",
+    "failed": "ошибка",
+    "skipped": "пропущен",
+}
+
+
+def _step_waiting_hint(step_key: str, status: str) -> str | None:
+    sk = step_key.lower()
+    st = status.lower()
+    if st not in ("running", "pending"):
+        return None
+    if sk == "structure_main":
+        return "Обычно здесь ждём ответ OpenAI (chat/completions, JSON)."
+    if sk == "images_main":
+        return "Обычно здесь ждём ответ OpenAI по изображениям и запись файлов в ассеты."
+    if sk == "pg32_stub":
+        return "Короткий финальный шаг перед сменой статуса run."
+    return None
+
+
+def _timeline_entry(*, time_iso: str, level: str, title: str, body: str) -> dict[str, str]:
+    return {
+        "time": time_iso,
+        "level": level,
+        "title": title,
+        "body": body,
+    }
+
+
+def _ordinal_of(step: dict[str, Any]) -> int:
+    raw = step.get("ordinal")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return 999
+
+
+def build_image_pipeline_timeline(remote: dict[str, Any]) -> list[dict[str, str]]:
+    """Человекочитаемая хронология по снимку GET /internal/v1/runs/{id} (для UI «Лог»)."""
+    entries: list[dict[str, str]] = []
+    rid = str(remote.get("id") or "").strip() or "—"
+    rstatus = str(remote.get("status") or "").strip() or "—"
+    hint = _RUN_STATUS_HINT_RU.get(rstatus.lower(), f"Статус run: {rstatus}.")
+    mono = str(remote.get("monolith_job_id") or "").strip()
+    updated = str(remote.get("updated_at") or "").strip()
+    created = str(remote.get("created_at") or "").strip()
+    time0 = updated or created
+    head_lines = [
+        f"Run ID (wb_image_pipeline_service): {rid}",
+        f"Статус run: {rstatus}",
+        hint,
+    ]
+    if mono:
+        head_lines.append(f"Связанная задача монолита (monolith_job_id): {mono}")
+    if created:
+        head_lines.append(f"Создано (WIP): {created}")
+    if updated:
+        head_lines.append(f"Обновлено (WIP): {updated}")
+    head_lines.append(
+        "Монолит при каждом опросе делает GET к WIP и строит этот снимок; "
+        "если шаг «в работе», ответ OpenAI может ещё не попасть в БД.",
+    )
+    lvl = "error" if rstatus.lower() == "failed" else "info"
+    entries.append(_timeline_entry(time_iso=time0, level=lvl, title="Удалённый image-run (wb_image_pipeline_service)", body="\n".join(head_lines)))
+
+    steps_raw = remote.get("steps") or []
+    if not isinstance(steps_raw, list):
+        return entries
+
+    parsed: list[tuple[int, dict[str, Any]]] = []
+    for s in steps_raw:
+        if isinstance(s, dict):
+            parsed.append((_ordinal_of(s), s))
+    parsed.sort(key=lambda x: (x[0], str(x[1].get("step_key") or "")))
+
+    for _ord, s in parsed:
+        key = str(s.get("step_key") or "").strip() or "шаг"
+        st = str(s.get("status") or "").strip() or "—"
+        title = _STEP_TITLE_RU.get(key, f"Шаг «{key}»")
+        st_ru = _STEP_STATUS_RU.get(st.lower(), st)
+        su = str(s.get("updated_at") or "").strip()
+        sc = str(s.get("created_at") or "").strip()
+        err = s.get("error_message")
+        err_s = str(err).strip() if err is not None else ""
+        body_lines = [f"Статус шага: {st_ru} ({st})"]
+        if sc:
+            body_lines.append(f"Создано шага: {sc}")
+        if su:
+            body_lines.append(f"Обновлено шага: {su}")
+        wait = _step_waiting_hint(key, st)
+        if wait:
+            body_lines.append(wait)
+        if err_s:
+            body_lines.append(f"Сообщение об ошибке (WIP): {err_s[:1900]}")
+        elif st.lower() in ("running", "pending"):
+            body_lines.append("Ошибок по шагу в снимке пока нет — идёт ожидание или запись результата.")
+        step_lvl = "error" if st.lower() == "failed" else "info"
+        t_iso = su or sc or time0
+        entries.append(_timeline_entry(time_iso=t_iso, level=step_lvl, title=title, body="\n".join(body_lines)))
+
+    return entries
+
 
 class ImagePipelineClientError(Exception):
     """Ошибка вызова image-сервиса (сеть, 4xx/5xx, неверное тело)."""
@@ -90,7 +212,7 @@ def create_remote_run(monolith_job_id: str, payload: dict[str, Any]) -> str:
     }
     body = {"monolith_job_id": monolith_job_id, "payload": payload}
     try:
-        r = httpx.post(url, json=body, headers=headers, timeout=_timeout_sec())
+        r = httpx.post(url, json=body, headers=headers, timeout=_timeout_sec(), trust_env=False)
     except httpx.HTTPError as exc:
         logger.warning("product_generation: image pipeline POST failed: %s", exc)
         raise ImagePipelineClientError(str(exc)) from exc
@@ -119,7 +241,7 @@ def fetch_remote_run(run_id: str) -> dict[str, Any] | None:
     url = f"{base}/internal/v1/runs/{run_id}"
     headers = {"Authorization": f"Bearer {secret}"}
     try:
-        r = httpx.get(url, headers=headers, timeout=_timeout_sec())
+        r = httpx.get(url, headers=headers, timeout=_timeout_sec(), trust_env=False)
     except httpx.HTTPError as exc:
         logger.warning("product_generation: image pipeline GET failed run_id=%s: %s", run_id, exc)
         return None
@@ -161,14 +283,19 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
             if isinstance(s, dict):
                 err = s.get("error_message")
                 err_s = str(err).strip()[:2000] if err is not None else None
-                compact_steps.append(
-                    {
-                        "step_key": s.get("step_key"),
-                        "status": s.get("status"),
-                        "ordinal": s.get("ordinal"),
-                        "error_message": err_s or None,
-                    }
-                )
+                ca = s.get("created_at")
+                ua = s.get("updated_at")
+                row: dict[str, Any] = {
+                    "step_key": s.get("step_key"),
+                    "status": s.get("status"),
+                    "ordinal": s.get("ordinal"),
+                    "error_message": err_s or None,
+                }
+                if ca is not None:
+                    row["created_at"] = ca
+                if ua is not None:
+                    row["updated_at"] = ua
+                compact_steps.append(row)
     last_error: str | None = None
     for s in compact_steps:
         if str(s.get("status") or "") == "failed" and s.get("error_message"):
@@ -177,7 +304,10 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
     snapshot: dict[str, Any] = {
         "remote_status": remote.get("status"),
         "updated_at": remote.get("updated_at"),
+        "created_at": remote.get("created_at"),
+        "monolith_job_id": remote.get("monolith_job_id"),
         "steps": compact_steps,
         "last_error": last_error,
+        "timeline": build_image_pipeline_timeline(remote),
     }
     return out.model_copy(update={"image_pipeline": snapshot})

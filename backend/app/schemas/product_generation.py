@@ -84,7 +84,8 @@ class ProductGenerationJobOut(BaseModel):
     updated_at: datetime
     image_pipeline: dict[str, Any] | None = Field(
         default=None,
-        description="Снимок GET image-сервиса /internal/v1/runs/{id} (PG-3.4), только для удалённого run.",
+        description="Снимок GET image-сервиса /internal/v1/runs/{id} (PG-3.4), только для удалённого run; "
+        "включает `timeline` (человекочитаемая хронология шагов и статусов).",
     )
 
     model_config = {"from_attributes": True}

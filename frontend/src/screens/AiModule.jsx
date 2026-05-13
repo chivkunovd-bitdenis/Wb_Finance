@@ -90,8 +90,132 @@ function parseOptionalWbSubjectId(raw) {
   return { ok: true, value: n };
 }
 
+function formatPipelineIsoBrief(iso) {
+  const s = String(iso || '').trim();
+  if (!s) return '—';
+  return s.replace('T', ' ').slice(0, 19);
+}
+
+/** PG-UI: человекочитаемый лог image-run (`image_pipeline.timeline` с бэка). */
+function ProductGenerationPipelineLogModal({ open, jobId, onClose }) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [timeline, setTimeline] = useState([]);
+  const [meta, setMeta] = useState({ remote: '', pipelineRunId: '', isLocalStub: false });
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const jid = String(jobId || '').trim();
+    if (!jid) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setErr('');
+    setTimeline([]);
+    setMeta({ remote: '', pipelineRunId: '', isLocalStub: false });
+    (async () => {
+      try {
+        const job = await api.getProductGenerationJob(jid);
+        if (cancelled) return;
+        const pr = String(job?.pipeline_run_id ?? '').trim();
+        const local = pr.startsWith('local-');
+        setMeta({
+          remote: String(job?.image_pipeline?.remote_status || ''),
+          pipelineRunId: pr,
+          isLocalStub: local,
+        });
+        if (local) {
+          setTimeline([]);
+          setErr('');
+          return;
+        }
+        const tl = Array.isArray(job?.image_pipeline?.timeline) ? job.image_pipeline.timeline : [];
+        setTimeline(tl);
+        if (!tl.length && !job?.image_pipeline) {
+          setErr(
+            'Удалённый пайплайн не настроен, run не удалённый, или GET к WIP вернул пусто. Проверьте PRODUCT_GEN_IMAGE_PIPELINE_* на api и сеть до wb_image_pipeline_api.',
+          );
+        } else if (!tl.length) {
+          setErr('WIP не вернул шаги для построения хронологии (пустой `steps` или снимок без данных).');
+        } else {
+          setErr('');
+        }
+      } catch (e) {
+        if (!cancelled) setErr(e?.message || 'Не удалось загрузить задачу');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, jobId]);
+
+  if (!open) return null;
+
+  return (
+    <ModalShell
+      open={open}
+      title="Лог пайплайна (image-run)"
+      onClose={onClose}
+      width="min(560px, 100%)"
+      footer={(
+        <button type="button" className="btn btn-primary" onClick={onClose}>
+          Закрыть
+        </button>
+      )}
+    >
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        Задача <code>{String(jobId || '')}</code>
+        {meta.pipelineRunId ? (
+          <>
+            {' · '}
+            run <code>{meta.pipelineRunId}</code>
+            {meta.remote ? (
+              <>
+                {' · '}
+                статус WIP: <strong>{meta.remote}</strong>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {loading ? <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div> : null}
+      {err ? <div className="alert alert-warning" style={{ margin: 0 }}>{err}</div> : null}
+      {!loading && meta.isLocalStub ? (
+        <div className="alert alert-info" style={{ margin: 0 }}>
+          Локальный run <code>local-*</code>: wb_image_pipeline_service не используется; пошаговый лог OpenAI здесь
+          не ведётся — только Celery-заглушка монолита.
+        </div>
+      ) : null}
+      <div style={{ display: 'grid', gap: 12, maxHeight: 'min(62vh, 520px)', overflowY: 'auto', paddingRight: 4 }}>
+        {timeline.map((e, i) => {
+          const level = String(e?.level || 'info');
+          const border = level === 'error' ? '#dc2626' : 'rgba(124,58,237,0.45)';
+          return (
+            <div key={`tl-${i}`} style={{ borderLeft: `3px solid ${border}`, paddingLeft: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{formatPipelineIsoBrief(e?.time)}</div>
+              <div style={{ fontWeight: 800, fontSize: 13, marginTop: 2 }}>{String(e?.title || '')}</div>
+              <pre
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                  margin: '6px 0 0',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                {String(e?.body || '')}
+              </pre>
+            </div>
+          );
+        })}
+      </div>
+    </ModalShell>
+  );
+}
+
 /** PG-2.1 (updated): сначала запуск каскадной генерации фото, затем отдельное создание товара. */
-function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId }) {
+function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, onOpenPipelineLog }) {
   const [stage, setStage] = useState('prepare');
   const [jobId, setJobId] = useState('');
   const [jobStatus, setJobStatus] = useState('');
@@ -489,6 +613,14 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId })
           ) : null}
           {stage === 'afterPhotos' ? (
             <>
+              <button
+                type="button"
+                className="btn btn-outline-secondary"
+                onClick={() => onOpenPipelineLog?.(jobId)}
+                disabled={submitting || !String(jobId || '').trim()}
+              >
+                Лог пайплайна
+              </button>
               <button type="button" className="btn btn-outline-secondary" onClick={downloadGeneratedPhotos} disabled={submitting || downloadingPhotos}>
                 {downloadingPhotos ? 'Скачиваю…' : 'Скачать фото'}
               </button>
@@ -835,6 +967,15 @@ function ProductGenerationAdminCard() {
   const [creating, setCreating] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardResumeJobId, setWizardResumeJobId] = useState(null);
+  const [pipelineLogOpen, setPipelineLogOpen] = useState(false);
+  const [pipelineLogJobId, setPipelineLogJobId] = useState(null);
+
+  const openPipelineLog = (jid) => {
+    const id = String(jid || '').trim();
+    if (!id) return;
+    setPipelineLogJobId(id);
+    setPipelineLogOpen(true);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -921,6 +1062,14 @@ function ProductGenerationAdminCard() {
 
   return (
     <div style={{ ...softCardStyle(), padding: 14, display: 'grid', gap: 10 }}>
+      <ProductGenerationPipelineLogModal
+        open={pipelineLogOpen}
+        jobId={pipelineLogJobId}
+        onClose={() => {
+          setPipelineLogOpen(false);
+          setPipelineLogJobId(null);
+        }}
+      />
       <ProductGenerationWizardModal
         open={wizardOpen}
         resumeJobId={wizardResumeJobId}
@@ -929,6 +1078,7 @@ function ProductGenerationAdminCard() {
           setWizardResumeJobId(null);
         }}
         onCreated={load}
+        onOpenPipelineLog={openPipelineLog}
       />
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
@@ -995,19 +1145,29 @@ function ProductGenerationAdminCard() {
                     {row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
                   </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-primary"
-                      disabled={loading}
-                      onClick={() => {
-                        const id = String(row?.id || '').trim();
-                        if (!id) return;
-                        setWizardResumeJobId(id);
-                        setWizardOpen(true);
-                      }}
-                    >
-                      Открыть
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary"
+                        disabled={loading}
+                        onClick={() => {
+                          const id = String(row?.id || '').trim();
+                          if (!id) return;
+                          setWizardResumeJobId(id);
+                          setWizardOpen(true);
+                        }}
+                      >
+                        Открыть
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary"
+                        disabled={loading}
+                        onClick={() => openPipelineLog(row?.id)}
+                      >
+                        Лог
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
