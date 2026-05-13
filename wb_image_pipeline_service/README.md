@@ -48,7 +48,7 @@
 
 **PG-B.1 (фаза IMAGE):** `WIP_IMAGE_PROMPT_TEMPLATE` (полный текст с `{user_text}`; пусто — встроенный шаблон), `WIP_IMAGE_PROMPT_USER_TEXT_MAX_CHARS`. После `run_created` в `GET /internal/v1/runs/{id}` в `payload` появляются `wip_effective_image_prompt`, `wip_prompt_template_version`, `wip_prompt_template_hash`.
 
-**PG-B.2:** `WIP_OPENAI_API_KEY`, `WIP_OPENAI_MODEL_STRUCTURE`, `WIP_OPENAI_TIMEOUT_SEC` — вызов OpenAI на шаге `structure_main`; при ошибке шаг `failed`, текст в `error_message`.
+**PG-B.2:** ключ — `WIP_OPENAI_API_KEY` или тот же **`AI_API_KEY`**, что в монолите; база URL — `WIP_OPENAI_API_BASE_URL` или **`AI_API_BASE_URL`** (см. `backend/.env.example`). Также `WIP_OPENAI_MODEL_STRUCTURE`, `WIP_OPENAI_TIMEOUT_SEC`. При ошибке шаг `failed`, текст в `error_message`.
 
 ## Вынос в новый проект
 

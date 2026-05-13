@@ -22,8 +22,25 @@ _STRUCTURE_SYSTEM = """Ты помощник для маркетплейса. П
 
 
 def _openai_api_key() -> str | None:
-    raw = (os.getenv("WIP_OPENAI_API_KEY") or "").strip()
-    return raw or None
+    """Сначала ключ сервиса WIP, иначе тот же `AI_API_KEY`, что и у монолита (daily_brief / offer_rag / отзывы)."""
+    for env_name in ("WIP_OPENAI_API_KEY", "AI_API_KEY"):
+        raw = (os.getenv(env_name) or "").strip()
+        if raw:
+            return raw
+    return None
+
+
+def _openai_api_base() -> str:
+    """База API: WIP-специфичная или общая с монолитом (`AI_API_BASE_URL`)."""
+    for env_name in ("WIP_OPENAI_API_BASE_URL", "AI_API_BASE_URL"):
+        raw = (os.getenv(env_name) or "").strip().rstrip("/")
+        if raw:
+            return raw
+    return "https://api.openai.com/v1"
+
+
+def _chat_completions_url() -> str:
+    return f"{_openai_api_base()}/chat/completions"
 
 
 def _structure_model() -> str:
@@ -48,13 +65,13 @@ def call_structure_main_model(*, user_prompt: str) -> StructureMainResult:
     """
     key = _openai_api_key()
     if not key:
-        raise ValueError("WIP_OPENAI_API_KEY is not set")
+        raise ValueError("Set WIP_OPENAI_API_KEY or reuse monolith AI_API_KEY")
     text = (user_prompt or "").strip()
     if not text:
         raise ValueError("user_prompt is empty")
 
     model = _structure_model()
-    url = "https://api.openai.com/v1/chat/completions"
+    url = _chat_completions_url()
     body: dict[str, Any] = {
         "model": model,
         "temperature": 0.35,
