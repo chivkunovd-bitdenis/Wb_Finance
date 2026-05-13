@@ -71,3 +71,64 @@ def test_build_image_pipeline_timeline_empty_steps_adds_explanation() -> None:
     tl = build_image_pipeline_timeline(remote)
     assert len(tl) >= 2
     assert any("steps" in e["body"].lower() for e in tl)
+
+
+def test_enrich_job_out_splits_main_and_content_assets(monkeypatch) -> None:
+    from app.schemas.product_generation import ProductGenerationJobOut
+    from app.services.product_generation_image_pipeline import enrich_job_out_with_image_pipeline
+
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret")
+
+    def fake_fetch(_run_id: str) -> dict:
+        return {
+            "status": "completed",
+            "steps": [],
+            "assets": [
+                {
+                    "id": "main-1",
+                    "kind": "main_frame",
+                    "mime_type": "image/png",
+                    "meta_json": {"frame_index": 0, "prompt": "main"},
+                },
+                {
+                    "id": "content-1",
+                    "kind": "content_frame",
+                    "mime_type": "image/png",
+                    "meta_json": {"series_index": 0, "prompt": "content", "selected_main_asset_id": "main-1"},
+                },
+            ],
+        }
+
+    monkeypatch.setattr("app.services.product_generation_image_pipeline.fetch_remote_run", fake_fetch)
+    out = ProductGenerationJobOut(
+        id="job-1",
+        user_id="user-1",
+        status="ready_to_publish",
+        pipeline_run_id="run-1",
+        vendor_code=None,
+        title=None,
+        brand=None,
+        wb_subject_id=None,
+        description_user=None,
+        seo_description=None,
+        price_kopeks=None,
+        dimensions_length=None,
+        dimensions_width=None,
+        dimensions_height=None,
+        weight_brutto=None,
+        sizes_json=None,
+        reference_paths_json=None,
+        selected_main_asset_id=None,
+        selected_series_asset_ids=None,
+        wb_publish_error=None,
+        wb_response_json=None,
+        created_at="2026-05-13T12:00:00Z",
+        updated_at="2026-05-13T12:00:00Z",
+    )
+
+    enriched = enrich_job_out_with_image_pipeline(out)
+    assert enriched.image_pipeline is not None
+    assert enriched.image_pipeline["generated_assets"][0]["asset_id"] == "main-1"
+    assert enriched.image_pipeline["content_assets"][0]["asset_id"] == "content-1"
+    assert enriched.image_pipeline["content_assets"][0]["selected_main_asset_id"] == "main-1"

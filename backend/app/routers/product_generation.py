@@ -229,6 +229,42 @@ def start_job_pipeline(
     return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
 
 
+@router.post("/jobs/{job_id}/generate-content", response_model=ProductGenerationJobOut)
+def start_job_content_generation(
+    job_id: str,
+    body: dict[str, str] = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+) -> ProductGenerationJobOut:
+    selected_asset_id = str(body.get("selected_asset_id") or "").strip()
+    try:
+        job = pg_service.start_job_content_generation(
+            db=db,
+            user=current_user,
+            job_id=job_id,
+            selected_asset_id=selected_asset_id,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена") from exc
+        if code == "selected_asset_required":
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Выберите фото") from exc
+        if code == "remote_run_required":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Контент можно генерировать только для удалённого image-run",
+            ) from exc
+        if code == "image_pipeline_unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось запустить генерацию контента в image-сервисе",
+            ) from exc
+        logger.exception("product_generation: unexpected ValueError on generate-content")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
+    return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
+
+
 @router.patch("/jobs/{job_id}", response_model=ProductGenerationJobOut)
 def patch_job(
     job_id: str,

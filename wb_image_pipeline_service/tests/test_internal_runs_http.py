@@ -270,3 +270,55 @@ def test_internal_runs_post_201_minimal_payload_without_card_fields(http_runs_en
     assert got.json()["payload"]["reference_asset_ids"] == ["a1"]
     assert got.json()["payload"]["description_user"] == "Текст для промпта"
     enq.assert_called_once_with(run_id)
+
+
+def test_internal_runs_post_content_enqueues_for_selected_main_asset(http_runs_env: str) -> None:
+    import app.main as mm
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models.pipeline import PipelineAsset, PipelineRun
+
+    db = SessionLocal()
+    try:
+        run = PipelineRun(status="completed", monolith_job_id="job-content-http", payload_json={})
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        media_root = Path(settings.media_root)
+        rel_path = f"{run_id}/main_frame_0.png"
+        out_path = media_root / rel_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"main-image")
+        asset = PipelineAsset(
+            run_id=run_id,
+            kind="main_frame",
+            storage_rel_path=rel_path,
+            mime_type="image/png",
+            sha256_hex="sha",
+            meta_json={"frame_index": 0, "prompt": "main"},
+        )
+        db.add(asset)
+        db.commit()
+        asset_id = asset.id
+    finally:
+        db.close()
+
+    client = TestClient(mm.app)
+    with patch("app.api.internal_runs.enqueue_content_series_chain") as enq:
+        enq.return_value = None
+        res = client.post(
+            f"/internal/v1/runs/{run_id}/content",
+            json={"selected_asset_id": asset_id},
+            headers=_auth_headers(),
+        )
+    assert res.status_code == 200
+    assert res.json()["id"] == run_id
+    enq.assert_called_once_with(run_id)
+
+    got = client.get(f"/internal/v1/runs/{run_id}", headers=_auth_headers())
+    assert got.status_code == 200
+    body = got.json()
+    assert body["status"] == "running"
+    keys = {s["step_key"] for s in body["steps"]}
+    assert {"content_structure", "content_images"}.issubset(keys)
+    assert body["payload"]["selected_main_asset_id"] == asset_id

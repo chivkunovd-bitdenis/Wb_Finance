@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 _STEP_TITLE_RU: dict[str, str] = {
     "structure_main": "Структура карточки (OpenAI JSON: SEO, промпты к картинкам)",
     "images_main": "Генерация изображений (OpenAI / сохранение ассетов)",
+    "content_structure": "Структура контента (OpenAI JSON: 7 промптов для WB)",
+    "content_images": "Генерация контентных фото (OpenAI / сохранение ассетов)",
     "pg32_stub": "Финализация run (сервисный шаг)",
 }
 
@@ -55,6 +57,10 @@ def _step_waiting_hint(step_key: str, status: str) -> str | None:
         return "Обычно здесь ждём ответ OpenAI (chat/completions, JSON)."
     if sk == "images_main":
         return "Обычно здесь ждём ответ OpenAI по изображениям и запись файлов в ассеты."
+    if sk == "content_structure":
+        return "Обычно здесь ждём JSON с 7 промптами для выбранного фото."
+    if sk == "content_images":
+        return "Обычно здесь ждём генерацию 7 контентных фото по выбранному фото."
     if sk == "pg32_stub":
         return "Короткий финальный шаг перед сменой статуса run."
     return None
@@ -308,6 +314,36 @@ def fetch_remote_asset_file(run_id: str, asset_id: str) -> tuple[bytes, str, str
     return r.content, media_type or "application/octet-stream", filename
 
 
+def start_remote_content_generation(run_id: str, selected_asset_id: str) -> None:
+    base = image_pipeline_base_url()
+    secret = image_pipeline_secret()
+    if not base or not secret:
+        raise ImagePipelineClientError("image pipeline env not configured")
+    url = f"{base}/internal/v1/runs/{run_id}/content"
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+    }
+    try:
+        r = httpx.post(
+            url,
+            json={"selected_asset_id": selected_asset_id},
+            headers=headers,
+            timeout=_timeout_sec(),
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("product_generation: content POST failed run_id=%s: %s", run_id, exc)
+        raise ImagePipelineClientError(str(exc)) from exc
+    if r.status_code not in (200, 201):
+        logger.warning(
+            "product_generation: content POST status=%s body=%s",
+            r.status_code,
+            r.text[:500],
+        )
+        raise ImagePipelineClientError(f"unexpected status {r.status_code}")
+
+
 def _is_remote_pipeline_run_id(run_id: str | None) -> bool:
     if not run_id:
         return False
@@ -359,33 +395,44 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
                 compact_steps.append(row)
     assets = remote.get("assets") or []
     generated_assets: list[dict[str, Any]] = []
+    content_assets: list[dict[str, Any]] = []
     if isinstance(assets, list):
         for a in assets:
             if not isinstance(a, dict):
                 continue
-            if str(a.get("kind") or "") != "main_frame":
+            kind = str(a.get("kind") or "")
+            if kind not in {"main_frame", "content_frame"}:
                 continue
             aid = str(a.get("id") or "").strip()
             if not aid:
                 continue
             raw_meta = a.get("meta_json")
             meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
-            generated_assets.append(
-                {
-                    "asset_id": aid,
-                    "kind": a.get("kind"),
-                    "frame_index": meta.get("frame_index"),
-                    "prompt": meta.get("prompt"),
-                    "reference_asset_ids": meta.get("reference_asset_ids"),
-                    "mime_type": a.get("mime_type"),
-                    "created_at": a.get("created_at"),
-                }
-            )
+            row = {
+                "asset_id": aid,
+                "kind": a.get("kind"),
+                "frame_index": meta.get("frame_index"),
+                "series_index": meta.get("series_index"),
+                "prompt": meta.get("prompt"),
+                "reference_asset_ids": meta.get("reference_asset_ids"),
+                "selected_main_asset_id": meta.get("selected_main_asset_id"),
+                "mime_type": a.get("mime_type"),
+                "created_at": a.get("created_at"),
+            }
+            if kind == "main_frame":
+                generated_assets.append(row)
+            else:
+                content_assets.append(row)
     def _asset_sort_key(item: dict[str, Any]) -> int:
         frame_index = item.get("frame_index")
         return frame_index if isinstance(frame_index, int) else 999
 
+    def _content_asset_sort_key(item: dict[str, Any]) -> int:
+        series_index = item.get("series_index")
+        return series_index if isinstance(series_index, int) else 999
+
     generated_assets.sort(key=_asset_sort_key)
+    content_assets.sort(key=_content_asset_sort_key)
     last_error: str | None = None
     for s in compact_steps:
         if str(s.get("status") or "") == "failed" and s.get("error_message"):
@@ -408,6 +455,7 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
         "monolith_job_id": remote.get("monolith_job_id"),
         "steps": compact_steps,
         "generated_assets": generated_assets,
+        "content_assets": content_assets,
         "last_error": last_error,
         "timeline": timeline,
     }

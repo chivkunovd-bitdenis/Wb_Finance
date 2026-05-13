@@ -278,7 +278,9 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
   const [submitError, setSubmitError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [downloadingPhotos, setDownloadingPhotos] = useState(false);
+  const [generatingContent, setGeneratingContent] = useState(false);
+  const [jobSnapshot, setJobSnapshot] = useState(null);
+  const [selectedMainAssetId, setSelectedMainAssetId] = useState('');
 
   const resetForm = useCallback(() => {
     setStage('prepare');
@@ -300,8 +302,10 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     setSubmitError('');
     setInfoMessage('');
     setSubmitting(false);
-    setDownloadingPhotos(false);
+    setGeneratingContent(false);
     setRemoteImageRunStatus('');
+    setJobSnapshot(null);
+    setSelectedMainAssetId('');
   }, []);
 
   useEffect(() => {
@@ -326,6 +330,8 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
         const remote = String(job?.image_pipeline?.remote_status || '');
         const lastErr = String(job?.image_pipeline?.last_error || '').trim();
         setJobStatus(st);
+        setJobSnapshot(job);
+        setSelectedMainAssetId(String(job?.selected_main_asset_id || ''));
         setDescriptionUser(String(job?.description_user || ''));
         setRemoteImageRunStatus(remote || '—');
         if (remote === 'failed' || remote === 'error' || st === 'error') {
@@ -480,6 +486,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
         );
       }
       const started = await api.startProductGenerationJob(jid);
+      setJobSnapshot(started);
       setJobId(jid);
       setJobStatus(String(started?.status || 'in_progress'));
       const rim = String(started?.image_pipeline?.remote_status || '');
@@ -502,12 +509,19 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     try {
       const current = await api.getProductGenerationJob(jid);
       const st = String(current?.status || '');
+      setJobSnapshot(current);
+      setSelectedMainAssetId(String(current?.selected_main_asset_id || selectedMainAssetId || ''));
       setJobStatus(st);
       const rim = String(current?.image_pipeline?.remote_status || '');
       setRemoteImageRunStatus(rim || (current?.pipeline_run_id ? '…' : '—'));
       const lastErr = String(current?.image_pipeline?.last_error || '').trim();
-      if (st === 'ready_to_publish' || st === 'published') {
-        setInfoMessage('Фото готовы. Теперь можно открыть форму «Создать товар».');
+      const contentAssets = Array.isArray(current?.image_pipeline?.content_assets)
+        ? current.image_pipeline.content_assets
+        : [];
+      if (contentAssets.length >= 7) {
+        setInfoMessage('Контентные фото готовы: серия из 7 изображений отображается ниже.');
+      } else if (st === 'ready_to_publish' || st === 'published') {
+        setInfoMessage('Фото готовы. Выберите один вариант галочкой и запустите генерацию контента.');
       } else if (rim === 'failed' || rim === 'error' || st === 'error') {
         setInfoMessage('');
         setSubmitError(
@@ -530,12 +544,6 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     () => jobStatus === 'ready_to_publish' || jobStatus === 'published',
     [jobStatus],
   );
-
-  const openCreateProductForm = () => {
-    setSubmitError('');
-    setFieldErrors({});
-    setStage('createProduct');
-  };
 
   const goBack = () => {
     setSubmitError('');
@@ -592,38 +600,30 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     });
   };
 
-  const downloadGeneratedPhotos = async () => {
+  const generateContent = async () => {
     const jid = String(jobId || '').trim();
     if (!jid) return;
-    setDownloadingPhotos(true);
+    const selected = String(selectedMainAssetId || '').trim();
+    if (!selected) {
+      setSubmitError('Выберите одно фото галочкой');
+      return;
+    }
+    setGeneratingContent(true);
     setSubmitError('');
     setInfoMessage('');
     try {
-      const current = await api.getProductGenerationJob(jid);
-      const assets = Array.isArray(current?.image_pipeline?.generated_assets)
-        ? current.image_pipeline.generated_assets
-        : [];
-      const rows = assets.filter((r) => r && r.asset_id);
-      if (!rows.length) {
-        throw new Error('Сгенерированные фото ещё не доступны. Нажмите «Проверить готовность» и откройте лог пайплайна.');
-      }
-      for (const row of rows) {
-        const aid = String(row.asset_id || '').trim();
-        if (!aid) continue;
-        const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
-        const href = URL.createObjectURL(file.blob);
-        const a = document.createElement('a');
-        a.href = href;
-        const idx = Number.isInteger(row?.frame_index) ? row.frame_index + 1 : '';
-        a.download = file.filename || `generated-${idx || aid}.png`;
-        a.click();
-        URL.revokeObjectURL(href);
-      }
-      setInfoMessage(`Сгенерированные фото сохранены на компьютер: ${rows.length} файл(ов).`);
+      const next = await api.generateProductGenerationContent(jid, selected);
+      setJobSnapshot(next);
+      setJobStatus(String(next?.status || jobStatus || 'ready_to_publish'));
+      setSelectedMainAssetId(String(next?.selected_main_asset_id || selected));
+      const rim = String(next?.image_pipeline?.remote_status || '');
+      setRemoteImageRunStatus(rim || '…');
+      setInfoMessage('Генерация контента запущена. Нажимайте «Проверить готовность» или дождитесь обновления списка.');
+      onCreated?.();
     } catch (e) {
-      setSubmitError(e?.message || 'Не удалось скачать фото');
+      setSubmitError(e?.message || 'Не удалось запустить генерацию контента');
     } finally {
-      setDownloadingPhotos(false);
+      setGeneratingContent(false);
     }
   };
 
@@ -633,9 +633,17 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     stage === 'prepare'
       ? 'Референсы и запуск каскадной генерации фото'
       : stage === 'afterPhotos'
-        ? 'Генерация фото и действия'
+        ? 'Выбор фото и генерация контента'
         : 'Создание товара'
   );
+  const generatedAssets = Array.isArray(jobSnapshot?.image_pipeline?.generated_assets)
+    ? jobSnapshot.image_pipeline.generated_assets
+    : [];
+  const contentAssets = Array.isArray(jobSnapshot?.image_pipeline?.content_assets)
+    ? jobSnapshot.image_pipeline.content_assets
+    : [];
+  const hasMainAssets = generatedAssets.length > 0;
+  const hasContentAssets = contentAssets.length >= 7;
 
   return (
     <ModalShell
@@ -645,7 +653,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
       width="min(760px, 100%)"
       footer={(
         <>
-          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting || downloadingPhotos}>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting || generatingContent}>
             Закрыть
           </button>
           {stage === 'createProduct' ? (
@@ -668,14 +676,16 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
               >
                 Лог пайплайна
               </button>
-              <button type="button" className="btn btn-outline-secondary" onClick={downloadGeneratedPhotos} disabled={submitting || downloadingPhotos}>
-                {downloadingPhotos ? 'Скачиваю…' : 'Скачать фото'}
-              </button>
               <button type="button" className="btn btn-outline-secondary" onClick={refreshJobStatus} disabled={submitting}>
                 {submitting ? 'Обновляю…' : 'Проверить готовность'}
               </button>
-              <button type="button" className="btn btn-primary" onClick={openCreateProductForm} disabled={!isReadyForProductForm || submitting}>
-                Создать товар
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={generateContent}
+                disabled={!isReadyForProductForm || !hasMainAssets || !selectedMainAssetId || submitting || generatingContent}
+              >
+                {generatingContent ? 'Запускаю…' : 'Сгенерировать контент'}
               </button>
             </>
           ) : null}
@@ -773,7 +783,8 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
         {stage === 'afterPhotos' && (
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              На этом шаге можно скачать фото и закрыть окно. Для продолжения нажмите «Создать товар» — откроется форма размеров, описания и других полей.
+              Выберите один из четырёх вариантов галочкой. По выбранному фото будет сгенерирована серия из 7 фото для карточки WB:
+              та же модель, локация, одежда и референс, но другие позы, ракурсы и аккуратная инфографика.
             </div>
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
               <InfoRow label="ID задачи">{jobId || '—'}</InfoRow>
@@ -782,9 +793,44 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
               <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов)` : 'Не выбраны'}</InfoRow>
               <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
             </div>
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: 14 }}>Получившиеся фото</div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Должно быть 4 варианта, выберите один</div>
+                </div>
+                {selectedMainAssetId ? (
+                  <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 900 }}>Фото выбрано</span>
+                ) : null}
+              </div>
+              <ProductGenerationAssetGallery
+                jobId={jobId}
+                assets={generatedAssets}
+                selectedAssetId={selectedMainAssetId}
+                onSelect={setSelectedMainAssetId}
+                selectable={isReadyForProductForm}
+                emptyText="Фото ещё генерируются. Нажмите «Проверить готовность» через несколько секунд."
+              />
+            </div>
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: 14 }}>Контент для карточки WB</div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>7 фото появятся здесь одной горизонтальной лентой</div>
+                </div>
+                {hasContentAssets ? (
+                  <span style={{ color: '#0f766e', fontSize: 12, fontWeight: 900 }}>Готово</span>
+                ) : null}
+              </div>
+              <ProductGenerationAssetGallery
+                jobId={jobId}
+                assets={contentAssets}
+                emptyText="Серия контента ещё не запускалась или находится в генерации."
+              />
+            </div>
             {!isReadyForProductForm ? (
               <div className="alert alert-warning" style={{ margin: 0 }}>
-                Кнопка «Создать товар» станет доступной после статуса «К публикации» или «Опубликовано».
+                Кнопка «Сгенерировать контент» станет доступной после готовности первых 4 фото.
               </div>
             ) : null}
           </div>
@@ -997,6 +1043,170 @@ function productGenerationStatusBadge(status) {
   );
 }
 
+function productGenerationAssetSortKey(asset) {
+  const frame = asset?.frame_index;
+  if (Number.isInteger(frame)) return frame;
+  const series = asset?.series_index;
+  if (Number.isInteger(series)) return series;
+  return 999;
+}
+
+function ProductGenerationAssetGallery({
+  jobId,
+  assets,
+  selectedAssetId,
+  onSelect,
+  selectable = false,
+  emptyText = 'Фото пока не готовы',
+}) {
+  const rows = useMemo(
+    () =>
+      (Array.isArray(assets) ? assets : [])
+        .filter((row) => row && row.asset_id)
+        .slice()
+        .sort((a, b) => productGenerationAssetSortKey(a) - productGenerationAssetSortKey(b)),
+    [assets],
+  );
+  const [previews, setPreviews] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const jid = String(jobId || '').trim();
+    if (!jid || rows.length === 0) {
+      setPreviews({});
+      setError('');
+      setLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const urls = [];
+    setLoading(true);
+    setError('');
+    setPreviews({});
+    (async () => {
+      try {
+        const pairs = await Promise.all(
+          rows.map(async (row) => {
+            const aid = String(row.asset_id || '').trim();
+            const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
+            const url = URL.createObjectURL(file.blob);
+            urls.push(url);
+            return [aid, url];
+          }),
+        );
+        if (!cancelled) setPreviews(Object.fromEntries(pairs));
+      } catch (e) {
+        if (!cancelled) setError(e?.message || 'Не удалось загрузить превью фото');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [jobId, rows]);
+
+  if (rows.length === 0) {
+    return (
+      <div style={{ color: 'var(--text-tertiary)', fontSize: 13, padding: '10px 0' }}>
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {loading ? <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Загружаю превью…</div> : null}
+      {error ? <div className="alert alert-warning" style={{ margin: 0, fontSize: 12 }}>{error}</div> : null}
+      <div
+        style={{
+          display: 'flex',
+          gap: 12,
+          overflowX: 'auto',
+          padding: '2px 2px 8px',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        {rows.map((row, idx) => {
+          const aid = String(row.asset_id || '').trim();
+          const url = previews[aid];
+          const checked = selectedAssetId === aid;
+          return (
+            <button
+              key={aid}
+              type="button"
+              onClick={() => selectable && onSelect?.(aid)}
+              disabled={!selectable}
+              style={{
+                flex: '0 0 168px',
+                width: 168,
+                textAlign: 'left',
+                borderRadius: 14,
+                border: checked ? '2px solid var(--accent)' : '1px solid rgba(2,6,23,0.10)',
+                background: checked ? 'var(--accent-light)' : '#fff',
+                padding: 8,
+                cursor: selectable ? 'pointer' : 'default',
+                position: 'relative',
+                boxShadow: checked ? '0 10px 24px rgba(91,79,212,0.16)' : 'none',
+              }}
+            >
+              {selectable ? (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: 10,
+                    right: 10,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 24,
+                    height: 24,
+                    borderRadius: 999,
+                    background: checked ? 'var(--accent)' : 'rgba(255,255,255,0.92)',
+                    color: checked ? '#fff' : 'var(--text-tertiary)',
+                    border: '1px solid rgba(2,6,23,0.14)',
+                    fontWeight: 900,
+                    zIndex: 2,
+                  }}
+                >
+                  {checked ? '✓' : ''}
+                </span>
+              ) : null}
+              <div
+                style={{
+                  width: '100%',
+                  aspectRatio: '1 / 1',
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  background: 'rgba(2,6,23,0.04)',
+                  border: '1px solid rgba(2,6,23,0.06)',
+                }}
+              >
+                {url ? (
+                  <img
+                    src={url}
+                    alt={`Фото ${idx + 1}`}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  />
+                ) : (
+                  <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'var(--text-tertiary)', fontSize: 12 }}>
+                    …
+                  </div>
+                )}
+              </div>
+              <div style={{ marginTop: 7, fontSize: 12, fontWeight: 800, color: checked ? 'var(--accent)' : 'var(--text-secondary)' }}>
+                {row.kind === 'content_frame' ? `Контент ${idx + 1}` : `Вариант ${idx + 1}`}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** В таблице: если WIP-пайплайн уже failed, не показываем «В процессе» по полю job.status (оно не синкается автоматически). */
 function effectiveProductGenerationListStatus(row) {
   const st = String(row?.status || '');
@@ -1011,7 +1221,6 @@ function ProductGenerationAdminCard() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [creating, setCreating] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardResumeJobId, setWizardResumeJobId] = useState(null);
   const [pipelineLogOpen, setPipelineLogOpen] = useState(false);
@@ -1094,21 +1303,8 @@ function ProductGenerationAdminCard() {
     );
   }
 
-  const onCreateDraft = async () => {
-    setCreating(true);
-    setError('');
-    try {
-      await api.createProductGenerationJob({});
-      await load();
-    } catch (e) {
-      setError(e?.message || 'Не удалось создать черновик');
-    } finally {
-      setCreating(false);
-    }
-  };
-
   return (
-    <div style={{ ...softCardStyle(), padding: 14, display: 'grid', gap: 10 }}>
+    <div style={{ ...softCardStyle(), padding: 16, display: 'grid', gap: 12 }}>
       <ProductGenerationPipelineLogModal
         open={pipelineLogOpen}
         jobId={pipelineLogJobId}
@@ -1127,8 +1323,14 @@ function ProductGenerationAdminCard() {
         onCreated={load}
         onOpenPipelineLog={openPipelineLog}
       />
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginTop: 2 }}>
+            4 фото → выбор одного → 7 фото для карточки WB
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button
           type="button"
           className="btn btn-primary btn-sm"
@@ -1138,20 +1340,15 @@ function ProductGenerationAdminCard() {
           }}
           disabled={loading}
         >
-          Мастер: новая генерация
-        </button>
-        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCreateDraft} disabled={creating || loading}>
-          {creating ? 'Создаю…' : 'Пустой черновик'}
+          Новая генерация
         </button>
         <button type="button" className="btn btn-outline-secondary btn-sm" onClick={load} disabled={loading}>
           {loading ? 'Обновление…' : 'Обновить'}
         </button>
+        </div>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Мастер: референсы на диск API, затем POST /start. Если заданы{' '}
-        <code style={{ fontSize: 12 }}>PRODUCT_GEN_IMAGE_PIPELINE_*</code>
-        {' '}на бэке — создаётся run в wb_image_pipeline_service; иначе локальный{' '}
-        <code style={{ fontSize: 12 }}>local-*</code> и Celery-заглушка. Таблица раз в 4 с опрашивает статус image-run. Строку можно снова открыть кнопкой «Открыть».
+        Строка открывается кликом. Внутри задачи видны фото, лог пайплайна и действие генерации контента.
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (
@@ -1159,21 +1356,29 @@ function ProductGenerationAdminCard() {
       ) : items.length === 0 ? (
         <div style={{ color: 'var(--text-tertiary)' }}>Пока нет задач. Нажмите «Создать черновик», чтобы проверить API.</div>
       ) : (
-        <div className="table-wrapper" style={{ marginTop: 0 }}>
+        <div className="table-wrapper" style={{ marginTop: 0, height: 'auto', maxHeight: 520 }}>
           <table className="custom-table">
             <thead>
               <tr>
                 <th>Статус</th>
                 <th>Image run</th>
-                <th>Название</th>
-                <th>Артикул</th>
+                <th>Фото</th>
                 <th>Создана</th>
-                <th style={{ width: 1 }}>Действия</th>
+                <th style={{ width: 1 }}>Лог</th>
               </tr>
             </thead>
             <tbody>
               {items.map((row) => (
-                <tr key={String(row?.id)}>
+                <tr
+                  key={String(row?.id)}
+                  onClick={() => {
+                    const id = String(row?.id || '').trim();
+                    if (!id || loading) return;
+                    setWizardResumeJobId(id);
+                    setWizardOpen(true);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {productGenerationStatusBadge(effectiveProductGenerationListStatus(row))}
                   </td>
@@ -1186,35 +1391,26 @@ function ProductGenerationAdminCard() {
                           ? '…'
                           : '—'}
                   </td>
-                  <td>{row?.title || '—'}</td>
-                  <td>{row?.vendor_code || '—'}</td>
+                  <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {(Array.isArray(row?.image_pipeline?.generated_assets) ? row.image_pipeline.generated_assets.length : 0)}
+                    {' / '}
+                    {(Array.isArray(row?.image_pipeline?.content_assets) ? row.image_pipeline.content_assets.length : 0)}
+                  </td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-tertiary)' }}>
                     {row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
                   </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-primary"
-                        disabled={loading}
-                        onClick={() => {
-                          const id = String(row?.id || '').trim();
-                          if (!id) return;
-                          setWizardResumeJobId(id);
-                          setWizardOpen(true);
-                        }}
-                      >
-                        Открыть
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-secondary"
-                        disabled={loading}
-                        onClick={() => openPipelineLog(row?.id)}
-                      >
-                        Лог
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-secondary"
+                      disabled={loading}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openPipelineLog(row?.id);
+                      }}
+                    >
+                      Лог
+                    </button>
                   </td>
                 </tr>
               ))}

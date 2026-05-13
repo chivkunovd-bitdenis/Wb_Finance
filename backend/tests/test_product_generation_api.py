@@ -606,3 +606,75 @@ def test_product_generation_download_generated_asset_proxies_wip_file(
     assert rfile.status_code == 200
     assert rfile.content == b"generated-image"
     assert rfile.headers["content-type"].startswith("image/png")
+
+
+def test_product_generation_generate_content_posts_selected_asset(
+    client_admin: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    run_uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    selected_asset_id = "main-asset-1"
+    captured: dict[str, Any] = {}
+
+    db = SessionLocal()
+    try:
+        job = ProductGenerationJob(
+            user_id=ADMIN_PG_ID,
+            status="ready_to_publish",
+            pipeline_run_id=run_uuid,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = str(job.id)
+    finally:
+        db.close()
+
+    def fake_post(url: str, **kwargs: Any) -> httpx.Response:
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return httpx.Response(200, json={"id": run_uuid, "status": "running"})
+
+    def fake_get(url: str, **_kwargs: Any) -> httpx.Response:
+        assert url == f"http://wip.test/internal/v1/runs/{run_uuid}"
+        return httpx.Response(
+            200,
+            json={
+                "status": "running",
+                "steps": [{"step_key": "content_images", "status": "running", "ordinal": 4}],
+                "assets": [{"id": selected_asset_id, "kind": "main_frame", "meta_json": {"frame_index": 0}}],
+            },
+        )
+
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+            res = client_admin.post(
+                f"/ai/product-generation/jobs/{job_id}/generate-content",
+                json={"selected_asset_id": selected_asset_id},
+            )
+    assert res.status_code == 200
+    body = res.json()
+    assert captured["url"] == f"http://wip.test/internal/v1/runs/{run_uuid}/content"
+    assert captured["json"] == {"selected_asset_id": selected_asset_id}
+    assert body["selected_main_asset_id"] == selected_asset_id
+    assert body["image_pipeline"]["generated_assets"][0]["asset_id"] == selected_asset_id
+
+
+def test_product_generation_generate_content_requires_selected_asset(client_admin: TestClient) -> None:
+    db = SessionLocal()
+    try:
+        job = ProductGenerationJob(
+            user_id=ADMIN_PG_ID,
+            status="ready_to_publish",
+            pipeline_run_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = str(job.id)
+    finally:
+        db.close()
+    res = client_admin.post(f"/ai/product-generation/jobs/{job_id}/generate-content", json={})
+    assert res.status_code == 422

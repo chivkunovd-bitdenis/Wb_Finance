@@ -159,3 +159,74 @@ def test_apply_images_main_fails_without_reference_file(images_db: None) -> None
         assert "monolith_job_id" in str(step.error_message)
     finally:
         db.close()
+
+
+def test_apply_content_series_generates_seven_assets(images_db: None) -> None:
+    from app.db import SessionLocal
+    from app.models.pipeline import PipelineAsset, PipelineRun
+    from app.schemas.content_series import ContentSeriesResult
+    from app.services.pipeline_content_series_step import (
+        apply_content_done,
+        apply_content_images_step,
+        apply_content_structure_step,
+        prepare_content_generation,
+    )
+
+    db = SessionLocal()
+    try:
+        run = PipelineRun(
+            status="completed",
+            monolith_job_id="job-content-1",
+            payload_json={"description_user": "Платье летнее"},
+        )
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        media_root = Path(os.environ["WIP_MEDIA_ROOT"])
+        rel_path = f"{run_id}/main_frame_0.png"
+        out_path = media_root / rel_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(_MINI_PNG)
+        asset = PipelineAsset(
+            run_id=run_id,
+            kind="main_frame",
+            storage_rel_path=rel_path,
+            mime_type="image/png",
+            sha256_hex="main-sha",
+            meta_json={"frame_index": 0, "prompt": "main prompt"},
+        )
+        db.add(asset)
+        db.commit()
+        asset_id = asset.id
+
+        assert prepare_content_generation(db, run_id=run_id, selected_asset_id=asset_id) is True
+    finally:
+        db.close()
+
+    fake = ContentSeriesResult(series_prompts=[f"content {i}" for i in range(7)])
+    with patch("app.services.pipeline_content_series_step.call_content_series_model", return_value=fake) as m_structure:
+        prev = apply_content_structure_step(run_id)
+    with patch(
+        "app.services.pipeline_content_series_step.call_openai_image_bytes",
+        return_value=(_MINI_PNG, "image/png"),
+    ) as m_img:
+        out = apply_content_images_step(prev)
+        done = apply_content_done(out)
+
+    assert m_structure.call_args.kwargs["selected_prompt"] == "main prompt"
+    assert m_img.call_count == 7
+    assert done["status"] == "completed"
+
+    db = SessionLocal()
+    try:
+        assets = db.query(PipelineAsset).filter(PipelineAsset.run_id == run_id).all()
+        content_assets = [a for a in assets if a.kind == "content_frame"]
+        assert len(content_assets) == 7
+        assert {a.meta_json.get("series_index") for a in content_assets if isinstance(a.meta_json, dict)} == set(range(7))
+        assert all(
+            a.meta_json.get("selected_main_asset_id") == asset_id
+            for a in content_assets
+            if isinstance(a.meta_json, dict)
+        )
+    finally:
+        db.close()

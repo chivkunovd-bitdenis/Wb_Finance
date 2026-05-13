@@ -23,6 +23,7 @@ from app.services.product_generation_image_pipeline import (
     build_image_pipeline_payload,
     create_remote_run,
     is_image_pipeline_enabled,
+    start_remote_content_generation,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,4 +242,34 @@ def update_job(*, db: Session, user: User, job_id: str, payload: ProductGenerati
     db.add(job)
     db.commit()
     db.refresh(job)
+    return job
+
+
+def start_job_content_generation(
+    *,
+    db: Session,
+    user: User,
+    job_id: str,
+    selected_asset_id: str,
+) -> ProductGenerationJob:
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        raise ValueError("not_found")
+    rid = str(job.pipeline_run_id or "").strip()
+    if not rid or rid.startswith("local-"):
+        raise ValueError("remote_run_required")
+    selected = str(selected_asset_id or "").strip()
+    if not selected:
+        raise ValueError("selected_asset_required")
+    if not is_image_pipeline_enabled():
+        raise ValueError("image_pipeline_unavailable")
+    try:
+        start_remote_content_generation(rid, selected)
+    except ImagePipelineClientError as exc:
+        raise ValueError("image_pipeline_unavailable") from exc
+    job.selected_main_asset_id = selected
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    logger.info("product_generation: content generation started job=%s run=%s selected=%s", job.id, rid, selected)
     return job

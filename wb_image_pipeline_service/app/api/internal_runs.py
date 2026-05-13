@@ -26,7 +26,8 @@ from app.services.internal_runs_service import (
     create_run,
     get_run_by_id,
 )
-from celery_app.pipeline_tasks import enqueue_pg32_stub_chain
+from app.services.pipeline_content_series_step import prepare_content_generation
+from celery_app.pipeline_tasks import enqueue_content_series_chain, enqueue_pg32_stub_chain
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,43 @@ def get_run(
         steps=[PipelineStepOut.model_validate(s) for s in steps],
         assets=[PipelineAssetOut.model_validate(a) for a in run.assets],
     )
+
+
+@router.post("/runs/{run_id}/content", response_model=RunCreateResponse)
+def post_run_content(
+    _auth: InternalAuth,
+    run_id: str,
+    body: dict[str, str],
+    db: Annotated[Session, Depends(get_db)],
+) -> RunCreateResponse:
+    selected_asset_id = str(body.get("selected_asset_id") or "").strip()
+    try:
+        should_enqueue = prepare_content_generation(
+            db,
+            run_id=run_id,
+            selected_asset_id=selected_asset_id,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "run_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from exc
+        if code == "selected_asset_required":
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="selected_asset_id is required") from exc
+        if code == "selected_asset_not_found":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected asset is not a generated main frame") from exc
+        if code == "run_not_ready":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run is not ready for content generation") from exc
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Content generation failed") from exc
+    if should_enqueue:
+        try:
+            enqueue_content_series_chain(run_id)
+        except Exception as exc:
+            logger.exception("wip_internal_runs: content enqueue failed run_id=%s", run_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to enqueue content generation tasks",
+            ) from exc
+    return RunCreateResponse(id=run_id, status="running" if should_enqueue else "completed")
 
 
 @router.get("/runs/{run_id}/assets/{asset_id}/file")
