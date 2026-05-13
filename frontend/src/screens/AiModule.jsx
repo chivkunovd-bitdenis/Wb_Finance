@@ -809,6 +809,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
                 selectedAssetId={selectedMainAssetId}
                 onSelect={setSelectedMainAssetId}
                 selectable={isReadyForProductForm}
+                downloadAllLabel="Скачать все 4 фото"
                 emptyText="Фото ещё генерируются. Нажмите «Проверить готовность» через несколько секунд."
               />
             </div>
@@ -825,6 +826,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
               <ProductGenerationAssetGallery
                 jobId={jobId}
                 assets={contentAssets}
+                downloadAllLabel="Скачать все 7 фото"
                 emptyText="Серия контента ещё не запускалась или находится в генерации."
               />
             </div>
@@ -1051,6 +1053,28 @@ function productGenerationAssetSortKey(asset) {
   return 999;
 }
 
+function productGenerationAssetFallbackFilename(asset, index, blob) {
+  const kind = asset?.kind === 'content_frame' ? 'content' : 'variant';
+  const extByType = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+  };
+  const ext = extByType[String(blob?.type || '').toLowerCase()] || 'webp';
+  return `product-generation-${kind}-${String(index + 1).padStart(2, '0')}.${ext}`;
+}
+
+function triggerBlobDownload(url, filename) {
+  if (!url) return;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'product-generation-photo.webp';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function ProductGenerationAssetGallery({
   jobId,
   assets,
@@ -1058,6 +1082,7 @@ function ProductGenerationAssetGallery({
   onSelect,
   selectable = false,
   emptyText = 'Фото пока не готовы',
+  downloadAllLabel = 'Скачать все фото',
 }) {
   const rows = useMemo(
     () =>
@@ -1067,14 +1092,16 @@ function ProductGenerationAssetGallery({
         .sort((a, b) => productGenerationAssetSortKey(a) - productGenerationAssetSortKey(b)),
     [assets],
   );
-  const [previews, setPreviews] = useState({});
+  const [assetFiles, setAssetFiles] = useState({});
+  const [previewAsset, setPreviewAsset] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const jid = String(jobId || '').trim();
     if (!jid || rows.length === 0) {
-      setPreviews({});
+      setAssetFiles({});
+      setPreviewAsset(null);
       setError('');
       setLoading(false);
       return undefined;
@@ -1083,19 +1110,27 @@ function ProductGenerationAssetGallery({
     const urls = [];
     setLoading(true);
     setError('');
-    setPreviews({});
+    setAssetFiles({});
+    setPreviewAsset(null);
     (async () => {
       try {
         const pairs = await Promise.all(
-          rows.map(async (row) => {
+          rows.map(async (row, idx) => {
             const aid = String(row.asset_id || '').trim();
             const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
             const url = URL.createObjectURL(file.blob);
             urls.push(url);
-            return [aid, url];
+            return [
+              aid,
+              {
+                blob: file.blob,
+                filename: file.filename || productGenerationAssetFallbackFilename(row, idx, file.blob),
+                url,
+              },
+            ];
           }),
         );
-        if (!cancelled) setPreviews(Object.fromEntries(pairs));
+        if (!cancelled) setAssetFiles(Object.fromEntries(pairs));
       } catch (e) {
         if (!cancelled) setError(e?.message || 'Не удалось загрузить превью фото');
       } finally {
@@ -1108,6 +1143,28 @@ function ProductGenerationAssetGallery({
     };
   }, [jobId, rows]);
 
+  const downloadReadyRows = rows.filter((row) => {
+    const aid = String(row.asset_id || '').trim();
+    return Boolean(assetFiles[aid]?.url);
+  });
+
+  const downloadOne = (row) => {
+    const aid = String(row?.asset_id || '').trim();
+    const file = assetFiles[aid];
+    if (!file?.url) return;
+    triggerBlobDownload(file.url, file.filename);
+  };
+
+  const downloadAll = () => {
+    downloadReadyRows.forEach((row, idx) => {
+      const aid = String(row.asset_id || '').trim();
+      const file = assetFiles[aid];
+      window.setTimeout(() => {
+        triggerBlobDownload(file?.url, file?.filename);
+      }, idx * 150);
+    });
+  };
+
   if (rows.length === 0) {
     return (
       <div style={{ color: 'var(--text-tertiary)', fontSize: 13, padding: '10px 0' }}>
@@ -1118,7 +1175,17 @@ function ProductGenerationAssetGallery({
 
   return (
     <div style={{ display: 'grid', gap: 8 }}>
-      {loading ? <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Загружаю превью…</div> : null}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {loading ? <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Загружаю превью…</div> : <div />}
+        <button
+          type="button"
+          className="btn btn-sm btn-outline-secondary"
+          onClick={downloadAll}
+          disabled={downloadReadyRows.length === 0}
+        >
+          {downloadAllLabel}
+        </button>
+      </div>
       {error ? <div className="alert alert-warning" style={{ margin: 0, fontSize: 12 }}>{error}</div> : null}
       <div
         style={{
@@ -1131,14 +1198,13 @@ function ProductGenerationAssetGallery({
       >
         {rows.map((row, idx) => {
           const aid = String(row.asset_id || '').trim();
-          const url = previews[aid];
+          const file = assetFiles[aid];
+          const url = file?.url;
           const checked = selectedAssetId === aid;
+          const itemLabel = row.kind === 'content_frame' ? `Контент ${idx + 1}` : `Вариант ${idx + 1}`;
           return (
-            <button
+            <div
               key={aid}
-              type="button"
-              onClick={() => selectable && onSelect?.(aid)}
-              disabled={!selectable}
               style={{
                 flex: '0 0 168px',
                 width: 168,
@@ -1147,7 +1213,6 @@ function ProductGenerationAssetGallery({
                 border: checked ? '2px solid var(--accent)' : '1px solid rgba(2,6,23,0.10)',
                 background: checked ? 'var(--accent-light)' : '#fff',
                 padding: 8,
-                cursor: selectable ? 'pointer' : 'default',
                 position: 'relative',
                 boxShadow: checked ? '0 10px 24px rgba(91,79,212,0.16)' : 'none',
               }}
@@ -1169,12 +1234,19 @@ function ProductGenerationAssetGallery({
                     border: '1px solid rgba(2,6,23,0.14)',
                     fontWeight: 900,
                     zIndex: 2,
+                    pointerEvents: 'none',
                   }}
                 >
                   {checked ? '✓' : ''}
                 </span>
               ) : null}
-              <div
+              <button
+                type="button"
+                onClick={() => {
+                  if (url) setPreviewAsset({ row, index: idx, file });
+                }}
+                disabled={!url}
+                aria-label={`Открыть предпросмотр: ${itemLabel}`}
                 style={{
                   width: '100%',
                   aspectRatio: '1 / 1',
@@ -1182,12 +1254,15 @@ function ProductGenerationAssetGallery({
                   overflow: 'hidden',
                   background: 'rgba(2,6,23,0.04)',
                   border: '1px solid rgba(2,6,23,0.06)',
+                  padding: 0,
+                  display: 'block',
+                  cursor: url ? 'zoom-in' : 'default',
                 }}
               >
                 {url ? (
                   <img
                     src={url}
-                    alt={`Фото ${idx + 1}`}
+                    alt={itemLabel}
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
                 ) : (
@@ -1195,14 +1270,70 @@ function ProductGenerationAssetGallery({
                     …
                   </div>
                 )}
-              </div>
+              </button>
               <div style={{ marginTop: 7, fontSize: 12, fontWeight: 800, color: checked ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                {row.kind === 'content_frame' ? `Контент ${idx + 1}` : `Вариант ${idx + 1}`}
+                {itemLabel}
               </div>
-            </button>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                {selectable ? (
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'}`}
+                    onClick={() => onSelect?.(aid)}
+                  >
+                    {checked ? 'Выбрано' : 'Выбрать'}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={() => downloadOne(row)}
+                  disabled={!url}
+                >
+                  Скачать
+                </button>
+              </div>
+            </div>
           );
         })}
       </div>
+      <ModalShell
+        open={Boolean(previewAsset?.file?.url)}
+        title={previewAsset ? (previewAsset.row.kind === 'content_frame' ? `Контент ${previewAsset.index + 1}` : `Вариант ${previewAsset.index + 1}`) : 'Предпросмотр фото'}
+        onClose={() => setPreviewAsset(null)}
+        width="min(980px, 100%)"
+        footer={(
+          <>
+            <button type="button" className="btn btn-outline-secondary" onClick={() => setPreviewAsset(null)}>
+              Закрыть
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => triggerBlobDownload(previewAsset?.file?.url, previewAsset?.file?.filename)}
+              disabled={!previewAsset?.file?.url}
+            >
+              Скачать
+            </button>
+          </>
+        )}
+      >
+        {previewAsset?.file?.url ? (
+          <div style={{ display: 'grid', placeItems: 'center', background: 'rgba(2,6,23,0.04)', borderRadius: 12, padding: 10 }}>
+            <img
+              src={previewAsset.file.url}
+              alt={previewAsset.row.kind === 'content_frame' ? `Контент ${previewAsset.index + 1}` : `Вариант ${previewAsset.index + 1}`}
+              style={{
+                width: '100%',
+                maxHeight: 'calc(100vh - 220px)',
+                objectFit: 'contain',
+                borderRadius: 10,
+                display: 'block',
+              }}
+            />
+          </div>
+        ) : null}
+      </ModalShell>
     </div>
   );
 }
@@ -1500,6 +1631,7 @@ function ModalShell({ open, title, onClose, children, footer, width }) {
     <div
       role="dialog"
       aria-modal="true"
+      aria-label={title}
       style={{
         position: 'fixed',
         inset: 0,
