@@ -9,6 +9,41 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-40
+Дата: 2026-05-13
+Статус: fixed
+Автоматизация: да (`backend/tests/test_product_generation_api.py`, `wb_image_pipeline_service/tests/test_images_main_openai.py`, `test_pipeline_images_step.py`, `test_reference_fetch_client.py`, `test_pg32_celery_chain.py`, `test_internal_runs_http.py`)
+
+## Бизнес-описание
+Пользователь загружал референс товара и описание, но сгенерированное фото могло быть вообще не про исходный предмет: например вместо женского поло появлялись тапки. Это ломало ключевую ценность сценария — получить 4 варианта главного фото именно того товара, который продавец приложил.
+
+## Процесс / сценарий
+1) Админ создаёт задачу полной генерации товара.
+2) Загружает reference image и пишет, что это за вещь.
+3) Ожидание: система генерирует 4 разных главных фото WB-карточки строго по предмету с референса, меняя только подачу, модель, локацию, свет и стиль.
+4) Факт: WIP отдавал в OpenAI только текстовые prompts, а файл референса не передавался в image API.
+
+## Техническое описание
+`wb_image_pipeline_service` хранил `reference_asset_ids` в payload, но `images_main_openai` вызывал `/v1/images/generations` с JSON `{prompt, n=1}` без `image[]`. Поэтому reference ids были только метаданными run, а не входом модели. Промпты также не закрепляли строгое правило same-product.
+
+## Root cause (почему произошло)
+- Контракт PG-B.3 был принят как “4 картинки есть”, но не проверял “OpenAI получил reference image”.
+- В тестах не было инварианта: при наличии `reference_asset_ids` запрещено генерировать без reference file.
+- Backlog считал B.3 закрытой, хотя это была только текстовая генерация.
+
+## Исправление (что сделали)
+WIP теперь получает reference-файлы из монолита по защищённому internal endpoint, вызывает OpenAI image edit/reference flow через `/v1/images/edits` с `image[]`, а для каждого `main_frame` сохраняет prompt и reference metadata в `wip_assets.meta_json`. Стандартный prompt и structure prompt усилены правилом “тот же товар с референса”.
+
+## Профилактика (как не повторить)
+Добавлены регрессионные тесты на internal reference fetch, запрет image generation без reference image, multipart `image[]` в OpenAI request, failed-сценарий без reference file и сохранение prompt/reference metadata на ассетах.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest`, `python3 -m pytest -q` в `wb_image_pipeline_service/`.
+- Сценарии: happy path WIP создаёт 4 `main_frame` через mocked reference images; error path без `monolith_job_id`/reference file переводит `images_main` и run в `failed`; backend internal endpoint требует Bearer token.
+
+Затронутые файлы: `backend/app/routers/product_generation.py`, `backend/app/services/product_generation_service.py`, `backend/app/services/product_generation_image_pipeline.py`, `backend/tests/test_product_generation_api.py`, `backend/.env.example`, `docker-compose.yml`, `wb_image_pipeline_service/app/services/reference_fetch_client.py`, `wb_image_pipeline_service/app/services/images_main_openai.py`, `wb_image_pipeline_service/app/services/pipeline_images_step.py`, `wb_image_pipeline_service/app/services/image_run_prompt.py`, `wb_image_pipeline_service/app/services/structure_main_openai.py`, `wb_image_pipeline_service/app/config.py`, `wb_image_pipeline_service/tests/*`, `wb_image_pipeline_service/README.md`, `wb_image_pipeline_service/.env.example`, `Требоваия/ИИ модуль/PRODUCT_GEN_TASKS.md`, `Требоваия/ИИ модуль/PRODUCT_GEN_PLAN.md`
+
+---
 ID: BUG-39
 Дата: 2026-05-13
 Статус: fixed

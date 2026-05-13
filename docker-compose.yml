@@ -203,6 +203,8 @@ services:
       WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
       WIP_MEDIA_ROOT: /data/media
       WIP_INTERNAL_HMAC_SECRET: dev-wip-image-pipeline-secret
+      WIP_MONOLITH_BASE_URL: http://api:8000
+      WIP_MONOLITH_REFERENCE_SECRET: dev-wip-image-pipeline-secret
     volumes:
       - wip_pipeline_data:/data
     depends_on:
@@ -235,6 +237,8 @@ services:
       WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
       WIP_MEDIA_ROOT: /data/media
       WIP_INTERNAL_HMAC_SECRET: dev-wip-image-pipeline-secret
+      WIP_MONOLITH_BASE_URL: http://api:8000
+      WIP_MONOLITH_REFERENCE_SECRET: dev-wip-image-pipeline-secret
     volumes:
       - wip_pipeline_data:/data
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info"]

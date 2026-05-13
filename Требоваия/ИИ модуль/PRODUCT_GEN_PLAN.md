@@ -45,7 +45,7 @@
 2. `POST .../references` — файлы на диск монолита, в JSON появляются `asset_id`.
 3. `POST .../start` — монолит проверяет только `draft` + ≥1 референс; **не** требует заполненной карточки.
 4. Монолит вызывает `POST /internal/v1/runs` с `payload`, где обязательны **`reference_asset_ids`**; остальные поля карточки опциональны/`null` (PG-A.2).
-5. Сервис: очередь — структуризация → 4 изображения → пауза → (после команды) серия 8 — по мере реализации **фазы B** в `wb_image_pipeline_service`.
+5. Сервис: очередь — структуризация → загрузка референс-файла из монолита → 4 изображения через reference-capable OpenAI image flow → пауза → (после команды) серия 8 — по мере реализации **фазы B** в `wb_image_pipeline_service`.
 
 **Frontend calls:** `POST/GET/PATCH` job; `POST` references; `POST` start; далее поллинг списка/деталки; `GET` прокси сгенерированных файлов (когда появится **PG-C.1**).
 
@@ -78,7 +78,7 @@ POST /ai/product-generation/jobs (опционально только descriptio
   → POST .../references (multipart)
   → POST .../start
   → POST wb_image_pipeline /internal/v1/runs  { monolith_job_id, payload: { reference_asset_ids, … } }
-  → Celery (сервис): structure LLM → 4× image → пауза → (main selected) → 8 prompts → 8× image
+  → Celery (сервис): structure LLM → fetch reference file from monolith → 4× image edit/reference → пауза → (main selected) → 8 prompts → 8× image
   → GET поллинг статуса job (монолит, поле image_pipeline при удалённом run)
   → GET /ai/product-generation/jobs/{id}/generated-assets/... (прокси, PG-C.1 — когда будет)
 ```
@@ -154,6 +154,7 @@ PATCH /ai/product-generation/jobs/{id}  (полная карточка)
 - **PG-3.2 (факт):** Celery `chain(run_created → step_done)` — заглушка: run `created`→`running`→`completed`, один шаг `pg32_stub` `pending`→`running`→`done`; брокер `WIP_REDIS_URL` (в примере compose — `wip_redis`); идемпотентность под ретраи (`SQLAlchemyError` autoretry).
 - **PG-3.3 (факт):** HTTP `POST /internal/v1/runs` (создание run + постановка PG-3.2 chain), `GET /internal/v1/runs/{id}` (статус, `payload`, шаги, ассеты); доступ по `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`; контракт в README сервиса и OpenAPI `/docs`.
 - **PG-3.4 (факт):** монолит при `POST /ai/product-generation/jobs/{id}/start` и заданных `PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL` + `PRODUCT_GEN_IMAGE_PIPELINE_SECRET` вызывает image-сервис `POST /internal/v1/runs`, сохраняет UUID в `pipeline_run_id`; ответы `GET` списка/деталки и `POST .../start` обогащаются снимком `GET /internal/v1/runs/{id}` (поле `image_pipeline`); UI поллит список раз в 4 с для строк с удалённым run; без пары env — прежний `local-*` + Celery-заглушка монолита.
+- **PG-B.3a/B.3b (актуализация 2026-05-13):** для соблюдения требования «строго по референсу» WIP не должен генерировать кадры только по тексту. Перед `images_main` сервис получает reference file из монолита по internal endpoint, вызывает OpenAI image edit/reference flow с `image[]`, а каждый `main_frame` asset хранит финальный prompt и metadata референса в `meta_json`.
 - Redis: отдельный DB index от монолита (`/1` vs `/0`).
 - Не публиковать порт 9100 наружу в прод compose без proxy.
 

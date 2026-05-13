@@ -1,4 +1,4 @@
-"""PG-B.3: вызов OpenAI images/generations для одного кадра."""
+"""PG-B.3a: вызов OpenAI images/edits для одного кадра по референсу."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Any
 
+from app.services.reference_fetch_client import ReferenceImage
 from app.services.wip_openai_httpx import openai_httpx_client
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,8 @@ def _openai_api_base() -> str:
     return "https://api.openai.com/v1"
 
 
-def _images_generations_url() -> str:
-    return f"{_openai_api_base()}/images/generations"
+def _images_edits_url() -> str:
+    return f"{_openai_api_base()}/images/edits"
 
 
 def _image_model() -> str:
@@ -45,9 +46,9 @@ def _timeout_sec() -> float:
         return 120.0
 
 
-def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
+def call_openai_image_bytes(*, prompt: str, reference_images: list[ReferenceImage]) -> tuple[bytes, str]:
     """
-    Генерирует одно изображение по текстовому промпту.
+    Генерирует одно изображение по текстовому промпту и обязательным reference image(s).
 
     Returns:
         Сырые байты файла и MIME-тип (например ``image/png``).
@@ -62,40 +63,46 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
     text = (prompt or "").strip()
     if not text:
         raise ValueError("image prompt is empty")
+    if not reference_images:
+        raise ValueError("reference image is required")
 
     model = _image_model()
-    url = _images_generations_url()
-    body: dict[str, Any] = {
+    url = _images_edits_url()
+    data: dict[str, Any] = {
         "model": model,
         "prompt": text,
         "n": 1,
         "size": "1024x1024",
         "output_format": "png",
     }
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    files = [
+        ("image[]", (ref.filename, ref.content, ref.mime_type))
+        for ref in reference_images[:16]
+    ]
+    headers = {"Authorization": f"Bearer {key}"}
 
     with openai_httpx_client(timeout=_timeout_sec()) as client:
-        r = client.post(url, json=body, headers=headers)
+        r = client.post(url, data=data, files=files, headers=headers)
 
     if r.status_code != 200:
         logger.warning(
-            "wip_images_openai: status=%s body=%s",
+            "wip_images_openai_edit: status=%s body=%s",
             r.status_code,
             r.text[:800],
         )
-        raise ValueError(f"OpenAI image HTTP {r.status_code}")
+        raise ValueError(f"OpenAI image edit HTTP {r.status_code}")
 
     try:
         envelope = r.json()
     except json.JSONDecodeError as exc:
-        raise ValueError("OpenAI image response is not JSON") from exc
+        raise ValueError("OpenAI image edit response is not JSON") from exc
 
     data = envelope.get("data")
     if not isinstance(data, list) or not data:
-        raise ValueError("OpenAI image response missing data")
+        raise ValueError("OpenAI image edit response missing data")
     first = data[0]
     if not isinstance(first, dict):
-        raise ValueError("OpenAI image data[0] invalid")
+        raise ValueError("OpenAI image edit data[0] invalid")
 
     b64 = first.get("b64_json")
     if isinstance(b64, str) and b64.strip():
@@ -105,7 +112,7 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
             raise ValueError("OpenAI image b64_json decode failed") from exc
         if not raw:
             raise ValueError("OpenAI image empty after decode")
-        logger.info("wip_images_openai: ok model=%s bytes=%s", model, len(raw))
+        logger.info("wip_images_openai_edit: ok model=%s refs=%s bytes=%s", model, len(reference_images), len(raw))
         return raw, "image/png"
 
     url_field = first.get("url")
@@ -119,7 +126,7 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
             raise ValueError("OpenAI image URL empty body")
         ct = gr.headers.get("content-type", "image/png")
         mime = ct.split(";")[0].strip() if ct else "image/png"
-        logger.info("wip_images_openai: ok via url model=%s bytes=%s", model, len(raw))
+        logger.info("wip_images_openai_edit: ok via url model=%s refs=%s bytes=%s", model, len(reference_images), len(raw))
         return raw, mime
 
-    raise ValueError("OpenAI image response missing b64_json and url")
+    raise ValueError("OpenAI image edit response missing b64_json and url")

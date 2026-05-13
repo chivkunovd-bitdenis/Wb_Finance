@@ -197,6 +197,34 @@ def test_product_generation_reference_upload_and_download(client_admin: TestClie
     assert r3.content.startswith(b"\x89PNG")
 
 
+def test_product_generation_internal_reference_download_requires_service_token(
+    client_admin: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    monkeypatch.setenv("PRODUCT_GEN_REFERENCE_FETCH_SECRET", "wip-ref-secret")
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "Ref internal"})
+    assert r.status_code == 201
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    r2 = client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("shot.png", png, "image/png"))],
+    )
+    assert r2.status_code == 200
+    aid = str((r2.json().get("reference_paths_json") or [])[0]["asset_id"])
+
+    path = f"/ai/product-generation/internal/jobs/{job_id}/references/{aid}/file"
+    assert client_admin.get(path).status_code == 401
+    bad = client_admin.get(path, headers={"Authorization": "Bearer wrong"})
+    assert bad.status_code == 401
+
+    ok = client_admin.get(path, headers={"Authorization": "Bearer wip-ref-secret"})
+    assert ok.status_code == 200
+    assert ok.content.startswith(b"\x89PNG")
+
+
 def test_product_generation_reference_rejects_non_image(client_admin: TestClient, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
     r = client_admin.post("/ai/product-generation/jobs", json={})
@@ -451,7 +479,7 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
                         "id": "asset-1",
                         "kind": "main_frame",
                         "mime_type": "image/png",
-                        "meta_json": {"frame_index": 0},
+                        "meta_json": {"frame_index": 0, "prompt": "Prompt 0", "reference_asset_ids": ["ref-1"]},
                         "created_at": "2026-05-13T12:01:00Z",
                     }
                 ],
@@ -480,6 +508,8 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
     assert row["image_pipeline"].get("last_error") is None
     assert row["image_pipeline"]["generated_assets"][0]["asset_id"] == "asset-1"
     assert row["image_pipeline"]["generated_assets"][0]["frame_index"] == 0
+    assert row["image_pipeline"]["generated_assets"][0]["prompt"] == "Prompt 0"
+    assert row["image_pipeline"]["generated_assets"][0]["reference_asset_ids"] == ["ref-1"]
     tl = row["image_pipeline"].get("timeline")
     assert isinstance(tl, list) and len(tl) >= 2
     assert any("Финализация" in (e.get("title") or "") for e in tl)

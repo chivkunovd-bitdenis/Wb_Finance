@@ -29,8 +29,8 @@
 
 **Микросервис:**
 
-1. Ставит в очередь цепочку: структуризация (OpenAI) → **4 главных изображения** (`images_main`, PG-B.3) → *пауза до команды монолита с выбранным main* → 8 серийных изображений.
-2. Хранит промпты и результаты в своей БД (логи/аудит).
+1. Ставит в очередь цепочку: структуризация (OpenAI) → загрузка reference-файла из монолита → **4 главных изображения** (`images_main`, PG-B.3a) → *пауза до команды монолита с выбранным main* → 8 серийных изображений.
+2. Хранит промпты и результаты в своей БД (логи/аудит), включая финальный prompt и reference metadata в `wip_assets.meta_json`.
 3. По TTL **14 дней** удаляет файлы с volume (задача cron/Celery beat внутри сервиса; дата успеха публикации приходит с монолита или по событию `run_archived`).
 
 Человеческие ошибки WB при publish остаются **в монолите** (там вызов `cards/upload`), с понятным текстом для UI.
@@ -50,7 +50,12 @@
 
 **PG-B.2:** ключ — `WIP_OPENAI_API_KEY` или тот же **`AI_API_KEY`**, что в монолите; база URL — `WIP_OPENAI_API_BASE_URL` или **`AI_API_BASE_URL`** (см. `backend/.env.example`). Также `WIP_OPENAI_MODEL_STRUCTURE`, `WIP_OPENAI_TIMEOUT_SEC`. При ошибке шаг `failed`, текст в `error_message`.
 
-**PG-B.3:** после `structure_main` воркер **`images_main`** вызывает OpenAI **`POST /v1/images/generations`** (`WIP_OPENAI_IMAGE_MODEL`, по умолчанию `gpt-image-1`) **четыре раза** по строкам `main_prompts`; файлы пишутся под **`WIP_MEDIA_ROOT`**, метаданные — строки в **`wip_assets`** (`kind=main_frame`, `storage_rel_path` вида `{run_id}/main_frame_{0..3}.png`). Идемпотентность: повтор при `done` + 4 ассета не дергает API; частичный набор ассетов очищается и перегенерируется.
+**PG-B.3a/B.3b:** после `structure_main` WIP получает исходные reference-файлы из монолита по internal endpoint:
+
+- `WIP_MONOLITH_BASE_URL` — URL монолита из Docker-сети, например `http://api:8000`;
+- `WIP_MONOLITH_REFERENCE_SECRET` — Bearer secret для `GET /ai/product-generation/internal/jobs/{job_id}/references/{asset_id}/file` (обычно тот же секрет, что `WIP_INTERNAL_HMAC_SECRET` / `PRODUCT_GEN_IMAGE_PIPELINE_SECRET`).
+
+После этого `images_main` вызывает OpenAI **`POST /v1/images/edits`** четыре раза: `image[]` = reference image(s), `prompt` = один из `main_prompts`, `n=1`. В `wip_assets.meta_json` сохраняются `prompt`, `reference_asset_ids`, `reference_fingerprint` и `reference_images`, чтобы каждый результат был привязан к prompt и входному референсу.
 
 ## Вынос в новый проект
 

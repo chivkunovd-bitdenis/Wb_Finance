@@ -375,6 +375,8 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
                     "asset_id": aid,
                     "kind": a.get("kind"),
                     "frame_index": meta.get("frame_index"),
+                    "prompt": meta.get("prompt"),
+                    "reference_asset_ids": meta.get("reference_asset_ids"),
                     "mime_type": a.get("mime_type"),
                     "created_at": a.get("created_at"),
                 }

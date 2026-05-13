@@ -56,7 +56,9 @@
 | **PG-B.0** | Снять зависимость Celery-цепочки от «полной карточки»: первый реальный шаг использует только payload из **A.2** | ✅ `apply_run_created` + bake только из `payload_json`; карточка не читается |
 | **PG-B.1** | **Шаблон промпта** (константа/версия) + грамотная склейка с `description_user` (разделитель, лимиты, логирование hash версии шаблона) | ✅ `app/services/image_run_prompt.py`, поля `wip_effective_image_prompt` / `wip_prompt_template_*` в run; env `WIP_IMAGE_PROMPT_*`; pytest `test_image_run_prompt.py` + цепочка |
 | **PG-B.2** | Воркер: OpenAI **structure** (`WIP_OPENAI_MODEL_STRUCTURE`) → JSON: SEO черновик + **4** текстовых промпта кадра | ✅ `structure_main_openai` + шаг `structure_main` + Celery `structure_main`; `meta_json`; ошибки → `failed` + `error_message`; pytest с моком OpenAI |
-| **PG-B.3** | Воркер: OpenAI **image** (`WIP_OPENAI_IMAGE_MODEL`) × **4** → файлы на volume + строки `wip_assets` | ✅ `images_main_openai`, `pipeline_images_step`, Celery `images_main`; `kind=main_frame`; идемпотентность; pytest |
+| **PG-B.3** | Воркер: OpenAI **image** (`WIP_OPENAI_IMAGE_MODEL`) × **4** → файлы на volume + строки `wip_assets` | ⚠️ Частично: реализована текстовая генерация 4 кадров через `/images/generations`, но референс-файл в OpenAI не передавался; закрывается до фактического контракта только после **PG-B.3a–B.3b** |
+| **PG-B.3a** | Передавать референс-файл в OpenAI image flow: WIP получает файл из монолита по internal endpoint и вызывает reference-capable image API | 4 кадра генерируются по `image[]`/reference input; при недоступном референсе run/step `failed`; pytest ловит запрет генерации без reference image |
+| **PG-B.3b** | Сохранять финальный prompt и reference metadata рядом с каждым `main_frame` asset | `wip_assets.meta_json`: `frame_index`, `prompt`, `reference_asset_ids`, fingerprint референса, модель; pytest |
 | **PG-B.4** | **Пауза** после 4 кадров: run ждёт команду «main selected» (новый internal endpoint или расширение PATCH — зафиксировать в OpenAPI) | Монолит сможет вызвать без доработки publish |
 | **PG-B.5** | Серия: **8** промптов + **8** изображений (модели из env как в плане) | Ассеты в БД; статус run обновляется |
 | **PG-B.6** | Маппинг статуса run → поле `ProductGenerationJob.status` в монолите (когда `ready_to_publish` / `error`) | Явная таблица в коде + pytest интеграции или контрактный тест с моком |
@@ -89,8 +91,8 @@
 
 ```
 PG-A.0 → (план как источник правды для UX/сценария)
-PG-A.1 + PG-A.2 → PG-B.0 → PG-B.1 → PG-B.2 → PG-B.3 → PG-C.1 + PG-C.3
-PG-B.3 → PG-B.4 → PG-B.5 → PG-B.6
+PG-A.1 + PG-A.2 → PG-B.0 → PG-B.1 → PG-B.2 → PG-B.3a → PG-B.3b → PG-C.1 + PG-C.3
+PG-B.3a + PG-B.3b → PG-B.4 → PG-B.5 → PG-B.6
 ```
 
 **Товар / WB:** после готовности по цепочке выше — см. зависимости в [`PRODUCT_GEN_PRODUCT_STREAM.md`](./PRODUCT_GEN_PRODUCT_STREAM.md) (PG-D.*, PG-E.1).
@@ -101,7 +103,7 @@ PG-B.3 → PG-B.4 → PG-B.5 → PG-B.6
 
 ## Честный статус на сейчас
 
-- **Готово:** PG-A.0–A.2, PG-B.0–B.3 (промпт + structure + **4× image** в `wip_assets` + volume), архив PG-1…PG-3.4, upload, старт run, UI мастера.
-- **Следующий осмысленный шаг:** **PG-B.4** — пауза после 4 кадров до выбора main; затем **PG-C.1** (прокси байтов в монолит).
+- **Готово:** PG-A.0–A.2, PG-B.0–B.2, текстовая часть PG-B.3 (4 prompt-driven image calls), архив PG-1…PG-3.4, upload, старт run, UI мастера, монолитный proxy generated assets (см. TASK-127).
+- **Следующий осмысленный шаг:** **PG-B.3a–B.3b** — строгая генерация по референсу и сохранение prompt metadata; затем **PG-B.4** — пауза после 4 кадров до выбора main.
 - **Вне этого файла (товар/WB):** весь поток **PG-D.* / PG-E.1** — [`PRODUCT_GEN_PRODUCT_STREAM.md`](./PRODUCT_GEN_PRODUCT_STREAM.md); не тянуть в спринт IMAGE.
 - **Не начинать из потока товара:** WB publish (**PG-D.2**), пока нет **C.1** и хотя бы **B.3** (иначе нечего показывать и некуда публиковать).

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     openai_image_model: str = "gpt-image-1"
 
     internal_hmac_secret: str = "dev-insecure-secret"
+    monolith_base_url: str = "http://api:8000"
+    monolith_reference_secret: str = ""
 
 
 settings = Settings()

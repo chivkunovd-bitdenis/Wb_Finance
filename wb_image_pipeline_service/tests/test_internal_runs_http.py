@@ -153,6 +153,15 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
         seo_description="D " * 30,
         main_prompts=["a", "b", "c", "d"],
     )
+    from app.services.reference_fetch_client import ReferenceImage
+
+    fake_ref = ReferenceImage(
+        asset_id="r1",
+        filename="r1.png",
+        mime_type="image/png",
+        content=b"reference",
+        sha256_hex="ref-sha",
+    )
 
     client = TestClient(mm.app)
     with patch("app.api.internal_runs.enqueue_pg32_stub_chain"):
@@ -170,6 +179,9 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     with patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=fake,
+    ), patch(
+        "app.services.pipeline_images_step.fetch_reference_images",
+        return_value=[fake_ref],
     ), patch(
         "app.services.pipeline_images_step.call_openai_image_bytes",
         return_value=(mini_png, "image/png"),

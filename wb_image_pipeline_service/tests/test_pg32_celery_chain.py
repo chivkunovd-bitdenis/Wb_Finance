@@ -45,6 +45,18 @@ def _fake_structure_result():
     )
 
 
+def _fake_reference() -> object:
+    from app.services.reference_fetch_client import ReferenceImage
+
+    return ReferenceImage(
+        asset_id="r1",
+        filename="r1.png",
+        mime_type="image/png",
+        content=b"reference",
+        sha256_hex="ref-sha",
+    )
+
+
 @pytest.fixture
 def pg32_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     db_url = f"sqlite:///{tmp_path / 'wip_pg32.db'}"
@@ -79,7 +91,7 @@ def test_pg32_chain_eager_completes_run(pg32_db: str, tmp_path: Path) -> None:
     try:
         run = PipelineRun(
             status="created",
-            monolith_job_id=None,
+            monolith_job_id="job-eager",
             payload_json={
                 "reference_asset_ids": ["r1"],
                 "description_user": "Тестовое описание",
@@ -95,6 +107,9 @@ def test_pg32_chain_eager_completes_run(pg32_db: str, tmp_path: Path) -> None:
     with patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=_fake_structure_result(),
+    ), patch(
+        "app.services.pipeline_images_step.fetch_reference_images",
+        return_value=[_fake_reference()],
     ), patch(
         "app.services.pipeline_images_step.call_openai_image_bytes",
         return_value=(_MINI_PNG, "image/png"),
@@ -145,7 +160,11 @@ def test_pg32_apply_run_created_idempotent(pg32_db: str) -> None:
 
     db = SessionLocal()
     try:
-        run = PipelineRun(status="created")
+        run = PipelineRun(
+            status="created",
+            monolith_job_id="job-step-done",
+            payload_json={"reference_asset_ids": ["r1"]},
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -188,6 +207,9 @@ def test_pg32_apply_step_done_idempotent(pg32_db: str) -> None:
     with patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=_fake_structure_result(),
+    ), patch(
+        "app.services.pipeline_images_step.fetch_reference_images",
+        return_value=[_fake_reference()],
     ), patch(
         "app.services.pipeline_images_step.call_openai_image_bytes",
         return_value=(_MINI_PNG, "image/png"),

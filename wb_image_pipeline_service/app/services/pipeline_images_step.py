@@ -15,6 +15,7 @@ from app.models.pipeline import PipelineAsset, PipelineRun, PipelineStep
 from app.schemas.structure_main import StructureMainResult
 from app.services.images_main_openai import call_openai_image_bytes
 from app.services.pipeline_pg32_stub import IMAGES_MAIN_STEP_KEY, STRUCTURE_STEP_KEY
+from app.services.reference_fetch_client import fetch_reference_images, reference_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,22 @@ def apply_images_main_step(prev: dict[str, Any]) -> dict[str, Any]:
             if isinstance(idx, int) and 0 <= idx <= 3:
                 existing_by_index[idx] = a
 
+        payload = dict(run.payload_json or {})
+        reference_asset_ids = [
+            str(v).strip()
+            for v in payload.get("reference_asset_ids", [])
+            if str(v).strip()
+        ]
+
         try:
+            refs = fetch_reference_images(
+                monolith_job_id=str(run.monolith_job_id or ""),
+                reference_asset_ids=reference_asset_ids,
+            )
+            refs_meta = reference_metadata(refs)
+            reference_fingerprint = hashlib.sha256(
+                "|".join(r.sha256_hex for r in refs).encode("utf-8")
+            ).hexdigest()
             for idx, prompt in enumerate(prompts):
                 if idx in existing_by_index:
                     rel = existing_by_index[idx].storage_rel_path
@@ -182,7 +198,7 @@ def apply_images_main_step(prev: dict[str, Any]) -> dict[str, Any]:
                         logger.info("wip_images_main: skip frame idx=%s (exists)", idx)
                         continue
 
-                raw, mime = call_openai_image_bytes(prompt=prompt)
+                raw, mime = call_openai_image_bytes(prompt=prompt, reference_images=refs)
                 digest = hashlib.sha256(raw).hexdigest()
                 rel_path = f"{run_id}/main_frame_{idx}.png"
                 out_path = media_root / rel_path
@@ -201,7 +217,14 @@ def apply_images_main_step(prev: dict[str, Any]) -> dict[str, Any]:
                     storage_rel_path=rel_path,
                     mime_type=mime,
                     sha256_hex=digest,
-                    meta_json={"frame_index": idx, "openai_image_model": model_name},
+                    meta_json={
+                        "frame_index": idx,
+                        "openai_image_model": model_name,
+                        "prompt": prompt,
+                        "reference_asset_ids": reference_asset_ids,
+                        "reference_fingerprint": reference_fingerprint,
+                        "reference_images": refs_meta,
+                    },
                 )
                 db.add(asset)
                 db.flush()

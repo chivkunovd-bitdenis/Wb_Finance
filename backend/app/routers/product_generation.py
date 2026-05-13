@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,24 @@ from app.services.product_generation_image_pipeline import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai/product-generation", tags=["product-generation"])
+
+
+def _internal_reference_secret() -> str:
+    return (
+        os.getenv("PRODUCT_GEN_REFERENCE_FETCH_SECRET")
+        or os.getenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET")
+        or ""
+    ).strip()
+
+
+def _require_reference_internal_auth(authorization: str | None = Header(default=None)) -> None:
+    secret = _internal_reference_secret()
+    if not secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Internal reference auth is not configured")
+    prefix = "Bearer "
+    token = authorization[len(prefix) :].strip() if authorization and authorization.startswith(prefix) else ""
+    if not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
 @router.post("/jobs", response_model=ProductGenerationJobOut, status_code=status.HTTP_201_CREATED)
@@ -112,6 +132,26 @@ def download_job_reference_file(
         if code in {"not_found", "asset_not_found", "missing_file"}:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден") from exc
         logger.exception("product_generation: unexpected ValueError on download")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
+    media = str(meta.get("content_type") or "application/octet-stream")
+    name = str(meta.get("original_filename") or "reference")
+    return FileResponse(path=str(path), media_type=media, filename=name)
+
+
+@router.get("/internal/jobs/{job_id}/references/{asset_id}/file")
+def download_reference_file_internal(
+    job_id: str,
+    asset_id: str,
+    _auth: None = Depends(_require_reference_internal_auth),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    try:
+        path, meta = pg_service.get_reference_file_by_job_id(db=db, job_id=job_id, asset_id=asset_id)
+    except ValueError as exc:
+        code = str(exc)
+        if code in {"not_found", "asset_not_found", "missing_file"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден") from exc
+        logger.exception("product_generation: unexpected ValueError on internal reference download")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
     media = str(meta.get("content_type") or "application/octet-stream")
     name = str(meta.get("original_filename") or "reference")

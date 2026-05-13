@@ -129,6 +129,31 @@ def get_reference_file(
     return path, match
 
 
+def get_reference_file_by_job_id(
+    *,
+    db: Session,
+    job_id: str,
+    asset_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Internal service access for WIP: resolve a reference without admin user context."""
+    job = db.query(ProductGenerationJob).filter(ProductGenerationJob.id == job_id).first()
+    if not job:
+        raise ValueError("not_found")
+    refs = list(job.reference_paths_json or [])
+    match: dict[str, Any] | None = None
+    for r in refs:
+        if isinstance(r, dict) and str(r.get("asset_id") or "") == asset_id:
+            match = r
+            break
+    if not match:
+        raise ValueError("asset_not_found")
+    stored = str(match.get("stored_name") or "")
+    path = resolve_reference_path(user_id=str(job.user_id), job_id=str(job.id), stored_name=stored)
+    if path is None or not path.is_file():
+        raise ValueError("missing_file")
+    return path, match
+
+
 def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenerationJob:
     """
     Переводит черновик в in_progress и назначает pipeline_run_id.
