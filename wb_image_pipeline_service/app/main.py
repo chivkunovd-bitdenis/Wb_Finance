@@ -2,11 +2,13 @@ import logging
 
 from fastapi import FastAPI
 
+from app.api.internal_runs import router as internal_runs_router
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="WB Image Pipeline Service", version="0.1.0")
+app.include_router(internal_runs_router)
 
 
 @app.get("/health")

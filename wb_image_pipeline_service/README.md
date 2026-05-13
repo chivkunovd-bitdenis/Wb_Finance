@@ -57,7 +57,34 @@
 
 - **PG-3.1:** своя БД сервиса — таблицы `wip_runs`, `wip_steps`, `wip_assets` (SQLAlchemy + Alembic `a1b2c3d4e501`). При старте контейнера выполняется `alembic upgrade head`. `docker-compose.example` монтирует **`wip_data:/data`** (общий SQLite и каталог `media` для API и worker).
 - **PG-3.2:** Celery-цепочка-заглушка **`wb_image_pipeline.run_created` → `wb_image_pipeline.step_done`** (модуль `celery_app/pipeline_tasks.py`, постановка `enqueue_pg32_stub_chain(run_id)`). Воркер в compose — `celery -A celery_app.celery_app worker`; брокер/backend — **Redis** (`wip_redis` в примере). Логи на INFO; повторы задач идемпотентны по строкам `wip_runs` / `wip_steps` (шаг `pg32_stub`).
-- Дальше по плану wb-finance: **PG-3.3+** (HTTP `POST/GET /internal/v1/runs`, связка с монолитом).
+- **PG-3.3:** HTTP **`POST /internal/v1/runs`**, **`GET /internal/v1/runs/{id}`** — реализация в `app/api/internal_runs.py`, логика в `app/services/internal_runs_service.py`, схемы в `app/schemas/internal_runs.py`. Аутентификация: `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`. После успешного `POST` ставится очередь PG-3.2. Подробный контракт — ниже.
+- Дальше по плану wb-finance: **PG-3.4** (связка монолит ↔ сервис: реальный `POST` при «Создать», сохранение `run_id`, поллинг).
+
+### HTTP внутренний API (PG-3.3)
+
+Префикс **`/internal/v1`**. До mTLS (PG-3.5) используйте приватную сеть и секрет из **`WIP_INTERNAL_HMAC_SECRET`** (см. `.env.example`, `docs/mtls.md`).
+
+| Метод | Путь | Назначение |
+|-------|------|------------|
+| `POST` | `/internal/v1/runs` | Создать run, сохранить связь с монолитом и метаданные, поставить Celery-цепочку PG-3.2 |
+| `GET` | `/internal/v1/runs/{id}` | Статус run, `payload`, шаги и ассеты из БД сервиса |
+
+**Заголовок:** `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`
+
+**`POST /internal/v1/runs` — тело (JSON):**
+
+- `monolith_job_id` (string, обязательный, 1…64 символов) — идентификатор задачи/черновика в монолите
+- `payload` (object, опционально) — произвольный JSON; сохраняется в `wip_runs.payload_json`
+
+**Ответ `201`:** `{ "id": "<uuid>", "status": "created" }`
+
+**Ошибки:** `401` — нет/неверный Bearer; `503` — не удалось поставить задачу в Celery (run уже записан в БД со статусом `created` — см. политику повторов в PG-3.4).
+
+**`GET /internal/v1/runs/{id}` — ответ `200`:** поля `id`, `status`, `monolith_job_id`, `payload`, `created_at`, `updated_at`, массивы `steps` и `assets` (как в ORM: `step_key`, `ordinal`, `status`, `error_message`, `meta_json`, пути к файлам и т.д.).
+
+**Ошибки:** `401`; `404` — run не найден.
+
+Полная схема запросов/ответов также в **OpenAPI** (`/docs` на порту API, по умолчанию 9100).
 
 ### Миграции (локально)
 
