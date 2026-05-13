@@ -64,6 +64,10 @@ services:
       WB_PLAYWRIGHT_STORAGE_STATE_DIR: /app/data/wb_storage_states
       # ИИ: референсы полной генерации товара (PG-2.2), тот же volume ./backend/data:/app/data
       PRODUCT_GENERATION_REFERENCES_DIR: /app/data/product_generation_references
+      # PG-3.4 / B.3: run в wb_image_pipeline_service (контейнеры ниже). Секрет должен совпадать с WIP_INTERNAL_HMAC_SECRET.
+      PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL: http://wb_image_pipeline_api:9100
+      PRODUCT_GEN_IMAGE_PIPELINE_SECRET: dev-wip-image-pipeline-secret
+      PRODUCT_GEN_IMAGE_PIPELINE_TIMEOUT_SEC: "120"
       # Internal-only auth between api -> wb_auth manager (used for remote noVNC login flow)
       WB_AUTH_INTERNAL_TOKEN: ${WB_AUTH_INTERNAL_TOKEN:-dev-internal-token}
       # AI daily brief + внешние вызовы к LLM выключены по умолчанию
@@ -74,6 +78,8 @@ services:
       redis:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      wb_image_pipeline_api:
         condition: service_healthy
     volumes:
       - ./backend/.env:/app/.env
@@ -182,6 +188,62 @@ services:
       - api
       - wb_auth
 
+  # ИИ: микросервис каскада картинок (PG-B.3). Redis DB index /2 — не пересекается с Celery монолита (/0).
+  wb_image_pipeline_api:
+    restart: unless-stopped
+    build:
+      context: ./wb_image_pipeline_service
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      WIP_API_HOST: "0.0.0.0"
+      WIP_API_PORT: "9100"
+      WIP_REDIS_URL: redis://redis:6379/2
+      WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
+      WIP_MEDIA_ROOT: /data/media
+      WIP_INTERNAL_HMAC_SECRET: dev-wip-image-pipeline-secret
+    volumes:
+      - wip_pipeline_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 60s
+
+  wb_image_pipeline_worker:
+    restart: unless-stopped
+    build:
+      context: ./wb_image_pipeline_service
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      WIP_REDIS_URL: redis://redis:6379/2
+      WIP_DATABASE_URL: sqlite:////data/wip_jobs.db
+      WIP_MEDIA_ROOT: /data/media
+      WIP_INTERNAL_HMAC_SECRET: dev-wip-image-pipeline-secret
+    volumes:
+      - wip_pipeline_data:/data
+    command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      wb_image_pipeline_api:
+        condition: service_healthy
+
   wb_auth:
     restart: unless-stopped
     build:
@@ -218,3 +280,4 @@ volumes:
   qdrant_data:
   caddy_data:
   caddy_config:
+  wip_pipeline_data:

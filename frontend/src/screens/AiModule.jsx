@@ -254,6 +254,15 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
       const jid = String(job?.id || '').trim();
       if (!jid) throw new Error('Не удалось создать задачу генерации');
       await api.uploadProductGenerationJobReferences(jid, referenceFiles);
+      const afterUpload = await api.getProductGenerationJob(jid);
+      const refRows = Array.isArray(afterUpload?.reference_paths_json)
+        ? afterUpload.reference_paths_json
+        : [];
+      if (!refRows.length) {
+        throw new Error(
+          'Референсы не появились в задаче после загрузки (пустой список). Проверьте ответ сервера и логи api.',
+        );
+      }
       const started = await api.startProductGenerationJob(jid);
       setJobId(jid);
       setJobStatus(String(started?.status || 'in_progress'));
