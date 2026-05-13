@@ -176,7 +176,7 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
 
 def should_enqueue_monolith_celery_stub(job: ProductGenerationJob) -> bool:
     """True, если нужна Celery-заглушка монолита (локальный run)."""
-    rid = job.pipeline_run_id or ""
+    rid = str(job.pipeline_run_id or "")
     return rid.startswith("local-")
 
 
@@ -185,7 +185,7 @@ def revert_local_pipeline_start(*, db: Session, user: User, job_id: str) -> None
     job = get_job_for_user(db=db, user=user, job_id=job_id)
     if not job:
         return
-    rid = job.pipeline_run_id or ""
+    rid = str(job.pipeline_run_id or "")
     if job.status == "in_progress" and rid.startswith("local-"):
         job.status = "draft"
         job.pipeline_run_id = None
