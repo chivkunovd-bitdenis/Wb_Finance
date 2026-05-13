@@ -1,7 +1,9 @@
 """
 PG-3.2: идемпотентная «заглушка» пайплайна — run created → один шаг → completed.
 
-Повторные вызовы (ретраи Celery) не должны портить финальный статус и не дублировать шаг.
+PG-B.0: первый шаг цепочки опирается только на `wip_runs.payload_json` от монолита
+(`reference_asset_ids`, `description_user`, …); поля карточки WB не требуются.
+Перед commit вшивается `wip_effective_image_prompt` (PG-B.1, `image_run_prompt`).
 """
 
 from __future__ import annotations
@@ -13,11 +15,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.pipeline import PipelineRun, PipelineStep
+from app.services.image_run_prompt import bake_prompt_fields
 
 logger = logging.getLogger(__name__)
 
 STUB_STEP_KEY = "pg32_stub"
 STUB_STEP_ORDINAL = 0
+
+
+def _maybe_merge_baked_prompt(db: Session, run: PipelineRun) -> None:
+    """Идемпотентно добавляет в payload поля PG-B.1 (шаблон + description_user)."""
+    payload: dict[str, Any] = dict(run.payload_json or {})
+    existing = payload.get("wip_effective_image_prompt")
+    if isinstance(existing, str) and existing.strip():
+        return
+    baked = bake_prompt_fields(payload)
+    payload.update(baked)
+    run.payload_json = payload
+    db.add(run)
 
 
 def _session() -> Session:
@@ -79,6 +94,8 @@ def apply_run_created(run_id: str) -> dict[str, Any]:
             run.status = "running"
         if stub_step.status == "pending":
             stub_step.status = "running"
+
+        _maybe_merge_baked_prompt(db, run)
 
         db.commit()
         db.refresh(run)

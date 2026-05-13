@@ -61,7 +61,15 @@ def test_pg32_chain_eager_completes_run(pg32_db: str) -> None:
 
     db = SessionLocal()
     try:
-        run = PipelineRun(status="created", monolith_job_id=None, payload_json={})
+        run = PipelineRun(
+            status="created",
+            monolith_job_id=None,
+            payload_json={
+                "reference_asset_ids": ["r1"],
+                "description_user": "Тестовое описание",
+                "title": None,
+            },
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -74,6 +82,10 @@ def test_pg32_chain_eager_completes_run(pg32_db: str) -> None:
     try:
         r = db.query(PipelineRun).filter(PipelineRun.id == run_id).one()
         assert r.status == "completed"
+        assert r.payload_json is not None
+        assert "wip_effective_image_prompt" in r.payload_json
+        assert "Тестовое описание" in str(r.payload_json["wip_effective_image_prompt"])
+        assert r.payload_json.get("wip_prompt_template_version")
         steps = db.query(PipelineStep).filter(PipelineStep.run_id == run_id).all()
         assert len(steps) == 1
         assert steps[0].step_key == "pg32_stub"
@@ -106,6 +118,8 @@ def test_pg32_apply_run_created_idempotent(pg32_db: str) -> None:
         assert db.query(PipelineStep).filter(PipelineStep.run_id == run_id).count() == 1
         r = db.query(PipelineRun).filter(PipelineRun.id == run_id).one()
         assert r.status == "running"
+        assert r.payload_json is not None
+        assert "wip_effective_image_prompt" in r.payload_json
     finally:
         db.close()
 

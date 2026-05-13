@@ -46,6 +46,8 @@
 
 См. `.env.example`: модели текста зафиксированы как в дискавери (`gpt-4.1-mini` для структуризации, `gpt-4.1` для пакета промптов серии). Модель **изображений** — отдельная переменная (OpenAI image API).
 
+**PG-B.1 (фаза IMAGE):** `WIP_IMAGE_PROMPT_TEMPLATE` (полный текст с `{user_text}`; пусто — встроенный шаблон), `WIP_IMAGE_PROMPT_USER_TEXT_MAX_CHARS`. После `run_created` в `GET /internal/v1/runs/{id}` в `payload` появляются `wip_effective_image_prompt`, `wip_prompt_template_version`, `wip_prompt_template_hash`.
+
 ## Вынос в новый проект
 
 1. Скопировать всю папку `wb_image_pipeline_service/` в корень нового репо.
