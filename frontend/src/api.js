@@ -549,6 +549,19 @@ export async function listProductGenerationJobs() {
   return res.json();
 }
 
+/** Получить детальную задачу полной генерации товара (admin). */
+export async function getProductGenerationJob(jobId) {
+  const res = await apiFetch(`${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}`, {
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 /** Создать пустой черновик задачи генерации товара (admin). */
 export async function createProductGenerationJob(body = {}) {
   const res = await apiFetch(`${API_BASE}/ai/product-generation/jobs`, {
@@ -592,6 +605,42 @@ export async function startProductGenerationJob(jobId) {
   const res = await apiFetch(
     `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/start`,
     { method: 'POST', headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Скачать референс-файл задачи генерации товара (admin). */
+export async function downloadProductGenerationReference(jobId, assetId) {
+  const res = await apiFetch(
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/references/${encodeURIComponent(assetId)}/file`,
+    { headers: headers(false) },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd);
+  const filename = m ? decodeURIComponent(m[1].replace(/"/g, '')) : '';
+  const blob = await res.blob();
+  return { blob, filename };
+}
+
+/** Обновить поля карточки товара в существующей задаче генерации (admin). */
+export async function updateProductGenerationJob(jobId, body = {}) {
+  const res = await apiFetch(
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify(body || {}),
+    },
   );
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {

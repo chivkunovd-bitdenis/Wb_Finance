@@ -90,9 +90,11 @@ function parseOptionalWbSubjectId(raw) {
   return { ok: true, value: n };
 }
 
-/** PG-2.1: мастер (шаблон B): 1) референсы + текст → 2) карточка → 3) проверка и создание черновика. */
+/** PG-2.1 (updated): сначала запуск каскадной генерации фото, затем отдельное создание товара. */
 function ProductGenerationWizardModal({ open, onClose, onCreated }) {
-  const [step, setStep] = useState(1);
+  const [stage, setStage] = useState('prepare');
+  const [jobId, setJobId] = useState('');
+  const [jobStatus, setJobStatus] = useState('');
   const [referenceFiles, setReferenceFiles] = useState([]);
   const [descriptionUser, setDescriptionUser] = useState('');
   const [dimensionsLength, setDimensionsLength] = useState('');
@@ -107,10 +109,14 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
   const [sizeRows, setSizeRows] = useState([{ tech_size: '', wb_size: '' }]);
   const [fieldErrors, setFieldErrors] = useState({});
   const [submitError, setSubmitError] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [downloadingPhotos, setDownloadingPhotos] = useState(false);
 
   const resetForm = useCallback(() => {
-    setStep(1);
+    setStage('prepare');
+    setJobId('');
+    setJobStatus('');
     setReferenceFiles([]);
     setDescriptionUser('');
     setDimensionsLength('');
@@ -125,7 +131,9 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     setSizeRows([{ tech_size: '', wb_size: '' }]);
     setFieldErrors({});
     setSubmitError('');
+    setInfoMessage('');
     setSubmitting(false);
+    setDownloadingPhotos(false);
   }, []);
 
   useEffect(() => {
@@ -155,9 +163,10 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
 
   const clearReferences = () => {
     setReferenceFiles([]);
+    setInfoMessage('');
   };
 
-  const validateStep1 = () => {
+  const validatePreparation = () => {
     const err = {};
     if (!String(descriptionUser || '').trim()) err.descriptionUser = 'Опишите товар для генерации';
     if (!referenceFiles.length) err.referenceFiles = 'Выберите хотя бы один файл-референс (изображение)';
@@ -165,7 +174,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     return Object.keys(err).length === 0;
   };
 
-  const validateStep2 = () => {
+  const validateProductForm = () => {
     const err = {};
     if (!String(vendorCode || '').trim()) err.vendorCode = 'Укажите артикул (vendor code)';
     if (!String(title || '').trim()) err.title = 'Укажите наименование';
@@ -233,52 +242,92 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     return body;
   };
 
-  const goNext = () => {
+  const runPhotoGeneration = async () => {
+    if (!validatePreparation()) return;
+    setSubmitting(true);
     setSubmitError('');
-    if (step === 1) {
-      if (!validateStep1()) return;
-      setStep(2);
-      return;
+    setInfoMessage('');
+    try {
+      const job = await api.createProductGenerationJob({
+        description_user: String(descriptionUser || '').trim(),
+      });
+      const jid = String(job?.id || '').trim();
+      if (!jid) throw new Error('Не удалось создать задачу генерации');
+      await api.uploadProductGenerationJobReferences(jid, referenceFiles);
+      const started = await api.startProductGenerationJob(jid);
+      setJobId(jid);
+      setJobStatus(String(started?.status || 'in_progress'));
+      setStage('afterPhotos');
+      setInfoMessage('Генерация фото запущена. Можно закрыть форму и вернуться позже.');
+      onCreated?.();
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось запустить генерацию фото');
+    } finally {
+      setSubmitting(false);
     }
-    if (step === 2) {
-      if (!validateStep2()) return;
-      setStep(3);
+  };
+
+  const refreshJobStatus = async () => {
+    const jid = String(jobId || '').trim();
+    if (!jid) return;
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const current = await api.getProductGenerationJob(jid);
+      const st = String(current?.status || '');
+      setJobStatus(st);
+      if (st === 'ready_to_publish' || st === 'published') {
+        setInfoMessage('Фото готовы. Теперь можно открыть форму «Создать товар».');
+      } else {
+        setInfoMessage('Фото ещё генерируются. Можно закрыть форму и зайти позже.');
+      }
+      onCreated?.();
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось обновить статус');
+    } finally {
+      setSubmitting(false);
     }
+  };
+
+  const isReadyForProductForm = useMemo(
+    () => jobStatus === 'ready_to_publish' || jobStatus === 'published',
+    [jobStatus],
+  );
+
+  const openCreateProductForm = () => {
+    setSubmitError('');
+    setFieldErrors({});
+    setStage('createProduct');
   };
 
   const goBack = () => {
     setSubmitError('');
     setFieldErrors({});
-    if (step <= 1) return;
-    setStep(step - 1);
+    if (stage === 'createProduct') {
+      setStage('afterPhotos');
+    }
   };
 
   const submit = async () => {
+    if (!validateProductForm()) return;
     const payload = buildPayload();
     if (!payload) {
       setSubmitError('Проверьте числовые поля');
       return;
     }
+    const jid = String(jobId || '').trim();
+    if (!jid) {
+      setSubmitError('Сначала запустите генерацию фото');
+      return;
+    }
     setSubmitting(true);
     setSubmitError('');
     try {
-      const job = await api.createProductGenerationJob(payload);
-      const jid = job?.id;
-      if (referenceFiles.length && jid) {
-        try {
-          await api.uploadProductGenerationJobReferences(jid, referenceFiles);
-        } catch (e2) {
-          const hint = jid ? ` Черновик ${jid} создан без файлов — можно удалить его в БД позже или повторить загрузку, когда появится UI.` : '';
-          throw new Error((e2?.message || 'Ошибка загрузки файлов') + hint);
-        }
-      }
-      if (jid) {
-        await api.startProductGenerationJob(jid);
-      }
+      await api.updateProductGenerationJob(jid, payload);
       onCreated?.();
       onClose?.();
     } catch (e) {
-      setSubmitError(e?.message || 'Не удалось создать задачу');
+      setSubmitError(e?.message || 'Не удалось сохранить товар');
     } finally {
       setSubmitting(false);
     }
@@ -306,9 +355,45 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     });
   };
 
+  const downloadGeneratedPhotos = async () => {
+    const jid = String(jobId || '').trim();
+    if (!jid) return;
+    setDownloadingPhotos(true);
+    setSubmitError('');
+    setInfoMessage('');
+    try {
+      const current = await api.getProductGenerationJob(jid);
+      const refs = Array.isArray(current?.reference_paths_json) ? current.reference_paths_json : [];
+      const rows = refs.filter((r) => r && r.asset_id);
+      if (!rows.length) throw new Error('Нет доступных фото для скачивания');
+      for (const row of rows) {
+        const aid = String(row.asset_id || '').trim();
+        if (!aid) continue;
+        const file = await api.downloadProductGenerationReference(jid, aid);
+        const href = URL.createObjectURL(file.blob);
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = file.filename || `photo-${aid}.png`;
+        a.click();
+        URL.revokeObjectURL(href);
+      }
+      setInfoMessage('Фото сохранены на компьютер.');
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось скачать фото');
+    } finally {
+      setDownloadingPhotos(false);
+    }
+  };
+
   if (!open) return null;
 
-  const stepLabel = step === 1 ? 'Референсы и текст' : step === 2 ? 'Карточка и размеры' : 'Проверка';
+  const stageLabel = (
+    stage === 'prepare'
+      ? 'Референсы и запуск каскадной генерации фото'
+      : stage === 'afterPhotos'
+        ? 'Генерация фото и действия'
+        : 'Создание товара'
+  );
 
   return (
     <ModalShell
@@ -318,23 +403,37 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
       width="min(760px, 100%)"
       footer={(
         <>
-          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting}>
-            Отмена
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting || downloadingPhotos}>
+            Закрыть
           </button>
-          {step > 1 ? (
+          {stage === 'createProduct' ? (
             <button type="button" className="btn btn-outline-secondary" onClick={goBack} disabled={submitting}>
               Назад
             </button>
           ) : null}
-          {step < 3 ? (
-            <button type="button" className="btn btn-primary" onClick={goNext}>
-              Далее
+          {stage === 'prepare' ? (
+            <button type="button" className="btn btn-primary" onClick={runPhotoGeneration} disabled={submitting}>
+              {submitting ? 'Запускаю…' : 'Запустить генерацию фото'}
             </button>
-          ) : (
+          ) : null}
+          {stage === 'afterPhotos' ? (
+            <>
+              <button type="button" className="btn btn-outline-secondary" onClick={downloadGeneratedPhotos} disabled={submitting || downloadingPhotos}>
+                {downloadingPhotos ? 'Скачиваю…' : 'Скачать фото'}
+              </button>
+              <button type="button" className="btn btn-outline-secondary" onClick={refreshJobStatus} disabled={submitting}>
+                {submitting ? 'Обновляю…' : 'Проверить готовность'}
+              </button>
+              <button type="button" className="btn btn-primary" onClick={openCreateProductForm} disabled={!isReadyForProductForm || submitting}>
+                Создать товар
+              </button>
+            </>
+          ) : null}
+          {stage === 'createProduct' ? (
             <button type="button" className="btn btn-primary" onClick={submit} disabled={submitting}>
-              {submitting ? 'Создаю…' : 'Создать черновик'}
+              {submitting ? 'Сохраняю…' : 'Сохранить товар'}
             </button>
-          )}
+          ) : null}
         </>
       )}
     >
@@ -354,19 +453,20 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
               whiteSpace: 'nowrap',
             }}
           >
-            Шаг {step} из 3
+            {stage === 'prepare' ? 'Шаг 1 из 2' : stage === 'afterPhotos' ? 'Шаг 2 из 2' : 'Форма товара'}
           </span>
-          <span style={{ fontWeight: 800, color: 'var(--text-secondary)', fontSize: 13 }}>{stepLabel}</span>
+          <span style={{ fontWeight: 800, color: 'var(--text-secondary)', fontSize: 13 }}>{stageLabel}</span>
         </div>
 
         {submitError ? <div className="alert alert-danger" style={{ margin: 0 }}>{submitError}</div> : null}
+        {infoMessage ? <div className="alert alert-info" style={{ margin: 0 }}>{infoMessage}</div> : null}
 
-        {step === 1 && (
+        {stage === 'prepare' && (
           <div style={{ display: 'grid', gap: 14 }}>
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8 }}>
               <div style={{ fontWeight: 900, fontSize: 13 }}>Референсы</div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                Нужен хотя бы один файл. Несколько файлов можно выбрать за раз. После нажатия «Создать черновик» файлы отправляются на сервер (каталог данных API, persist в Docker volume).
+                Нужен хотя бы один файл. Несколько файлов можно выбрать за раз. После нажатия «Запустить генерацию фото» начнётся каскадный пайплайн.
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input
@@ -393,7 +493,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
                   ))}
                 </ul>
               ) : (
-                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Нет выбранных файлов — без референсов к шагу 2 не перейти</div>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Нет выбранных файлов — без референсов генерация не стартует</div>
               )}
             </div>
 
@@ -420,7 +520,26 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
           </div>
         )}
 
-        {step === 2 && (
+        {stage === 'afterPhotos' && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              На этом шаге можно скачать фото и закрыть окно. Для продолжения нажмите «Создать товар» — откроется форма размеров, описания и других полей.
+            </div>
+            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
+              <InfoRow label="ID задачи">{jobId || '—'}</InfoRow>
+              <InfoRow label="Статус">{productGenerationStatusBadge(jobStatus || 'in_progress')}</InfoRow>
+              <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов)` : 'Не выбраны'}</InfoRow>
+              <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
+            </div>
+            {!isReadyForProductForm ? (
+              <div className="alert alert-warning" style={{ margin: 0 }}>
+                Кнопка «Создать товар» станет доступной после статуса «К публикации» или «Опубликовано».
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {stage === 'createProduct' && (
           <div style={{ display: 'grid', gap: 14 }}>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               Габариты и вес — отдельные поля (длина × ширина × высота, вес). Цена в рублях; на сервер уходит в копейках.
@@ -530,7 +649,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
                   placeholder="например 105 — можно оставить пустым"
                 />
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4, lineHeight: 1.4 }}>
-                  Черновик и запуск генерации не блокируются, если категорию укажете позже (например перед публикацией в WB).
+                  Поле можно заполнить позже, но для публикации в WB оно может потребоваться.
                 </div>
                 {fieldErrors.wbSubjectId ? (
                   <div className="invalid-feedback d-block">{fieldErrors.wbSubjectId}</div>
@@ -589,40 +708,6 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
                   </tbody>
                 </table>
               </div>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Проверьте данные. После «Создать»: запись, загрузка референсов на диск API и старт фонового пайплайна; в списке задача будет «В процессе».
-            </div>
-            <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
-              <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов) — будут загружены после создания черновика` : 'Не выбраны'}</InfoRow>
-              <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
-              <InfoRow label="Габариты (Д×Ш×В)">
-                {[dimensionsLength, dimensionsWidth, dimensionsHeight].map((x) => String(x || '').trim()).join(' × ') || '—'}
-              </InfoRow>
-              <InfoRow label="Вес">{String(weightBrutto || '').trim() || '—'}</InfoRow>
-              <InfoRow label="Цена">{String(priceRub || '').trim() ? `${priceRub} ₽` : '—'}</InfoRow>
-              <InfoRow label="Артикул">{String(vendorCode || '').trim() || '—'}</InfoRow>
-              <InfoRow label="Наименование">{String(title || '').trim() || '—'}</InfoRow>
-              <InfoRow label="Бренд">{String(brand || '').trim() || '—'}</InfoRow>
-              <InfoRow label="Предмет WB (ID)">
-                {(() => {
-                  const p = parseOptionalWbSubjectId(wbSubjectId);
-                  if (!p.ok) return '—';
-                  if (p.value === undefined) return '— (не указано)';
-                  return String(p.value);
-                })()}
-              </InfoRow>
-              <InfoRow label="Размеры">
-                {sizeRows
-                  .filter((r) => String(r?.tech_size || '').trim() && String(r?.wb_size || '').trim())
-                  .map((r) => `${r.tech_size} → ${r.wb_size}`)
-                  .join('; ') || '—'}
-              </InfoRow>
             </div>
           </div>
         )}

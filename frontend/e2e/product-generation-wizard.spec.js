@@ -1,5 +1,5 @@
 /**
- * E2E (опционально): мастер полной генерации → после «Создать черновик» в таблице «В процессе».
+ * E2E (опционально): мастер полной генерации → сначала запуск фото, затем создание товара.
  * Требует E2E_EMAIL / E2E_PASSWORD и аккаунт с is_admin; сборка без VITE_PRODUCT_GEN_UI_STUB=1.
  */
 import { test, expect } from '@playwright/test';
@@ -31,7 +31,7 @@ test.describe('Product generation wizard (admin)', () => {
     test.skip(!email || !password, 'Укажите E2E_EMAIL и E2E_PASSWORD');
   });
 
-  test('мастер: создать → в списке статус «В процессе»', async ({ page }) => {
+  test('мастер: запуск фото → в списке статус «В процессе»', async ({ page }) => {
     await loginIfNeeded(page);
     await page.goto('/ai-module');
 
@@ -56,40 +56,18 @@ test.describe('Product generation wizard (admin)', () => {
 
     await masterBtn.click();
 
-    const dlg = page.locator('[role="dialog"]').filter({ hasText: 'Шаг 1 из 3' });
+    const dlg = page.locator('[role="dialog"]').filter({ hasText: 'Шаг 1 из 2' });
     await expect(dlg).toBeVisible({ timeout: 15_000 });
 
     await dlg.locator('input[type="file"][accept="image/*"]').setInputFiles(FIXTURE_PNG);
     await dlg.getByPlaceholder('Опишите товар, материал, особенности').fill(
       'E2E: тестовое описание товара для полной генерации.',
     );
-    await dlg.getByRole('button', { name: 'Далее' }).click();
-
-    await expect(dlg.getByText('Шаг 2 из 3')).toBeVisible();
-
-    const см = dlg.locator('input[placeholder="см"]');
-    await см.nth(0).fill('10');
-    await см.nth(1).fill('10');
-    await см.nth(2).fill('10');
-
-    await dlg.getByText('Вес, кг', { exact: true }).locator('..').locator('input').fill('0.5');
-    await dlg.getByPlaceholder('например 1999.00').fill('1999');
-    await dlg.getByText('Артикул', { exact: true }).locator('..').locator('input').fill(`E2E-PG-${Date.now()}`);
-    await dlg.getByText('Наименование', { exact: true }).locator('..').locator('input').fill('E2E PG товар');
-    await dlg.getByText('Бренд', { exact: true }).locator('..').locator('input').fill('E2E Brand');
-
-    await dlg.locator('input[placeholder="например M"]').fill('M');
-    await dlg.locator('input[placeholder="например 48"]').fill('48');
-
-    await dlg.getByRole('button', { name: 'Далее' }).click();
-    await expect(dlg.getByText('Шаг 3 из 3')).toBeVisible();
-
-    await dlg.getByRole('button', { name: 'Создать черновик' }).click();
+    await dlg.getByRole('button', { name: 'Запустить генерацию фото' }).click();
 
     const startRes = await startPromise;
     expect(startRes.status()).toBe(200);
-
-    await expect(dlg.getByText('Шаг 3 из 3')).not.toBeVisible({ timeout: 30_000 });
+    await expect(dlg.getByText('Шаг 2 из 2')).toBeVisible({ timeout: 20_000 });
 
     const statusCell = page.locator('table.custom-table').getByText('В процессе').first();
     await expect(statusCell).toBeVisible({ timeout: 30_000 });
