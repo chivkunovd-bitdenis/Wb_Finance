@@ -91,10 +91,11 @@ function parseOptionalWbSubjectId(raw) {
 }
 
 /** PG-2.1 (updated): сначала запуск каскадной генерации фото, затем отдельное создание товара. */
-function ProductGenerationWizardModal({ open, onClose, onCreated }) {
+function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId }) {
   const [stage, setStage] = useState('prepare');
   const [jobId, setJobId] = useState('');
   const [jobStatus, setJobStatus] = useState('');
+  const [remoteImageRunStatus, setRemoteImageRunStatus] = useState('');
   const [referenceFiles, setReferenceFiles] = useState([]);
   const [descriptionUser, setDescriptionUser] = useState('');
   const [dimensionsLength, setDimensionsLength] = useState('');
@@ -134,13 +135,59 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
     setInfoMessage('');
     setSubmitting(false);
     setDownloadingPhotos(false);
+    setRemoteImageRunStatus('');
   }, []);
 
   useEffect(() => {
     if (!open) return undefined;
+    const rid = String(resumeJobId || '').trim();
+    if (!rid) {
+      resetForm();
+      return undefined;
+    }
+    let cancelled = false;
     resetForm();
-    return undefined;
-  }, [open, resetForm]);
+    setStage('afterPhotos');
+    setJobId(rid);
+    setSubmitting(true);
+    setSubmitError('');
+    setInfoMessage('');
+    (async () => {
+      try {
+        const job = await api.getProductGenerationJob(rid);
+        if (cancelled) return;
+        const st = String(job?.status || '');
+        const remote = String(job?.image_pipeline?.remote_status || '');
+        setJobStatus(st);
+        setDescriptionUser(String(job?.description_user || ''));
+        setRemoteImageRunStatus(remote || '—');
+        if (remote === 'failed' || remote === 'error' || st === 'error') {
+          setSubmitError(
+            'Каскад генерации фото завершился с ошибкой. Проверьте ключ OpenAI (`AI_API_KEY` / `WIP_OPENAI_API_KEY`), логи контейнера wb_image_pipeline_worker и API WIP.',
+          );
+          setInfoMessage('');
+        } else if (!job?.pipeline_run_id && st === 'draft') {
+          setSubmitError('');
+          setInfoMessage(
+            'Черновик: удалённый run ещё не создан. Запустите шаг 1 в «Мастер: новая генерация» или POST /start для этой задачи в /docs.',
+          );
+        } else {
+          setSubmitError('');
+          setInfoMessage('Задача открыта из списка. Нажмите «Проверить готовность», чтобы обновить статус.');
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setSubmitError(e?.message || 'Не удалось загрузить задачу');
+          setRemoteImageRunStatus('—');
+        }
+      } finally {
+        if (!cancelled) setSubmitting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, resumeJobId, resetForm]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -266,6 +313,8 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
       const started = await api.startProductGenerationJob(jid);
       setJobId(jid);
       setJobStatus(String(started?.status || 'in_progress'));
+      const rim = String(started?.image_pipeline?.remote_status || '');
+      setRemoteImageRunStatus(rim || '…');
       setStage('afterPhotos');
       setInfoMessage('Генерация фото запущена. Можно закрыть форму и вернуться позже.');
       onCreated?.();
@@ -285,8 +334,15 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
       const current = await api.getProductGenerationJob(jid);
       const st = String(current?.status || '');
       setJobStatus(st);
+      const rim = String(current?.image_pipeline?.remote_status || '');
+      setRemoteImageRunStatus(rim || (current?.pipeline_run_id ? '…' : '—'));
       if (st === 'ready_to_publish' || st === 'published') {
         setInfoMessage('Фото готовы. Теперь можно открыть форму «Создать товар».');
+      } else if (rim === 'failed' || rim === 'error' || st === 'error') {
+        setInfoMessage('');
+        setSubmitError(
+          'Каскад генерации фото завершился с ошибкой. Проверьте ключи OpenAI и логи wb_image_pipeline_worker.',
+        );
       } else {
         setInfoMessage('Фото ещё генерируются. Можно закрыть форму и зайти позже.');
       }
@@ -537,6 +593,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated }) {
             <div style={{ ...softCardStyle(), padding: 12, display: 'grid', gap: 8, fontSize: 13 }}>
               <InfoRow label="ID задачи">{jobId || '—'}</InfoRow>
               <InfoRow label="Статус">{productGenerationStatusBadge(jobStatus || 'in_progress')}</InfoRow>
+              <InfoRow label="Image run (WIP)">{remoteImageRunStatus || '—'}</InfoRow>
               <InfoRow label="Референсы">{referenceFiles.length ? `${referenceFiles.length} файл(ов)` : 'Не выбраны'}</InfoRow>
               <InfoRow label="Текст">{String(descriptionUser || '').trim() || '—'}</InfoRow>
             </div>
@@ -755,6 +812,14 @@ function productGenerationStatusBadge(status) {
   );
 }
 
+/** В таблице: если WIP-пайплайн уже failed, не показываем «В процессе» по полю job.status (оно не синкается автоматически). */
+function effectiveProductGenerationListStatus(row) {
+  const st = String(row?.status || '');
+  const rs = String(row?.image_pipeline?.remote_status || '').toLowerCase();
+  if (st === 'in_progress' && (rs === 'failed' || rs === 'error')) return 'error';
+  return st;
+}
+
 function ProductGenerationAdminCard() {
   const [meChecked, setMeChecked] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -763,6 +828,7 @@ function ProductGenerationAdminCard() {
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardResumeJobId, setWizardResumeJobId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -851,12 +917,24 @@ function ProductGenerationAdminCard() {
     <div style={{ ...softCardStyle(), padding: 14, display: 'grid', gap: 10 }}>
       <ProductGenerationWizardModal
         open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
+        resumeJobId={wizardResumeJobId}
+        onClose={() => {
+          setWizardOpen(false);
+          setWizardResumeJobId(null);
+        }}
         onCreated={load}
       />
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
-        <button type="button" className="btn btn-primary btn-sm" onClick={() => setWizardOpen(true)} disabled={loading}>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={() => {
+            setWizardResumeJobId(null);
+            setWizardOpen(true);
+          }}
+          disabled={loading}
+        >
           Мастер: новая генерация
         </button>
         <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCreateDraft} disabled={creating || loading}>
@@ -870,7 +948,7 @@ function ProductGenerationAdminCard() {
         Мастер: референсы на диск API, затем POST /start. Если заданы{' '}
         <code style={{ fontSize: 12 }}>PRODUCT_GEN_IMAGE_PIPELINE_*</code>
         {' '}на бэке — создаётся run в wb_image_pipeline_service; иначе локальный{' '}
-        <code style={{ fontSize: 12 }}>local-*</code> и Celery-заглушка. Таблица раз в 4 с опрашивает статус image-run.
+        <code style={{ fontSize: 12 }}>local-*</code> и Celery-заглушка. Таблица раз в 4 с опрашивает статус image-run. Строку можно снова открыть кнопкой «Открыть».
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (
@@ -887,12 +965,15 @@ function ProductGenerationAdminCard() {
                 <th>Название</th>
                 <th>Артикул</th>
                 <th>Создана</th>
+                <th style={{ width: 1 }}>Действия</th>
               </tr>
             </thead>
             <tbody>
               {items.map((row) => (
                 <tr key={String(row?.id)}>
-                  <td style={{ whiteSpace: 'nowrap' }}>{productGenerationStatusBadge(row?.status)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {productGenerationStatusBadge(effectiveProductGenerationListStatus(row))}
+                  </td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}>
                     {row?.image_pipeline?.remote_status
                       ? String(row.image_pipeline.remote_status)
@@ -906,6 +987,21 @@ function ProductGenerationAdminCard() {
                   <td>{row?.vendor_code || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-tertiary)' }}>
                     {row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-primary"
+                      disabled={loading}
+                      onClick={() => {
+                        const id = String(row?.id || '').trim();
+                        if (!id) return;
+                        setWizardResumeJobId(id);
+                        setWizardOpen(true);
+                      }}
+                    >
+                      Открыть
+                    </button>
                   </td>
                 </tr>
               ))}
