@@ -7,9 +7,8 @@ import logging
 import os
 from typing import Any
 
-import httpx
-
 from app.schemas.structure_main import StructureMainResult
+from app.services.wip_openai_httpx import openai_httpx_client
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,7 @@ def call_structure_main_model(*, user_prompt: str) -> StructureMainResult:
 
     Raises:
         ValueError: нет ключа API, пустой промпт, невалидный ответ.
-        httpx.HTTPError: сетевые ошибки.
+        OSError, TimeoutError: сетевые сбои при запросе к API.
     """
     key = _openai_api_key()
     if not key:
@@ -83,7 +82,7 @@ def call_structure_main_model(*, user_prompt: str) -> StructureMainResult:
     }
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    with httpx.Client(timeout=_timeout_sec()) as client:
+    with openai_httpx_client(timeout=_timeout_sec()) as client:
         r = client.post(url, json=body, headers=headers)
 
     if r.status_code != 200:

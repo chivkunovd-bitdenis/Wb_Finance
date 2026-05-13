@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Any
 
-import httpx
+from app.services.wip_openai_httpx import openai_httpx_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
 
     Raises:
         ValueError: нет ключа, пустой промпт, ошибка HTTP или формата ответа.
-        httpx.HTTPError: сетевые ошибки.
+        OSError, TimeoutError: сетевые сбои при запросе к API.
     """
     key = _openai_api_key()
     if not key:
@@ -74,7 +74,7 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
     }
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    with httpx.Client(timeout=_timeout_sec()) as client:
+    with openai_httpx_client(timeout=_timeout_sec()) as client:
         r = client.post(url, json=body, headers=headers)
 
     if r.status_code != 200:
@@ -110,7 +110,7 @@ def call_openai_image_bytes(*, prompt: str) -> tuple[bytes, str]:
 
     url_field = first.get("url")
     if isinstance(url_field, str) and url_field.strip():
-        with httpx.Client(timeout=_timeout_sec()) as client:
+        with openai_httpx_client(timeout=_timeout_sec()) as client:
             gr = client.get(url_field)
         if gr.status_code != 200:
             raise ValueError(f"OpenAI image URL fetch HTTP {gr.status_code}")

@@ -9,6 +9,39 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-37
+Дата: 2026-05-13
+Статус: fixed
+Автоматизация: да (`wb_image_pipeline_service/tests/test_wip_openai_httpx.py`)
+
+## Бизнес-описание
+В мастере полной генерации товара после запуска пайплайна отображалась ошибка вида **`[Errno 111] Connection refused`** при статусе image-run **failed**, хотя ключ OpenAI мог быть настроен.
+
+## Процесс / сценарий
+1) В `backend/.env` для обхода региона OpenAI заданы `HTTPS_PROXY` / `HTTP_PROXY` (часто на `host.docker.internal:7890`).
+2) Прокси на хосте в момент запуска **не слушает** порт.
+3) Ожидание: либо прямой выход к OpenAI без прокси, либо явная ошибка прокси.
+4) Факт: воркер WIP подхватывал системный прокси через httpx (`trust_env=True` по умолчанию) и падал на **Connection refused**.
+
+## Техническое описание
+`wb_image_pipeline_service`: `structure_main_openai`, `images_main_openai` создавали `httpx.Client(timeout=...)` без `trust_env=False`, из-за чего использовались переменные окружения прокси из общего `backend/.env`.
+
+## Root cause (почему произошло)
+- Дефолт httpx `trust_env=True` + общий `.env` с «заготовленным» под VPN прокси, который не всегда поднят.
+
+## Исправление (что сделали)
+- Модуль `wip_openai_httpx.openai_httpx_client`: `trust_env=False`; опционально явный прокси через `WIP_HTTPS_PROXY` / `WIP_HTTP_PROXY`.
+- Подключение в `structure_main_openai` и `images_main_openai`. Документация в `backend/.env.example`, `wb_image_pipeline_service/.env.example`, `КАК_ЗАПУСТИТЬ.md`.
+
+## Профилактика (как не повторить)
+- Тест на передачу `trust_env=False` и на явный `WIP_HTTPS_PROXY`.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest` (корень), `python3 -m pytest` в `wb_image_pipeline_service/`.
+- Сценарии: вызов OpenAI без прокси при «мёртвом» глобальном `HTTPS_PROXY` в env (не должен использоваться).
+
+Затронутые файлы: `wb_image_pipeline_service/app/services/wip_openai_httpx.py`, `structure_main_openai.py`, `images_main_openai.py`, `tests/test_wip_openai_httpx.py`, `backend/.env.example`, `wb_image_pipeline_service/.env.example`, `КАК_ЗАПУСТИТЬ.md`, `BUGLOG.md`
+---
 ID: BUG-36
 Дата: 2026-05-13
 Статус: fixed
