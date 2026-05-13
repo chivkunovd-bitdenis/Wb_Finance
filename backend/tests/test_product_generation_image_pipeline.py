@@ -59,3 +59,15 @@ def test_build_image_pipeline_timeline_running_images_hint() -> None:
     img = next((e for e in tl if "изображен" in e["title"].lower()), None)
     assert img is not None
     assert "OpenAI" in img["body"]
+
+
+def test_build_image_pipeline_timeline_empty_steps_adds_explanation() -> None:
+    remote = {
+        "id": "r-empty",
+        "status": "completed",
+        "updated_at": "2026-05-13T18:00:00Z",
+        "steps": [],
+    }
+    tl = build_image_pipeline_timeline(remote)
+    assert len(tl) >= 2
+    assert any("steps" in e["body"].lower() for e in tl)

@@ -141,6 +141,21 @@ def build_image_pipeline_timeline(remote: dict[str, Any]) -> list[dict[str, str]
         t_iso = su or sc or time0
         entries.append(_timeline_entry(time_iso=t_iso, level=step_lvl, title=title, body="\n".join(body_lines)))
 
+    if isinstance(steps_raw, list) and not parsed:
+        entries.append(
+            _timeline_entry(
+                time_iso=time0,
+                level="info",
+                title="Шаги в снимке WIP",
+                body=(
+                    "Массив `steps` пуст, хотя статус run уже не «черновик». "
+                    "Так бывает при старой версии wb_image_pipeline_service, сбросе БД шагов "
+                    "или если GET отдаёт укороченный JSON. На стороне монолита при этом "
+                    "всё равно виден `remote_status` и время обновления — см. блок выше."
+                ),
+            )
+        )
+
     return entries
 
 
@@ -301,6 +316,16 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
         if str(s.get("status") or "") == "failed" and s.get("error_message"):
             last_error = str(s["error_message"])[:900]
             break
+    timeline = build_image_pipeline_timeline(remote)
+    if not timeline:
+        timeline = [
+            {
+                "time": str(remote.get("updated_at") or remote.get("created_at") or ""),
+                "level": "info",
+                "title": "Хронология (заглушка)",
+                "body": "Не удалось построить timeline по снимку WIP — сообщите разработчику (инвариант нарушен).",
+            }
+        ]
     snapshot: dict[str, Any] = {
         "remote_status": remote.get("status"),
         "updated_at": remote.get("updated_at"),
@@ -308,6 +333,6 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
         "monolith_job_id": remote.get("monolith_job_id"),
         "steps": compact_steps,
         "last_error": last_error,
-        "timeline": build_image_pipeline_timeline(remote),
+        "timeline": timeline,
     }
     return out.model_copy(update={"image_pipeline": snapshot})

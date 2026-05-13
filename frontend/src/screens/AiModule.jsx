@@ -96,6 +96,44 @@ function formatPipelineIsoBrief(iso) {
   return s.replace('T', ' ').slice(0, 19);
 }
 
+/** Если в ответе API нет непустого `image_pipeline.timeline` (старый образ) — читаемый блок из снимка. */
+function buildClientFallbackImagePipelineTimeline(ip) {
+  if (!ip || typeof ip !== 'object') return [];
+  const lines = [];
+  lines.push(`Статус WIP: ${ip.remote_status != null && ip.remote_status !== '' ? String(ip.remote_status) : '—'}`);
+  if (ip.updated_at) lines.push(`Обновлено: ${String(ip.updated_at)}`);
+  if (ip.created_at) lines.push(`Создано (снимок): ${String(ip.created_at)}`);
+  if (ip.monolith_job_id) lines.push(`monolith_job_id: ${String(ip.monolith_job_id)}`);
+  if (ip.last_error) lines.push(`last_error: ${String(ip.last_error)}`);
+  const steps = Array.isArray(ip.steps) ? ip.steps : [];
+  if (steps.length) {
+    lines.push('Шаги:');
+    steps.forEach((s) => {
+      const k = s?.step_key != null ? String(s.step_key) : '?';
+      const st = s?.status != null ? String(s.status) : '?';
+      const em = s?.error_message ? ` — ${String(s.error_message)}` : '';
+      lines.push(`  • ${k} — ${st}${em}`);
+    });
+  } else {
+    lines.push(
+      'В снимке нет шагов (`steps` пуст). Run может быть уже completed, а строки шагов не попали в ответ WIP (старый сервис, другая схема БД или укороченный JSON).',
+    );
+    lines.push(
+      'Если после обновления образа API монолита поле `image_pipeline.timeline` так и не появится — проверьте версию кода и ответ GET /internal/v1/runs/{id} вручную.',
+    );
+  }
+  const t = String(ip.updated_at || ip.created_at || '').trim();
+  const rs = String(ip.remote_status || '').toLowerCase();
+  return [
+    {
+      time: t,
+      level: rs === 'failed' || rs === 'error' ? 'error' : 'info',
+      title: 'Снимок без server timeline (fallback в браузере)',
+      body: lines.join('\n'),
+    },
+  ];
+}
+
 /** PG-UI: человекочитаемый лог image-run (`image_pipeline.timeline` с бэка). */
 function ProductGenerationPipelineLogModal({ open, jobId, onClose }) {
   const [loading, setLoading] = useState(false);
@@ -128,14 +166,18 @@ function ProductGenerationPipelineLogModal({ open, jobId, onClose }) {
           setErr('');
           return;
         }
-        const tl = Array.isArray(job?.image_pipeline?.timeline) ? job.image_pipeline.timeline : [];
+        const ip = job?.image_pipeline;
+        let tl = [];
+        if (Array.isArray(ip?.timeline) && ip.timeline.length > 0) {
+          tl = ip.timeline;
+        } else if (ip) {
+          tl = buildClientFallbackImagePipelineTimeline(ip);
+        }
         setTimeline(tl);
-        if (!tl.length && !job?.image_pipeline) {
+        if (!tl.length && !ip) {
           setErr(
             'Удалённый пайплайн не настроен, run не удалённый, или GET к WIP вернул пусто. Проверьте PRODUCT_GEN_IMAGE_PIPELINE_* на api и сеть до wb_image_pipeline_api.',
           );
-        } else if (!tl.length) {
-          setErr('WIP не вернул шаги для построения хронологии (пустой `steps` или снимок без данных).');
         } else {
           setErr('');
         }
