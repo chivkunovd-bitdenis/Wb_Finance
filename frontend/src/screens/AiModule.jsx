@@ -1215,6 +1215,107 @@ function effectiveProductGenerationListStatus(row) {
   return st;
 }
 
+function ProductGenerationJobCard({ row, loading, onOpen }) {
+  const mainCount = Array.isArray(row?.image_pipeline?.generated_assets)
+    ? row.image_pipeline.generated_assets.length
+    : 0;
+  const contentCount = Array.isArray(row?.image_pipeline?.content_assets)
+    ? row.image_pipeline.content_assets.length
+    : 0;
+  const status = effectiveProductGenerationListStatus(row);
+  const remote = String(row?.image_pipeline?.remote_status || '').trim();
+  const isActive = status === 'in_progress';
+  const isFailed = status === 'error';
+  const created = row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 16) : '—';
+  const progressColor = contentCount >= 7 ? '#0f766e' : mainCount >= 4 ? 'var(--accent)' : 'var(--text-tertiary)';
+  return (
+    <button
+      type="button"
+      disabled={loading}
+      onClick={() => onOpen?.(row)}
+      style={{
+        width: '100%',
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) auto',
+        gap: 14,
+        alignItems: 'center',
+        padding: '14px 16px',
+        borderRadius: 16,
+        border: isActive
+          ? '1px solid rgba(124,58,237,0.24)'
+          : isFailed
+            ? '1px solid rgba(220,38,38,0.18)'
+            : '1px solid rgba(2,6,23,0.08)',
+        background: isActive
+          ? 'linear-gradient(180deg, rgba(240,239,254,0.92), #fff)'
+          : '#fff',
+        textAlign: 'left',
+        cursor: loading ? 'default' : 'pointer',
+        boxShadow: '0 10px 28px rgba(15,23,42,0.04)',
+      }}
+    >
+      <div style={{ minWidth: 0, display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {productGenerationStatusBadge(status)}
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 12, fontWeight: 700 }}>
+            {created}
+          </span>
+          {remote ? (
+            <span
+              style={{
+                padding: '3px 8px',
+                borderRadius: 999,
+                background: 'rgba(2,6,23,0.04)',
+                color: 'var(--text-tertiary)',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              {remote}
+            </span>
+          ) : null}
+        </div>
+        <div style={{ display: 'grid', gap: 4 }}>
+          <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 900 }}>
+            Генерация товара
+          </div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.45 }}>
+            Откройте карточку, чтобы посмотреть фото, выбрать вариант и запустить контент.
+          </div>
+        </div>
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          justifyContent: 'flex-end',
+          minWidth: 150,
+        }}
+      >
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ color: progressColor, fontSize: 18, fontWeight: 950, lineHeight: 1 }}>
+            {mainCount}/4
+          </div>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 11, fontWeight: 800, marginTop: 4 }}>
+            фото
+          </div>
+        </div>
+        <div style={{ width: 1, height: 34, background: 'rgba(2,6,23,0.08)' }} />
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ color: contentCount >= 7 ? '#0f766e' : 'var(--text-tertiary)', fontSize: 18, fontWeight: 950, lineHeight: 1 }}>
+            {contentCount}/7
+          </div>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 11, fontWeight: 800, marginTop: 4 }}>
+            контент
+          </div>
+        </div>
+        <span style={{ color: 'var(--accent)', fontSize: 24, lineHeight: 1 }}>›</span>
+      </div>
+    </button>
+  );
+}
+
 function ProductGenerationAdminCard() {
   const [meChecked, setMeChecked] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1323,99 +1424,53 @@ function ProductGenerationAdminCard() {
         onCreated={load}
         onOpenPipelineLog={openPipelineLog}
       />
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontWeight: 900, fontSize: 16 }}>Полная генерация товара</div>
           <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginTop: 2 }}>
             4 фото → выбор одного → 7 фото для карточки WB
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          onClick={() => {
-            setWizardResumeJobId(null);
-            setWizardOpen(true);
-          }}
-          disabled={loading}
-        >
-          Новая генерация
-        </button>
-        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={load} disabled={loading}>
-          {loading ? 'Обновление…' : 'Обновить'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              setWizardResumeJobId(null);
+              setWizardOpen(true);
+            }}
+            disabled={loading}
+          >
+            Новая генерация
+          </button>
+          <button type="button" className="btn btn-outline-secondary btn-sm" onClick={load} disabled={loading}>
+            {loading ? 'Обновляю…' : 'Обновить'}
+          </button>
         </div>
       </div>
       <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-        Строка открывается кликом. Внутри задачи видны фото, лог пайплайна и действие генерации контента.
+        Задача открывается кликом. Лог, выбор фото и генерация контента находятся внутри карточки задачи.
       </div>
       {error && <div className="alert alert-danger" style={{ margin: 0 }}>{error}</div>}
       {loading && items.length === 0 ? (
         <div style={{ color: 'var(--text-tertiary)' }}>Загрузка…</div>
       ) : items.length === 0 ? (
-        <div style={{ color: 'var(--text-tertiary)' }}>Пока нет задач. Нажмите «Создать черновик», чтобы проверить API.</div>
+        <div style={{ color: 'var(--text-tertiary)' }}>Пока нет задач. Нажмите «Новая генерация».</div>
       ) : (
-        <div className="table-wrapper" style={{ marginTop: 0, height: 'auto', maxHeight: 520 }}>
-          <table className="custom-table">
-            <thead>
-              <tr>
-                <th>Статус</th>
-                <th>Image run</th>
-                <th>Фото</th>
-                <th>Создана</th>
-                <th style={{ width: 1 }}>Лог</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((row) => (
-                <tr
-                  key={String(row?.id)}
-                  onClick={() => {
-                    const id = String(row?.id || '').trim();
-                    if (!id || loading) return;
-                    setWizardResumeJobId(id);
-                    setWizardOpen(true);
-                  }}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {productGenerationStatusBadge(effectiveProductGenerationListStatus(row))}
-                  </td>
-                  <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {row?.image_pipeline?.remote_status
-                      ? String(row.image_pipeline.remote_status)
-                      : row?.pipeline_run_id && String(row.pipeline_run_id).startsWith('local-')
-                        ? 'локально'
-                        : row?.pipeline_run_id
-                          ? '…'
-                          : '—'}
-                  </td>
-                  <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {(Array.isArray(row?.image_pipeline?.generated_assets) ? row.image_pipeline.generated_assets.length : 0)}
-                    {' / '}
-                    {(Array.isArray(row?.image_pipeline?.content_assets) ? row.image_pipeline.content_assets.length : 0)}
-                  </td>
-                  <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-tertiary)' }}>
-                    {row?.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '—'}
-                  </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-secondary"
-                      disabled={loading}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openPipelineLog(row?.id);
-                      }}
-                    >
-                      Лог
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ display: 'grid', gap: 10 }}>
+          {items.map((row) => (
+            <ProductGenerationJobCard
+              key={String(row?.id)}
+              row={row}
+              loading={loading}
+              onOpen={(selectedRow) => {
+                const id = String(selectedRow?.id || '').trim();
+                if (!id) return;
+                setWizardResumeJobId(id);
+                setWizardOpen(true);
+              }}
+            />
+          ))}
         </div>
       )}
     </div>
