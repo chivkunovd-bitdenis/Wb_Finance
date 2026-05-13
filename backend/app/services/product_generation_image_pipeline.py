@@ -159,16 +159,25 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
     if isinstance(steps, list):
         for s in steps:
             if isinstance(s, dict):
+                err = s.get("error_message")
+                err_s = str(err).strip()[:2000] if err is not None else None
                 compact_steps.append(
                     {
                         "step_key": s.get("step_key"),
                         "status": s.get("status"),
                         "ordinal": s.get("ordinal"),
+                        "error_message": err_s or None,
                     }
                 )
+    last_error: str | None = None
+    for s in compact_steps:
+        if str(s.get("status") or "") == "failed" and s.get("error_message"):
+            last_error = str(s["error_message"])[:900]
+            break
     snapshot: dict[str, Any] = {
         "remote_status": remote.get("status"),
         "updated_at": remote.get("updated_at"),
         "steps": compact_steps,
+        "last_error": last_error,
     }
     return out.model_copy(update={"image_pipeline": snapshot})

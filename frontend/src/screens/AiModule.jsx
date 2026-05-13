@@ -158,12 +158,15 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId })
         if (cancelled) return;
         const st = String(job?.status || '');
         const remote = String(job?.image_pipeline?.remote_status || '');
+        const lastErr = String(job?.image_pipeline?.last_error || '').trim();
         setJobStatus(st);
         setDescriptionUser(String(job?.description_user || ''));
         setRemoteImageRunStatus(remote || '—');
         if (remote === 'failed' || remote === 'error' || st === 'error') {
           setSubmitError(
-            'Каскад генерации фото завершился с ошибкой. Проверьте ключ OpenAI (`AI_API_KEY` / `WIP_OPENAI_API_KEY`), логи контейнера wb_image_pipeline_worker и API WIP.',
+            lastErr
+              ? `Ошибка пайплайна: ${lastErr}`
+              : 'Каскад генерации фото завершился с ошибкой. Проверьте ключ OpenAI (`AI_API_KEY` / `WIP_OPENAI_API_KEY`), логи контейнера wb_image_pipeline_worker и API WIP.',
           );
           setInfoMessage('');
         } else if (!job?.pipeline_run_id && st === 'draft') {
@@ -336,12 +339,15 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId })
       setJobStatus(st);
       const rim = String(current?.image_pipeline?.remote_status || '');
       setRemoteImageRunStatus(rim || (current?.pipeline_run_id ? '…' : '—'));
+      const lastErr = String(current?.image_pipeline?.last_error || '').trim();
       if (st === 'ready_to_publish' || st === 'published') {
         setInfoMessage('Фото готовы. Теперь можно открыть форму «Создать товар».');
       } else if (rim === 'failed' || rim === 'error' || st === 'error') {
         setInfoMessage('');
         setSubmitError(
-          'Каскад генерации фото завершился с ошибкой. Проверьте ключи OpenAI и логи wb_image_pipeline_worker.',
+          lastErr
+            ? `Ошибка пайплайна: ${lastErr}`
+            : 'Каскад генерации фото завершился с ошибкой. Проверьте ключи OpenAI и логи wb_image_pipeline_worker.',
         );
       } else {
         setInfoMessage('Фото ещё генерируются. Можно закрыть форму и зайти позже.');

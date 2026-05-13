@@ -466,3 +466,54 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
     assert row.get("image_pipeline") is not None
     assert row["image_pipeline"]["remote_status"] == "completed"
     assert len(row["image_pipeline"]["steps"]) == 1
+    assert row["image_pipeline"]["steps"][0].get("error_message") is None
+    assert row["image_pipeline"].get("last_error") is None
+
+
+def test_product_generation_list_image_pipeline_last_error_on_failed_step(
+    client_admin: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    run_uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+    def fake_post(url: str, **_kwargs: object) -> httpx.Response:
+        assert url == "http://wip.test/internal/v1/runs"
+        return httpx.Response(201, json={"id": run_uuid, "status": "created"})
+
+    def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+        assert url == f"http://wip.test/internal/v1/runs/{run_uuid}"
+        return httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "updated_at": "2026-05-13T12:00:00Z",
+                "steps": [
+                    {
+                        "step_key": "structure_main",
+                        "status": "failed",
+                        "ordinal": 0,
+                        "error_message": "OpenAI HTTP 403",
+                    },
+                ],
+            },
+        )
+
+    r = client_admin.post("/ai/product-generation/jobs", json={"title": "Err"})
+    job_id = r.json()["id"]
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    client_admin.post(
+        f"/ai/product-generation/jobs/{job_id}/references",
+        files=[("files", ("a.png", png, "image/png"))],
+    )
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        assert client_admin.post(f"/ai/product-generation/jobs/{job_id}/start").status_code == 200
+
+    with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+        rlist = client_admin.get("/ai/product-generation/jobs")
+    assert rlist.status_code == 200
+    row = next(x for x in rlist.json()["items"] if x["id"] == job_id)
+    assert row["image_pipeline"]["remote_status"] == "failed"
+    assert row["image_pipeline"]["last_error"] == "OpenAI HTTP 403"
+    assert row["image_pipeline"]["steps"][0]["error_message"] == "OpenAI HTTP 403"
