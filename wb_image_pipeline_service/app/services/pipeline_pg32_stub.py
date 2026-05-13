@@ -1,6 +1,6 @@
 """
-PG-3.2 / PG-B.2: run_created готовит run и два шага (`structure_main`, `pg32_stub`);
-затем Celery вызывает OpenAI structure и финализирует stub.
+PG-3.2 / PG-B.3: run_created готовит run и три шага (`structure_main`, `images_main`, `pg32_stub`);
+затем Celery: OpenAI structure → 4× image → финализация stub.
 
 PG-B.0: первый шаг цепочки опирается только на `wip_runs.payload_json` от монолита
 (`reference_asset_ids`, `description_user`, …); поля карточки WB не требуются.
@@ -21,9 +21,11 @@ from app.services.image_run_prompt import bake_prompt_fields
 logger = logging.getLogger(__name__)
 
 STRUCTURE_STEP_KEY = "structure_main"
+IMAGES_MAIN_STEP_KEY = "images_main"
 STUB_STEP_KEY = "pg32_stub"
 STRUCTURE_STEP_ORDINAL = 0
-STUB_STEP_ORDINAL = 1
+IMAGES_MAIN_STEP_ORDINAL = 1
+STUB_STEP_ORDINAL = 2
 
 
 def _maybe_merge_baked_prompt(db: Session, run: PipelineRun) -> None:
@@ -47,7 +49,8 @@ def _session() -> Session:
 
 def apply_run_created(run_id: str) -> dict[str, Any]:
     """
-    Переводит run из `created` в `running`, создаёт шаги `structure_main` (0) и `pg32_stub` (1), bake промпта.
+    Переводит run из `created` в `running`, создаёт шаги ``structure_main`` (0), ``images_main`` (1),
+    ``pg32_stub`` (2), bake промпта.
 
     Идемпотентно при повторном вызове для того же run.
     """
@@ -73,6 +76,13 @@ def apply_run_created(run_id: str) -> dict[str, Any]:
             )
         ).one_or_none()
 
+        images_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == IMAGES_MAIN_STEP_KEY,
+            )
+        ).one_or_none()
+
         if run.status == "completed" and stub_step is not None and stub_step.status == "done":
             logger.info(
                 "wip_pg32: run_created idempotent (already completed) run_id=%s step_id=%s",
@@ -86,25 +96,93 @@ def apply_run_created(run_id: str) -> dict[str, Any]:
             logger.error(msg)
             raise RuntimeError(msg)
 
+        # Legacy: только pg32_stub — добавляем structure_main + images_main, stub уходит в конец.
         if stub_step is not None and structure_step is None:
-            # Legacy: только stub с ordinal 0 — вставляем structure_main перед ним.
-            if stub_step.ordinal == STRUCTURE_STEP_ORDINAL:
-                stub_step.ordinal = STUB_STEP_ORDINAL
+            stub_step.ordinal = STUB_STEP_ORDINAL
             structure_step = PipelineStep(
                 run_id=run.id,
                 step_key=STRUCTURE_STEP_KEY,
                 ordinal=STRUCTURE_STEP_ORDINAL,
                 status="pending",
             )
+            images_step = PipelineStep(
+                run_id=run.id,
+                step_key=IMAGES_MAIN_STEP_KEY,
+                ordinal=IMAGES_MAIN_STEP_ORDINAL,
+                status="pending",
+            )
             db.add(structure_step)
+            db.add(images_step)
             db.flush()
-            logger.info("wip_pg32: migrated legacy run_id=%s added structure_main", run.id)
+            logger.info(
+                "wip_pg32: migrated stub-only run_id=%s structure+images_main added",
+                run.id,
+            )
 
-        if stub_step is None and structure_step is None:
+        images_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == IMAGES_MAIN_STEP_KEY,
+            )
+        ).one_or_none()
+        structure_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == STRUCTURE_STEP_KEY,
+            )
+        ).one_or_none()
+        stub_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == STUB_STEP_KEY,
+            )
+        ).one_or_none()
+
+        # Legacy PG-B.2: structure + stub без images_main — освобождаем ordinal 1 под images.
+        if structure_step is not None and stub_step is not None and images_step is None:
+            stub_step.ordinal = STUB_STEP_ORDINAL
+            db.add(stub_step)
+            db.flush()
+            images_step = PipelineStep(
+                run_id=run.id,
+                step_key=IMAGES_MAIN_STEP_KEY,
+                ordinal=IMAGES_MAIN_STEP_ORDINAL,
+                status="pending",
+            )
+            db.add(images_step)
+            db.flush()
+            logger.info("wip_pg32: migrated structure+stub run_id=%s added images_main", run.id)
+
+        images_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == IMAGES_MAIN_STEP_KEY,
+            )
+        ).one_or_none()
+        structure_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == STRUCTURE_STEP_KEY,
+            )
+        ).one_or_none()
+        stub_step = db.scalars(
+            select(PipelineStep).where(
+                PipelineStep.run_id == run_id,
+                PipelineStep.step_key == STUB_STEP_KEY,
+            )
+        ).one_or_none()
+
+        if stub_step is None and structure_step is None and images_step is None:
             structure_step = PipelineStep(
                 run_id=run.id,
                 step_key=STRUCTURE_STEP_KEY,
                 ordinal=STRUCTURE_STEP_ORDINAL,
+                status="pending",
+            )
+            images_step = PipelineStep(
+                run_id=run.id,
+                step_key=IMAGES_MAIN_STEP_KEY,
+                ordinal=IMAGES_MAIN_STEP_ORDINAL,
                 status="pending",
             )
             stub_step = PipelineStep(
@@ -114,15 +192,17 @@ def apply_run_created(run_id: str) -> dict[str, Any]:
                 status="pending",
             )
             db.add(structure_step)
+            db.add(images_step)
             db.add(stub_step)
             db.flush()
             logger.info(
-                "wip_pg32: created steps run_id=%s structure_id=%s stub_id=%s",
+                "wip_pg32: created steps run_id=%s structure_id=%s images_id=%s stub_id=%s",
                 run.id,
                 structure_step.id,
+                images_step.id,
                 stub_step.id,
             )
-        elif stub_step is None or structure_step is None:
+        elif stub_step is None or structure_step is None or images_step is None:
             msg = f"wip_pg32: inconsistent steps run_id={run_id}"
             logger.error(msg)
             raise RuntimeError(msg)

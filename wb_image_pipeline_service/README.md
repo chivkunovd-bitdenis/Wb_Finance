@@ -29,7 +29,7 @@
 
 **Микросервис:**
 
-1. Ставит в очередь цепочку: структуризация (вызов OpenAI в воркере) → 4 главных изображения → *пауза до команды монолита с выбранным main* → 8 серийных изображений.
+1. Ставит в очередь цепочку: структуризация (OpenAI) → **4 главных изображения** (`images_main`, PG-B.3) → *пауза до команды монолита с выбранным main* → 8 серийных изображений.
 2. Хранит промпты и результаты в своей БД (логи/аудит).
 3. По TTL **14 дней** удаляет файлы с volume (задача cron/Celery beat внутри сервиса; дата успеха публикации приходит с монолита или по событию `run_archived`).
 
@@ -50,6 +50,8 @@
 
 **PG-B.2:** ключ — `WIP_OPENAI_API_KEY` или тот же **`AI_API_KEY`**, что в монолите; база URL — `WIP_OPENAI_API_BASE_URL` или **`AI_API_BASE_URL`** (см. `backend/.env.example`). Также `WIP_OPENAI_MODEL_STRUCTURE`, `WIP_OPENAI_TIMEOUT_SEC`. При ошибке шаг `failed`, текст в `error_message`.
 
+**PG-B.3:** после `structure_main` воркер **`images_main`** вызывает OpenAI **`POST /v1/images/generations`** (`WIP_OPENAI_IMAGE_MODEL`, по умолчанию `gpt-image-1`) **четыре раза** по строкам `main_prompts`; файлы пишутся под **`WIP_MEDIA_ROOT`**, метаданные — строки в **`wip_assets`** (`kind=main_frame`, `storage_rel_path` вида `{run_id}/main_frame_{0..3}.png`). Идемпотентность: повтор при `done` + 4 ассета не дергает API; частичный набор ассетов очищается и перегенерируется.
+
 ## Вынос в новый проект
 
 1. Скопировать всю папку `wb_image_pipeline_service/` в корень нового репо.
@@ -60,7 +62,7 @@
 ## Статус
 
 - **PG-3.1:** своя БД сервиса — таблицы `wip_runs`, `wip_steps`, `wip_assets` (SQLAlchemy + Alembic `a1b2c3d4e501`). При старте контейнера выполняется `alembic upgrade head`. `docker-compose.example` монтирует **`wip_data:/data`** (общий SQLite и каталог `media` для API и worker).
-- **PG-3.2:** Celery-цепочка **`wb_image_pipeline.run_created` → `wb_image_pipeline.structure_main` → `wb_image_pipeline.step_done`** (`celery_app/pipeline_tasks.py`, `enqueue_pg32_stub_chain`). Шаг **`structure_main`** (PG-B.2): OpenAI `chat/completions` с `response_format: json_object`, модель `WIP_OPENAI_MODEL_STRUCTURE`, результат в `wip_steps.meta_json` (`seo_title`, `seo_description`, `main_prompts` ×4). Шаг **`pg32_stub`** по-прежнему финализирует run для dev. Воркер — `celery -A celery_app.celery_app worker`; Redis — брокер. Идемпотентность по `wip_runs` / `wip_steps`.
+- **PG-3.2:** Celery-цепочка **`wb_image_pipeline.run_created` → `wb_image_pipeline.structure_main` → `wb_image_pipeline.images_main` → `wb_image_pipeline.step_done`** (`celery_app/pipeline_tasks.py`, `enqueue_pg32_stub_chain`). Шаг **`structure_main`** (PG-B.2): OpenAI `chat/completions` с `response_format: json_object`, модель `WIP_OPENAI_MODEL_STRUCTURE`, результат в `wip_steps.meta_json` (`seo_title`, `seo_description`, `main_prompts` ×4). Шаг **`images_main`** (PG-B.3): см. выше. Шаг **`pg32_stub`** по-прежнему финализирует run для dev. Воркер — `celery -A celery_app.celery_app worker`; Redis — брокер. Идемпотентность по `wip_runs` / `wip_steps` / `wip_assets`.
 - **PG-3.3:** HTTP **`POST /internal/v1/runs`**, **`GET /internal/v1/runs/{id}`** — реализация в `app/api/internal_runs.py`, логика в `app/services/internal_runs_service.py`, схемы в `app/schemas/internal_runs.py`. Аутентификация: `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`. После успешного `POST` ставится очередь PG-3.2. Подробный контракт — ниже.
 - **PG-3.4:** связка с монолитом wb-finance — при старте задачи (`POST /ai/product-generation/jobs/{id}/start`) монолит может вызвать этот сервис (см. **`PRODUCT_GEN_IMAGE_PIPELINE_*`** в `backend/.env.example`); `pipeline_run_id` в монолите = UUID run; поллинг статуса — через `GET` jobs в монолите (он проксирует `GET /internal/v1/runs/{id}` в поле `image_pipeline`).
 - Дальше по плану wb-finance: **PG-3.5** (mTLS / прод-HMAC, см. `docs/mtls.md`).
@@ -71,7 +73,7 @@
 
 | Метод | Путь | Назначение |
 |-------|------|------------|
-| `POST` | `/internal/v1/runs` | Создать run, сохранить связь с монолитом и метаданные, поставить Celery-цепочку PG-3.2 |
+| `POST` | `/internal/v1/runs` | Создать run, сохранить связь с монолитом и метаданные, поставить Celery-цепочку PG-3.2 (включая PG-B.3) |
 | `GET` | `/internal/v1/runs/{id}` | Статус run, `payload`, шаги и ассеты из БД сервиса |
 
 **Заголовок:** `Authorization: Bearer <WIP_INTERNAL_HMAC_SECRET>`

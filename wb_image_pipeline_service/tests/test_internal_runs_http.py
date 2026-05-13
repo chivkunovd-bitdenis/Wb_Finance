@@ -43,6 +43,7 @@ def http_runs_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("WIP_DATABASE_URL", db_url)
     monkeypatch.setenv("WIP_REDIS_URL", "redis://127.0.0.1:6379/14")
     monkeypatch.setenv("WIP_INTERNAL_HMAC_SECRET", "test-internal-secret")
+    monkeypatch.setenv("WIP_MEDIA_ROOT", str(tmp_path / "wip_media"))
     sys.path.insert(0, str(_SVC_ROOT))
 
     _run_alembic_upgrade(db_url)
@@ -125,6 +126,7 @@ def test_internal_runs_unauthorized(http_runs_env: str) -> None:
 
 def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_env: str) -> None:
     """POST мокает постановку в брокер; затем тот же chain, что и enqueue_pg32_stub_chain, в eager-режиме."""
+    import base64
     import importlib
 
     import celery_app.celery_app as cap
@@ -134,13 +136,17 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     importlib.reload(pt)
     from celery import chain
     from celery_app.celery_app import celery_app
-    from celery_app.pipeline_tasks import run_created, step_done, structure_main
+    from celery_app.pipeline_tasks import images_main, run_created, step_done, structure_main
 
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
 
     import app.main as mm
     from app.schemas.structure_main import StructureMainResult
+
+    mini_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
 
     fake = StructureMainResult(
         seo_title="T",
@@ -161,18 +167,30 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     assert res.status_code == 201
     run_id = res.json()["id"]
 
-    with patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
-        chain(run_created.s(run_id), structure_main.s(), step_done.s()).apply_async().get(timeout=10)
+    with patch(
+        "app.services.pipeline_structure_step.call_structure_main_model",
+        return_value=fake,
+    ), patch(
+        "app.services.pipeline_images_step.call_openai_image_bytes",
+        return_value=(mini_png, "image/png"),
+    ):
+        chain(
+            run_created.s(run_id),
+            structure_main.s(),
+            images_main.s(),
+            step_done.s(),
+        ).apply_async().get(timeout=10)
 
     got = client.get(f"/internal/v1/runs/{run_id}", headers=_auth_headers())
     assert got.status_code == 200
     body = got.json()
     assert body["status"] == "completed"
-    assert len(body["steps"]) == 2
+    assert len(body["steps"]) == 3
     keys = {s["step_key"] for s in body["steps"]}
-    assert keys == {"structure_main", "pg32_stub"}
+    assert keys == {"structure_main", "images_main", "pg32_stub"}
     for s in body["steps"]:
         assert s["status"] == "done"
+    assert len(body["assets"]) == 4
 
 
 def test_internal_runs_post_422_when_payload_missing(http_runs_env: str) -> None:
