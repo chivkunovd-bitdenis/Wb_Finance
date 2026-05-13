@@ -463,6 +463,7 @@ def test_product_generation_list_includes_image_pipeline_snapshot(
         rlist = client_admin.get("/ai/product-generation/jobs")
     assert rlist.status_code == 200
     row = next(x for x in rlist.json()["items"] if x["id"] == job_id)
+    assert row["status"] == "ready_to_publish"
     assert row.get("image_pipeline") is not None
     assert row["image_pipeline"]["remote_status"] == "completed"
     assert len(row["image_pipeline"]["steps"]) == 1
@@ -517,6 +518,7 @@ def test_product_generation_list_image_pipeline_last_error_on_failed_step(
         rlist = client_admin.get("/ai/product-generation/jobs")
     assert rlist.status_code == 200
     row = next(x for x in rlist.json()["items"] if x["id"] == job_id)
+    assert row["status"] == "error"
     assert row["image_pipeline"]["remote_status"] == "failed"
     assert row["image_pipeline"]["last_error"] == "OpenAI HTTP 403"
     assert row["image_pipeline"]["steps"][0]["error_message"] == "OpenAI HTTP 403"

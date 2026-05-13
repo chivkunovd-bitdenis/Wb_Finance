@@ -9,6 +9,39 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-38
+Дата: 2026-05-13
+Статус: fixed
+Автоматизация: да (`backend/tests/test_product_generation_api.py`)
+
+## Бизнес-описание
+После успешного завершения WIP image-run пользователь всё ещё видел задачу как **«В процессе»**, и кнопка **«Создать товар»** оставалась недоступной. Генерация фактически завершена, но пользователь не мог перейти дальше.
+
+## Процесс / сценарий
+1) Пользователь запускает полную генерацию товара с референсом и текстом.
+2) WIP выполняет `structure_main`, `images_main`, `pg32_stub`.
+3) Ожидание: при WIP `completed` задача в мастере становится **«К публикации»**, кнопка «Создать товар» доступна.
+4) Факт: монолит продолжал отдавать `status=in_progress`; UI считал задачу незавершённой.
+
+## Техническое описание
+`enrich_job_out_with_image_pipeline` добавлял `image_pipeline.remote_status`, но не мапил статус удалённого run в поле `ProductGenerationJobOut.status`. UI ориентируется именно на `status` задачи (`ready_to_publish` / `published`), а не только на `image_pipeline.remote_status`.
+
+## Root cause (почему произошло)
+- Не был реализован контракт PG-B.6: WIP `completed/failed` → статус задачи монолита для пользовательского сценария.
+
+## Исправление (что сделали)
+- Для ответа API: если задача монолита `in_progress`, то WIP `completed` отдаётся как `ready_to_publish`, WIP `failed/error` — как `error`.
+- Добавлены проверки в API-тесты списка задач.
+
+## Профилактика (как не повторить)
+- API-тесты фиксируют маппинг статусов WIP в статус задачи.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest backend/tests/test_product_generation_api.py backend/tests/test_product_generation_image_pipeline.py -q`.
+- Сценарии: локальный smoke задачи `05e0b11e...`: API вернул `status=ready_to_publish`, `remote=completed`, `last_error=None`, 3 шага `done`, `timeline_count=4`.
+
+Затронутые файлы: `backend/app/services/product_generation_image_pipeline.py`, `backend/tests/test_product_generation_api.py`, `BUGLOG.md`, `TASKLOG.md`
+---
 ID: BUG-37
 Дата: 2026-05-13
 Статус: fixed

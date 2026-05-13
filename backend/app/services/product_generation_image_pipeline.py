@@ -281,6 +281,19 @@ def _is_remote_pipeline_run_id(run_id: str | None) -> bool:
     return not str(run_id).startswith("local-")
 
 
+def _status_from_remote_pipeline(current_status: str | None, remote_status: Any) -> str | None:
+    """Маппинг статуса WIP в статус задачи PG для UI/контракта мастера."""
+    current = str(current_status or "")
+    remote = str(remote_status or "").strip().lower()
+    if current != "in_progress":
+        return None
+    if remote == "completed":
+        return "ready_to_publish"
+    if remote in {"failed", "error"}:
+        return "error"
+    return None
+
+
 def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductGenerationJobOut:
     """Добавляет снимок статуса image-run для поллинга UI (только при включённом клиенте)."""
     if not is_image_pipeline_enabled():
@@ -335,4 +348,8 @@ def enrich_job_out_with_image_pipeline(out: ProductGenerationJobOut) -> ProductG
         "last_error": last_error,
         "timeline": timeline,
     }
-    return out.model_copy(update={"image_pipeline": snapshot})
+    update: dict[str, Any] = {"image_pipeline": snapshot}
+    mapped_status = _status_from_remote_pipeline(out.status, remote.get("status"))
+    if mapped_status is not None:
+        update["status"] = mapped_status
+    return out.model_copy(update=update)
