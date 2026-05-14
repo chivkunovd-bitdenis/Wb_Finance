@@ -9,6 +9,43 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-42
+Дата: 2026-05-14
+Статус: fixed
+Автоматизация: да (`backend/tests/test_ai_daily_analytics_beat.py`, `backend/tests/test_ai_module_api.py`)
+
+## Бизнес-описание
+AI-модуль должен ежедневно обновлять задачи и гипотезы по данным WB «Сравнение карточек», но после первого успешного запуска система не поддерживала полный цикл: не пыталась перечитать отчёт через живую сессию, не создавала понятную задачу при истечении 3-дневного доступа к отчёту и не отделяла платное переоткрытие отчёта от протухшей WB-сессии.
+
+## Процесс / сценарий
+1) Пользователь один раз выдаёт доступ к WB через отдельную браузерную сессию и SMS-код.
+2) Каждый день система должна пробовать использовать сохранённый `storage_state`, чтобы считать отчёт и создать задачи/гипотезы.
+3) Если WB-сессия протухла, пользователь должен увидеть задачу «Дать доступ к кабинету WB».
+4) Если сам отчёт сравнения истёк или WB показывает платную плашку переоткрытия, пользователь должен увидеть задачу «Обновить отчёт сравнения с конкурентами».
+5) Факт: daily beat только запускал аналитику по уже готовому актуальному отчёту и просто пропускал stale-отчёты; paid-prompt не распознавался как отдельный пользовательский сценарий.
+
+## Техническое описание
+`run_ai_daily_analytics_beat_cycle` проверял только `status=ready` и `valid_until>=today`, затем вызывал `run_daily_analytics`. Playwright-fetch существовал только за ручной задачей `competitor_report_refresh`, а `PlaywrightBlockedError`/общие ошибки не разделяли сценарии auth failure и WB paid reopen prompt.
+
+## Root cause (почему произошло)
+- Daily beat был реализован как повторный расчёт аналитики по сохранённому отчёту, а не как оркестратор ежедневного WB-считывания.
+- Контракт истечения отчёта WB (3 дня) не был превращён в задачу пользователю.
+- Не было отдельного сигнала `paid_reopen_required`, поэтому система не могла безопасно остановиться до платного действия.
+- Не хватало регрессионных тестов на queue/background сценарии: TTL expired, paid prompt, auth failure и daily fetch.
+
+## Исправление (что сделали)
+Добавлен idempotent helper задач пользователя (`wb_access_grant`, `competitor_report_refresh`). Daily beat теперь проверяет доступ WB, создаёт задачу перезахода при невалидном `storage_state`, создаёт задачу продления при expired TTL, а для готового Playwright-отчёта запускает headless fetch (daily keepalive + импорт + аналитика). Playwright получил конфигурируемый детектор paid-prompt через `WB_COMPETITOR_PAID_REOPEN_SELECTOR` / `WB_COMPETITOR_PAID_REOPEN_TEXTS` и отдельную ошибку `paid_reopen_required`, без клика по платному действию.
+
+## Профилактика (как не повторить)
+Добавлены регрессионные тесты на daily orchestration: fetch без отчёта, fetch готового Playwright-отчёта, expired TTL, paid prompt, auth failure и worker-обработку paid prompt. Для будущих WB DOM-изменений paid-prompt остаётся env-конфигурируемым.
+
+## Проверка
+- Команды: `pytest backend/tests/test_ai_daily_analytics_beat.py backend/tests/test_ai_module_api.py::test_competitor_report_paid_prompt_creates_refresh_task backend/tests/test_ai_module_api.py::test_competitor_report_playwright_failure_sets_reconnect_flag`, `ruff check .`, `mypy .`, `pytest`.
+- Сценарии: happy path daily fetch; error path auth failure -> `wb_access_grant`; error path paid/TTL -> `competitor_report_refresh`; без автооплаты WB.
+
+Затронутые файлы: `backend/app/services/ai_daily_analytics_beat_service.py`, `backend/app/services/ai_task_ensurer.py`, `backend/app/services/ai_competitor_playwright.py`, `backend/celery_app/tasks.py`, `backend/app/routers/ai_module.py`, `backend/tests/test_ai_daily_analytics_beat.py`, `backend/tests/test_ai_module_api.py`, `backend/.env.example`, `docker-compose.yml`, `BUGLOG.md`, `TASKLOG.md`
+
+---
 ID: BUG-41
 Дата: 2026-05-13
 Статус: fixed

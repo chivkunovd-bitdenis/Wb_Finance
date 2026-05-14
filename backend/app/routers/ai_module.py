@@ -79,6 +79,7 @@ from app.services.ai_wb_access_service import (
     InteractiveAuthFailedError,
     interactive_grant_wb_access,
 )
+from app.services.ai_task_ensurer import ensure_competitor_report_refresh_task, ensure_wb_access_grant_task
 from app.models.user import User
 from app.services.store_access_service import StoreContext
 from celery_app.tasks import ai_competitor_report_fetch_playwright
@@ -119,21 +120,7 @@ def ai_tasks_list(
             update_task_status(db=db, user_id=user_id, task_id=str(existing.id), status="completed")
     else:
         if existing is None:
-            row = AiTask(
-                user_id=user_id,
-                nm_id=None,
-                task_type="wb_access_grant",
-                title="Дать доступ к кабинету WB",
-                description="Нужно один раз авторизоваться, чтобы система могла получать отчёт сравнения с конкурентами.",
-                reason=None,
-                current_value=None,
-                priority=100,
-                status="new",
-                fingerprint=None,
-                dedupe_key=dedupe_key,
-            )
-            db.add(row)
-            db.commit()
+            ensure_wb_access_grant_task(db=db, user_id=user_id)
 
     # Daily task: reply to WB reviews (1 per day, only if there are pending reviews).
     # We DO NOT call WB API here (to keep /ai/tasks fast). We rely on sync endpoint/beat
@@ -807,45 +794,13 @@ def ai_competitor_report_request_refresh(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid period")
 
     user_id = str(store_ctx.store_owner.id)
-    dedupe_key = f"task:competitor_report_refresh:{period}"
-    existing = (
-        db.query(AiTask)
-        .filter(
-            AiTask.user_id == user_id,
-            AiTask.dedupe_key == dedupe_key,
-            AiTask.status.in_(["new", "in_progress"]),
-        )
-        .order_by(AiTask.created_at.desc())
-        .first()
+    row = ensure_competitor_report_refresh_task(
+        db=db,
+        user_id=user_id,
+        period=period,
+        reason="Сравнение устарело или вы запросили обновление — перед запуском нужно ваше подтверждение.",
     )
-    if existing is None:
-        row = AiTask(
-            user_id=user_id,
-            nm_id=None,
-            task_type="competitor_report_refresh",
-            title="Обновить отчёт сравнения с конкурентами",
-            description="Операция может быть платной/лимитной — требуется подтверждение",
-            reason="Сравнение устарело или вы запросили обновление — перед запуском нужно ваше подтверждение.",
-            current_value={"period": period},
-            priority=50,
-            status="new",
-            fingerprint=None,
-            dedupe_key=dedupe_key,
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return AiTaskItem.model_validate(row)
-
-    # Refresh explanation only
-    existing.current_value = {"period": period}
-    existing.title = "Обновить отчёт сравнения с конкурентами"
-    existing.description = "Операция может быть платной/лимитной — требуется подтверждение"
-    existing.reason = "Сравнение устарело или вы запросили обновление — перед запуском нужно ваше подтверждение."
-    db.add(existing)
-    db.commit()
-    db.refresh(existing)
-    return AiTaskItem.model_validate(existing)
+    return AiTaskItem.model_validate(row)
 
 
 @router.post("/analytics/run", response_model=AiDailyAnalyticsRunResponse)

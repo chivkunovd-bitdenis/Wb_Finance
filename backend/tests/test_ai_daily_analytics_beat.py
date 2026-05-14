@@ -11,6 +11,7 @@ from app.db import SessionLocal, engine
 from app.dependencies import get_current_user, get_store_context
 from app.main import app
 from app.models.ai_competitor_report import AiCompetitorComparisonReport
+from app.models.ai_task import AiTask
 from app.models.base import Base
 from app.models.user import User
 from app.services.ai_daily_analytics_beat_service import run_ai_daily_analytics_beat_cycle
@@ -64,9 +65,20 @@ def _clear_reports(user_id: str) -> None:
     db = SessionLocal()
     try:
         db.query(AiCompetitorComparisonReport).filter(AiCompetitorComparisonReport.user_id == user_id).delete()
+        db.query(AiTask).filter(AiTask.user_id == user_id).delete()
         db.commit()
     finally:
         db.close()
+
+
+def _grant_wb_access(monkeypatch: pytest.MonkeyPatch, tmp_path, user_id: str) -> None:  # noqa: ANN001
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR", str(tmp_path))
+    from app.services.ai_wb_access_service import clear_wb_access_reconnect_required, user_storage_state_path
+
+    clear_wb_access_reconnect_required(user_id=user_id)
+    p = user_storage_state_path(user_id=user_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"cookies":[],"origins":[],"pad":"' + "x" * 80 + '"}', encoding="utf-8")
 
 
 def test_ai_daily_analytics_beat_task_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,9 +90,20 @@ def test_ai_daily_analytics_beat_task_disabled(monkeypatch: pytest.MonkeyPatch) 
     assert out["enabled"] is False
 
 
-def test_ai_daily_analytics_beat_cycle_skips_without_report(beat_client: TestClient) -> None:
+def test_ai_daily_analytics_beat_cycle_fetches_when_no_report(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
     _ = beat_client
     _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
+    calls: list[tuple[str, str]] = []
+
+    def _fetch(user_id: str, period: str) -> dict:
+        calls.append((user_id, period))
+        return {"ok": True, "report_id": "r1"}
+
     db = SessionLocal()
     try:
         out = run_ai_daily_analytics_beat_cycle(
@@ -88,16 +111,23 @@ def test_ai_daily_analytics_beat_cycle_skips_without_report(beat_client: TestCli
             today=date(2026, 5, 10),
             period="week",
             limit_user_ids=[USER_BEAT],
+            fetch_report=_fetch,
         )
     finally:
         db.close()
     assert out["ok"] is True
-    assert out["processed"] == 0
-    assert out["skipped_no_report"] == 1
+    assert out["processed"] == 1
+    assert out["fetched"] == 1
+    assert calls == [(USER_BEAT, "week")]
 
 
-def test_ai_daily_analytics_beat_cycle_runs_for_ready_report(beat_client: TestClient) -> None:
+def test_ai_daily_analytics_beat_cycle_runs_for_ready_report(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
     _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
     body = {
         "report_date": "2026-05-10",
         "period": "week",
@@ -131,8 +161,10 @@ def test_ai_daily_analytics_beat_cycle_runs_for_ready_report(beat_client: TestCl
 def test_ai_daily_analytics_beat_cycle_ok_false_when_subtask_raises(
     monkeypatch: pytest.MonkeyPatch,
     beat_client: TestClient,
+    tmp_path,
 ) -> None:
     _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
     body = {
         "report_date": "2026-05-10",
         "period": "week",
@@ -167,3 +199,178 @@ def test_ai_daily_analytics_beat_cycle_ok_false_when_subtask_raises(
     assert len(out["failures"]) == 1
     assert out["failures"][0]["user_id"] == USER_BEAT
     assert "analytics failed" in out["failures"][0]["error"]
+
+
+def test_ai_daily_analytics_beat_cycle_creates_refresh_task_for_expired_report(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    _ = beat_client
+    _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
+    db = SessionLocal()
+    try:
+        db.add(
+            AiCompetitorComparisonReport(
+                user_id=USER_BEAT,
+                report_date=date(2026, 5, 10),
+                period="week",
+                source="playwright",
+                valid_until=date(2026, 5, 13),
+                status="ready",
+                cost_or_limit_spent=True,
+            )
+        )
+        db.commit()
+
+        out = run_ai_daily_analytics_beat_cycle(
+            db=db,
+            today=date(2026, 5, 14),
+            period="week",
+            limit_user_ids=[USER_BEAT],
+            fetch_report=lambda _user_id, _period: {"ok": True},
+        )
+        task = (
+            db.query(AiTask)
+            .filter(AiTask.user_id == USER_BEAT, AiTask.dedupe_key == "task:competitor_report_refresh:week")
+            .first()
+        )
+    finally:
+        db.close()
+
+    assert out["ok"] is True
+    assert out["refresh_tasks_created"] == 1
+    assert out["fetched"] == 0
+    assert task is not None
+    assert task.status == "new"
+
+
+def test_ai_daily_analytics_beat_cycle_fetches_ready_playwright_report(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    _ = beat_client
+    _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
+    calls: list[tuple[str, str]] = []
+    db = SessionLocal()
+    try:
+        db.add(
+            AiCompetitorComparisonReport(
+                user_id=USER_BEAT,
+                report_date=date(2026, 5, 14),
+                period="week",
+                source="playwright",
+                valid_until=date(2026, 5, 17),
+                status="ready",
+                cost_or_limit_spent=True,
+            )
+        )
+        db.commit()
+
+        def _fetch(user_id: str, period: str) -> dict:
+            calls.append((user_id, period))
+            return {"ok": True}
+
+        out = run_ai_daily_analytics_beat_cycle(
+            db=db,
+            today=date(2026, 5, 14),
+            period="week",
+            limit_user_ids=[USER_BEAT],
+            fetch_report=_fetch,
+        )
+    finally:
+        db.close()
+
+    assert out["ok"] is True
+    assert out["processed"] == 1
+    assert out["fetched"] == 1
+    assert calls == [(USER_BEAT, "week")]
+
+
+def test_ai_daily_analytics_beat_cycle_paid_prompt_creates_refresh_task(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    _ = beat_client
+    _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
+    db = SessionLocal()
+    try:
+        db.add(
+            AiCompetitorComparisonReport(
+                user_id=USER_BEAT,
+                report_date=date(2026, 5, 14),
+                period="week",
+                source="playwright",
+                valid_until=date(2026, 5, 17),
+                status="ready",
+                cost_or_limit_spent=True,
+            )
+        )
+        db.commit()
+        out = run_ai_daily_analytics_beat_cycle(
+            db=db,
+            today=date(2026, 5, 14),
+            period="week",
+            limit_user_ids=[USER_BEAT],
+            fetch_report=lambda _user_id, _period: {"ok": False, "error": "paid_reopen_required"},
+        )
+        task = (
+            db.query(AiTask)
+            .filter(AiTask.user_id == USER_BEAT, AiTask.dedupe_key == "task:competitor_report_refresh:week")
+            .first()
+        )
+    finally:
+        db.close()
+
+    assert out["ok"] is True
+    assert out["refresh_tasks_created"] == 1
+    assert task is not None
+    assert task.task_type == "competitor_report_refresh"
+
+
+def test_ai_daily_analytics_beat_cycle_auth_failure_creates_access_task(
+    beat_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    _ = beat_client
+    _clear_reports(USER_BEAT)
+    _grant_wb_access(monkeypatch, tmp_path, USER_BEAT)
+    db = SessionLocal()
+    try:
+        db.add(
+            AiCompetitorComparisonReport(
+                user_id=USER_BEAT,
+                report_date=date(2026, 5, 14),
+                period="week",
+                source="playwright",
+                valid_until=date(2026, 5, 17),
+                status="ready",
+                cost_or_limit_spent=True,
+            )
+        )
+        db.commit()
+        out = run_ai_daily_analytics_beat_cycle(
+            db=db,
+            today=date(2026, 5, 14),
+            period="week",
+            limit_user_ids=[USER_BEAT],
+            fetch_report=lambda _user_id, _period: {"ok": False, "error": "auth_failed"},
+        )
+        task = (
+            db.query(AiTask)
+            .filter(AiTask.user_id == USER_BEAT, AiTask.dedupe_key == "task:wb_access_grant")
+            .first()
+        )
+    finally:
+        db.close()
+
+    assert out["ok"] is True
+    assert out["access_tasks_created"] == 1
+    assert task is not None
+    assert task.task_type == "wb_access_grant"

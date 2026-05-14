@@ -1141,6 +1141,54 @@ def test_competitor_report_playwright_failure_sets_reconnect_flag(client: TestCl
     fp.unlink(missing_ok=True)
 
 
+def test_competitor_report_paid_prompt_creates_refresh_task(client: TestClient, monkeypatch, tmp_path) -> None:
+    user_id = "00000000-0000-0000-0000-000000000111"
+    monkeypatch.setenv("WB_PLAYWRIGHT_STORAGE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_ENABLED", "1")
+    monkeypatch.setenv("AI_COMPETITOR_PLAYWRIGHT_FETCH_PERIODS", "week")
+    from app.services.ai_wb_access_service import user_storage_state_path
+
+    fp = user_storage_state_path(user_id=user_id)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text('{"cookies":[],"origins":[],"pad":"' + "x" * 80 + '"}', encoding="utf-8")
+
+    import app.services.ai_competitor_playwright as pw
+
+    def _paid(*, login: str, password: str, period: str, storage_state_path: str | None = None):
+        raise pw.PlaywrightPaidReopenRequiredError("paid reopen")
+
+    monkeypatch.setattr(pw, "fetch_comparison_excel_bytes", _paid)
+    from celery_app.tasks import ai_competitor_report_fetch_playwright
+
+    db = SessionLocal()
+    try:
+        db.query(AiTask).filter(
+            AiTask.user_id == user_id,
+            AiTask.dedupe_key == "task:competitor_report_refresh:week",
+            AiTask.status.in_(["new", "in_progress"]),
+        ).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    res = ai_competitor_report_fetch_playwright(user_id, "week")
+    assert res.get("ok") is False
+    assert res.get("error") == "paid_reopen_required"
+
+    db2 = SessionLocal()
+    try:
+        task = (
+            db2.query(AiTask)
+            .filter(AiTask.user_id == user_id, AiTask.dedupe_key == "task:competitor_report_refresh:week")
+            .first()
+        )
+        assert task is not None
+        assert task.task_type == "competitor_report_refresh"
+    finally:
+        db2.close()
+        fp.unlink(missing_ok=True)
+
+
 def test_ai_competitor_report_refresh_flow_creates_task_and_executes(client: TestClient, monkeypatch) -> None:
     from cryptography.fernet import Fernet
 

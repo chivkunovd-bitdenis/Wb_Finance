@@ -17,6 +17,11 @@ class PlaywrightBlockedError(Exception):
     message: str
 
 
+@dataclass(frozen=True)
+class PlaywrightPaidReopenRequiredError(Exception):
+    message: str
+
+
 def _storage_state_path(storage_state_path: str | None = None) -> str | None:
     """
     Optional Playwright storage state snapshot to reuse existing WB session.
@@ -160,6 +165,46 @@ def _report_download_button_selector() -> str:
     return s
 
 
+def _paid_reopen_selector() -> str | None:
+    s = _env("WB_COMPETITOR_PAID_REOPEN_SELECTOR")
+    return s or None
+
+
+def _paid_reopen_texts() -> list[str]:
+    raw = _env("WB_COMPETITOR_PAID_REOPEN_TEXTS")
+    if not raw:
+        raw = _env("WB_COMPETITOR_PAID_REOPEN_TEXT")
+    return [x.strip() for x in raw.split("|") if x.strip()]
+
+
+def _raise_if_paid_reopen_required(*, page: Any) -> None:
+    """
+    Detect WB's paid/limited reopen prompt without clicking it.
+
+    Selectors/texts are env-configurable because WB can change DOM/copy without notice.
+    """
+    sel = _paid_reopen_selector()
+    if sel:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible(timeout=1_000):
+                raise PlaywrightPaidReopenRequiredError("WB asks to reopen competitor report manually")
+        except PlaywrightPaidReopenRequiredError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
+    for text in _paid_reopen_texts():
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            if loc.count() > 0 and loc.is_visible(timeout=1_000):
+                raise PlaywrightPaidReopenRequiredError("WB asks to reopen competitor report manually")
+        except PlaywrightPaidReopenRequiredError:
+            raise
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def _new_context_kwargs(storage_state_path: str | None = None) -> dict[str, Any]:
     """
     Build kwargs for browser.new_context without importing Playwright types.
@@ -298,6 +343,7 @@ def _open_report_from_list(*, page: Any) -> None:
     else:
         container.locator(click_sel).first.click(timeout=20_000)
     page.wait_for_load_state("domcontentloaded", timeout=60_000)
+    _raise_if_paid_reopen_required(page=page)
 
 
 def fetch_comparison_excel_bytes(
@@ -379,7 +425,7 @@ def fetch_comparison_excel_bytes(
                     # Debug save must never break the job.
                     pass
             return excel_bytes, meta
-        except PlaywrightBlockedError:
+        except (PlaywrightBlockedError, PlaywrightPaidReopenRequiredError):
             raise
         except Exception as exc:  # noqa: BLE001
             # Heuristic: treat as auth failure if page shows 401/forbidden hints.

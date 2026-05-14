@@ -152,7 +152,7 @@ services:
       # Shared per-user WB storage_state snapshots (must be the same across api/worker/wb_auth)
       WB_PLAYWRIGHT_STORAGE_STATE_DIR: /app/data/wb_storage_states
       DAILY_BRIEF_ENABLED: "false"
-      AI_DAILY_ANALYTICS_BEAT_ENABLED: "false"
+      AI_DAILY_ANALYTICS_BEAT_ENABLED: ${AI_DAILY_ANALYTICS_BEAT_ENABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy

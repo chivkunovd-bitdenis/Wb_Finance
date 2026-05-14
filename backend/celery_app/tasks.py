@@ -92,8 +92,10 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
     from app.services.ai_competitor_playwright import (
         PlaywrightAuthError,
         PlaywrightBlockedError,
+        PlaywrightPaidReopenRequiredError,
         fetch_comparison_excel_bytes,
     )
+    from app.services.ai_task_ensurer import ensure_competitor_report_refresh_task
     from app.services.ai_wb_access_service import (
         clear_wb_access_reconnect_required,
         set_wb_access_reconnect_required,
@@ -222,6 +224,19 @@ def ai_competitor_report_fetch_playwright(user_id: str, period: str) -> dict:
                 db.commit()
                 _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=str(exc))
                 return {"ok": False, "error": "auth_failed", "period": p2}
+            except PlaywrightPaidReopenRequiredError as exc:
+                rep_row.status = "stale"
+                rep_row.last_error = str(exc)[:900]
+                db.add(rep_row)
+                db.commit()
+                ensure_competitor_report_refresh_task(
+                    db=db,
+                    user_id=user_id,
+                    period=p2,
+                    reason="WB просит вручную переоткрыть/продлить отчёт сравнения карточек перед новым считыванием.",
+                )
+                _log_action(db, user_id, str(rep_row.id), action="refresh", ok=False, err=str(exc))
+                return {"ok": False, "error": "paid_reopen_required", "period": p2}
             except PlaywrightBlockedError as exc:
                 # "Blocked" can be either operator config (disabled/no selector) or auth/captcha/2fa.
                 # Only mark credentials disabled when the feature flag is off; otherwise keep creds status unchanged.
