@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _fake_reference() -> Any:
+    from app.services.reference_fetch_client import ReferenceImage
+
+    return ReferenceImage(
+        asset_id="ref-1",
+        filename="ref.png",
+        mime_type="image/png",
+        content=b"reference-bytes",
+        sha256_hex="sha",
+    )
 
 
 def test_openai_key_prefers_wip_over_ai(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,9 +81,13 @@ def test_call_structure_posts_to_resolved_url(monkeypatch: pytest.MonkeyPatch) -
     import app.services.structure_main_openai as smo
 
     with patch.object(smo, "openai_httpx_client", return_value=mock_cm):
-        out = smo.call_structure_main_model(user_prompt="hello")
+        out = smo.call_structure_main_model(user_prompt="hello", reference_images=[_fake_reference()])
 
     assert out.seo_title == "T"
     mock_client.post.assert_called_once()
     url = mock_client.post.call_args[0][0]
     assert url == "https://api.openai.com/v1/chat/completions"
+    body = mock_client.post.call_args.kwargs["json"]
+    user_content = body["messages"][1]["content"]
+    assert user_content[0]["type"] == "text"
+    assert user_content[1]["type"] == "image_url"

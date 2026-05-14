@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.pipeline import PipelineRun, PipelineStep
 from app.schemas.structure_main import StructureMainResult
 from app.services.pipeline_pg32_stub import STRUCTURE_STEP_KEY
+from app.services.reference_fetch_client import fetch_reference_images, reference_metadata
 from app.services.structure_main_openai import call_structure_main_model
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ def apply_structure_main_step(prev: dict[str, Any]) -> dict[str, Any]:
             db.add(run)
             db.commit()
             raise ValueError(msg)
+        reference_asset_ids = [
+            str(v).strip()
+            for v in payload.get("reference_asset_ids", [])
+            if str(v).strip()
+        ]
 
         st_step.status = "running"
         st_step.error_message = None
@@ -88,7 +94,11 @@ def apply_structure_main_step(prev: dict[str, Any]) -> dict[str, Any]:
         db.refresh(st_step)
 
         try:
-            result = call_structure_main_model(user_prompt=user_prompt)
+            refs = fetch_reference_images(
+                monolith_job_id=str(run.monolith_job_id or ""),
+                reference_asset_ids=reference_asset_ids,
+            )
+            result = call_structure_main_model(user_prompt=user_prompt, reference_images=refs)
         except Exception as exc:
             logger.exception("wip_structure_main: OpenAI failed run_id=%s", run_id)
             st_step.status = "failed"
@@ -100,6 +110,8 @@ def apply_structure_main_step(prev: dict[str, Any]) -> dict[str, Any]:
             raise
 
         meta = result.model_dump()
+        meta["reference_asset_ids"] = reference_asset_ids
+        meta["reference_images"] = reference_metadata(refs)
         st_step.meta_json = meta
         st_step.status = "done"
         st_step.error_message = None

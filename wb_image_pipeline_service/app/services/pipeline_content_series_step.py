@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.pipeline import PipelineAsset, PipelineRun, PipelineStep
 from app.schemas.content_series import ContentSeriesResult
 from app.services.content_series_openai import call_content_series_model
+from app.services.image_generation_prompts import build_content_image_prompt
 from app.services.images_main_openai import call_openai_image_bytes
 from app.services.reference_fetch_client import ReferenceImage
 
@@ -258,16 +259,11 @@ def apply_content_structure_step(run_id: str) -> dict[str, Any]:
 
         asset_meta = main_asset.meta_json if isinstance(main_asset.meta_json, dict) else {}
         selected_prompt = str(asset_meta.get("prompt") or "").strip()
-        product_context = "\n".join(
-            [
-                str(payload.get("wip_effective_image_prompt") or "").strip(),
-                str(payload.get("description_user") or "").strip(),
-            ]
-        ).strip()
+        selected_ref = _main_asset_reference(main_asset)
         try:
             result = call_content_series_model(
                 selected_prompt=selected_prompt,
-                product_context=product_context,
+                selected_reference_image=selected_ref,
             )
         except Exception as exc:
             logger.exception("wip_content_structure: OpenAI failed run_id=%s", run_id)
@@ -337,7 +333,8 @@ def apply_content_images_step(prev: dict[str, Any]) -> dict[str, Any]:
 
         try:
             for idx, prompt in enumerate(structure.series_prompts):
-                raw, mime = call_openai_image_bytes(prompt=prompt, reference_images=[selected_ref])
+                image_prompt = build_content_image_prompt(prompt)
+                raw, mime = call_openai_image_bytes(prompt=image_prompt, reference_images=[selected_ref])
                 digest = hashlib.sha256(raw).hexdigest()
                 rel_path = f"{run_id}/content_frame_{idx}.png"
                 out_path = media_root / rel_path
@@ -355,6 +352,7 @@ def apply_content_images_step(prev: dict[str, Any]) -> dict[str, Any]:
                             "series_index": idx,
                             "openai_image_model": model_name,
                             "prompt": prompt,
+                            "image_prompt": image_prompt,
                             "selected_main_asset_id": selected_asset_id,
                             "reference_asset_ids": [selected_asset_id],
                             "reference_fingerprint": selected_ref.sha256_hex,

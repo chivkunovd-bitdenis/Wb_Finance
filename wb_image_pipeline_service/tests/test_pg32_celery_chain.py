@@ -105,6 +105,9 @@ def test_pg32_chain_eager_completes_run(pg32_db: str, tmp_path: Path) -> None:
         db.close()
 
     with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[_fake_reference()],
+    ), patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=_fake_structure_result(),
     ), patch(
@@ -196,7 +199,11 @@ def test_pg32_apply_step_done_idempotent(pg32_db: str) -> None:
 
     db = SessionLocal()
     try:
-        run = PipelineRun(status="created")
+        run = PipelineRun(
+            status="created",
+            monolith_job_id="job-step-done",
+            payload_json={"reference_asset_ids": ["r1"]},
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -205,6 +212,9 @@ def test_pg32_apply_step_done_idempotent(pg32_db: str) -> None:
 
     payload = apply_run_created(run_id)
     with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[_fake_reference()],
+    ), patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=_fake_structure_result(),
     ), patch(

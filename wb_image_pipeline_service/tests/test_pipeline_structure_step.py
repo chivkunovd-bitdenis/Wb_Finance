@@ -12,6 +12,18 @@ import pytest
 _SVC_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _fake_reference() -> object:
+    from app.services.reference_fetch_client import ReferenceImage
+
+    return ReferenceImage(
+        asset_id="x",
+        filename="x.png",
+        mime_type="image/png",
+        content=b"reference",
+        sha256_hex="ref-sha",
+    )
+
+
 def _run_alembic_upgrade(db_url: str) -> None:
     env = {**os.environ, "WIP_DATABASE_URL": db_url, "PYTHONPATH": str(_SVC_ROOT)}
     subprocess.run(
@@ -50,7 +62,11 @@ def test_apply_structure_main_idempotent(structure_db: None) -> None:
 
     db = SessionLocal()
     try:
-        run = PipelineRun(status="created", payload_json={"reference_asset_ids": ["x"]})
+        run = PipelineRun(
+            status="created",
+            monolith_job_id="job-structure",
+            payload_json={"reference_asset_ids": ["x"]},
+        )
         db.add(run)
         db.commit()
         run_id = run.id
@@ -58,10 +74,14 @@ def test_apply_structure_main_idempotent(structure_db: None) -> None:
         db.close()
 
     prev = apply_run_created(run_id)
-    with patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake) as m:
+    with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[_fake_reference()],
+    ), patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake) as m:
         out1 = apply_structure_main_step(prev)
         out2 = apply_structure_main_step(prev)
     m.assert_called_once()
+    assert m.call_args.kwargs["reference_images"][0].asset_id == "x"
 
     assert out1 == out2
     assert out1["run_id"] == run_id

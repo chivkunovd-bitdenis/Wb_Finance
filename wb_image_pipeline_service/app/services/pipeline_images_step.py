@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.pipeline import PipelineAsset, PipelineRun, PipelineStep
 from app.schemas.structure_main import StructureMainResult
+from app.services.image_generation_prompts import build_main_image_prompt
 from app.services.images_main_openai import call_openai_image_bytes
 from app.services.pipeline_pg32_stub import IMAGES_MAIN_STEP_KEY, STRUCTURE_STEP_KEY
 from app.services.reference_fetch_client import fetch_reference_images, reference_metadata
@@ -198,7 +199,8 @@ def apply_images_main_step(prev: dict[str, Any]) -> dict[str, Any]:
                         logger.info("wip_images_main: skip frame idx=%s (exists)", idx)
                         continue
 
-                raw, mime = call_openai_image_bytes(prompt=prompt, reference_images=refs)
+                image_prompt = build_main_image_prompt(prompt)
+                raw, mime = call_openai_image_bytes(prompt=image_prompt, reference_images=refs)
                 digest = hashlib.sha256(raw).hexdigest()
                 rel_path = f"{run_id}/main_frame_{idx}.png"
                 out_path = media_root / rel_path
@@ -221,6 +223,7 @@ def apply_images_main_step(prev: dict[str, Any]) -> dict[str, Any]:
                         "frame_index": idx,
                         "openai_image_model": model_name,
                         "prompt": prompt,
+                        "image_prompt": image_prompt,
                         "reference_asset_ids": reference_asset_ids,
                         "reference_fingerprint": reference_fingerprint,
                         "reference_images": refs_meta,

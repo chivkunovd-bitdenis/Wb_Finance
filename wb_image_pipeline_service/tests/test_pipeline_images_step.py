@@ -82,7 +82,10 @@ def test_apply_images_main_idempotent(images_db: None) -> None:
         db.close()
 
     prev = apply_run_created(run_id)
-    with patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
+    with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[_fake_reference()],
+    ), patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
         mid = apply_structure_main_step(prev)
 
     with patch(
@@ -97,6 +100,7 @@ def test_apply_images_main_idempotent(images_db: None) -> None:
     assert m_img.call_count == 4
     first_call = m_img.call_args_list[0].kwargs
     assert first_call["reference_images"][0].asset_id == "x"
+    assert "Сгенерируй реалистичное главное фото" in first_call["prompt"]
     assert out1 == out2
     assert out1["run_id"] == run_id
 
@@ -108,6 +112,7 @@ def test_apply_images_main_idempotent(images_db: None) -> None:
         assert len(assets) == 4
         assert {a.meta_json.get("prompt") for a in assets if isinstance(a.meta_json, dict)} == {"a", "b", "c", "d"}
         first_meta = assets[0].meta_json or {}
+        assert "image_prompt" in first_meta
         assert first_meta["reference_asset_ids"] == ["x"]
         assert first_meta["reference_images"][0]["asset_id"] == "x"
         assert first_meta["reference_fingerprint"]
@@ -139,7 +144,10 @@ def test_apply_images_main_fails_without_reference_file(images_db: None) -> None
         db.close()
 
     prev = apply_run_created(run_id)
-    with patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
+    with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[_fake_reference()],
+    ), patch("app.services.pipeline_structure_step.call_structure_main_model", return_value=fake):
         mid = apply_structure_main_step(prev)
 
     with pytest.raises(ValueError, match="monolith_job_id"):
@@ -214,6 +222,9 @@ def test_apply_content_series_generates_seven_assets(images_db: None) -> None:
         done = apply_content_done(out)
 
     assert m_structure.call_args.kwargs["selected_prompt"] == "main prompt"
+    assert m_structure.call_args.kwargs["selected_reference_image"].asset_id == asset_id
+    assert "product_context" not in m_structure.call_args.kwargs
+    assert "Сгенерируй одно изображение как следующий кадр" in m_img.call_args_list[0].kwargs["prompt"]
     assert m_img.call_count == 7
     assert done["status"] == "completed"
 

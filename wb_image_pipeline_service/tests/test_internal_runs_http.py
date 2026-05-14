@@ -214,6 +214,9 @@ def test_internal_runs_get_reflects_pg32_chain_after_manual_enqueue(http_runs_en
     run_id = res.json()["id"]
 
     with patch(
+        "app.services.pipeline_structure_step.fetch_reference_images",
+        return_value=[fake_ref],
+    ), patch(
         "app.services.pipeline_structure_step.call_structure_main_model",
         return_value=fake,
     ), patch(
