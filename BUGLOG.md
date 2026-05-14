@@ -9,6 +9,41 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-44
+Дата: 2026-05-14
+Статус: fixed
+Автоматизация: да (`wb_image_pipeline_service/tests/test_structure_main_openai_env.py`, `wb_image_pipeline_service/tests/test_image_generation_prompts.py`)
+
+## Бизнес-описание
+Первые 4 фото полной генерации товара должны помогать пользователю выбрать визуальный стиль будущей карточки, но фактически получались почти одинаковые: белый/нейтральный фон, похожая модельная подача, обрезанные крупности и мало различий по локации/образу. Пользователь не мог выбрать направление фотосессии, потому что варианты выглядели как технические дубли.
+
+## Процесс / сценарий
+1) Пользователь загружает референс товара и задаёт текстовое пожелание.
+2) Система должна сгенерировать 4 разных главных варианта одного товара: premium studio, old money / quiet luxury, casual lifestyle, bold editorial или адаптированные предметные аналоги.
+3) Ожидаемо: максимум один белый/студийный вариант, остальные — разные lifestyle/editorial сцены с отличающимся styling.
+4) Фактически: prompt-planner оставался слишком осторожным и тянул все варианты к светлому минималистичному фону и похожей крупности.
+
+## Техническое описание
+`structure_main_openai._STRUCTURE_SYSTEM` требовал разные ракурсы/крупности, но не фиксировал, что 4 `main_prompts` — это именно 4 разных визуальных направления будущей фотосессии. `build_main_image_prompt` также слишком общо разрешал менять фон/стиль и не подталкивал image model уходить из белого фона, если planner просит lifestyle/editorial.
+
+## Root cause (почему произошло)
+- Недоучтён кейс: для первого этапа нужна не просто вариативность ракурсов, а выбор визуального мира карточки.
+- Не было инварианта “белый/студийный фон максимум в одном варианте”.
+- Не было теста, который фиксирует обязательные style slots и разрешение styling-окружения при сохранении товара.
+
+## Исправление (что сделали)
+`structure_main_openai._STRUCTURE_SYSTEM` переписан под 4 style slots: premium e-commerce, old money / quiet luxury, casual weekend, bold fashion / editorial. Явно закреплено: товар одинаковый, но модель/образ/фон/локация/настроение/styling должны отличаться; белый/нейтральный фон максимум в одном варианте. `build_main_image_prompt` теперь разрешает менять нижнюю одежду, обувь, аксессуары, локацию и styling, если сам товар сохраняется точным.
+
+## Профилактика (как не повторить)
+Добавлены тесты, которые проверяют наличие style slots, лимит белого фона и разрешение styling в main image wrapper при строгом сохранении товара.
+
+## Проверка
+- Команды: `python3 -m pytest -q tests/test_structure_main_openai_env.py tests/test_image_generation_prompts.py tests/test_pipeline_images_step.py` в `wb_image_pipeline_service`, `ruff check .`, `mypy .`, `pytest -q`, `python3 -m pytest -q` в `wb_image_pipeline_service`.
+- Сценарии: prompt-planner contract для 4 main теперь требует разные visual directions; image wrapper для 4 main не запрещает styling/аксессуары/локации вокруг товара.
+
+Затронутые файлы: `wb_image_pipeline_service/app/services/structure_main_openai.py`, `wb_image_pipeline_service/app/services/image_generation_prompts.py`, `wb_image_pipeline_service/tests/test_structure_main_openai_env.py`, `wb_image_pipeline_service/tests/test_image_generation_prompts.py`, `BUGLOG.md`, `TASKLOG.md`
+
+---
 ID: BUG-43
 Дата: 2026-05-14
 Статус: fixed

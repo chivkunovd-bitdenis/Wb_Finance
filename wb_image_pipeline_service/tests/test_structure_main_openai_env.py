@@ -48,6 +48,17 @@ def test_openai_base_falls_back_to_ai_base_url(monkeypatch: pytest.MonkeyPatch) 
     assert m._chat_completions_url() == "https://example.com/v1/chat/completions"
 
 
+def test_structure_system_requires_four_visual_directions() -> None:
+    import app.services.structure_main_openai as smo
+
+    system = smo._STRUCTURE_SYSTEM
+    assert "выбор визуального направления будущей фотосессии" in system
+    assert "Белый, нейтральный или студийный фон допустим максимум в одном варианте" in system
+    assert "Old money / quiet luxury" in system
+    assert "Casual weekend" in system
+    assert "Bold fashion / editorial" in system
+
+
 def test_call_structure_posts_to_resolved_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WIP_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("AI_API_KEY", "k")
