@@ -25,6 +25,7 @@ from app.services.internal_runs_service import (
     PipelineEnqueueError,
     create_run,
     get_run_by_id,
+    stop_run,
 )
 from app.services.pipeline_content_series_step import prepare_content_generation
 from celery_app.pipeline_tasks import enqueue_content_series_chain, enqueue_pg32_stub_chain
@@ -129,6 +130,18 @@ def post_run_content(
                 detail="Failed to enqueue content generation tasks",
             ) from exc
     return RunCreateResponse(id=run_id, status="running" if should_enqueue else "completed")
+
+
+@router.post("/runs/{run_id}/stop", response_model=RunCreateResponse)
+def post_run_stop(
+    _auth: InternalAuth,
+    run_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> RunCreateResponse:
+    run = stop_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return RunCreateResponse(id=run_id, status=str(run.status))
 
 
 @router.get("/runs/{run_id}/assets/{asset_id}/file")

@@ -116,6 +116,43 @@ def test_internal_runs_get_404(http_runs_env: str) -> None:
     assert res.status_code == 404
 
 
+def test_internal_runs_stop_cancels_pending_run(http_runs_env: str) -> None:
+    import app.main as mm
+    from app.db import SessionLocal
+    from app.models.pipeline import PipelineRun, PipelineStep
+
+    client = TestClient(mm.app)
+    with patch("app.api.internal_runs.enqueue_pg32_stub_chain"):
+        res = client.post(
+            "/internal/v1/runs",
+            json={"monolith_job_id": "job-stop", "payload": {"reference_asset_ids": ["r1"]}},
+            headers=_auth_headers(),
+        )
+    assert res.status_code == 201
+    run_id = res.json()["id"]
+    db = SessionLocal()
+    try:
+        db.add(PipelineStep(run_id=run_id, step_key="structure_main", ordinal=0, status="pending"))
+        db.add(PipelineStep(run_id=run_id, step_key="images_main", ordinal=1, status="running"))
+        db.commit()
+    finally:
+        db.close()
+
+    stopped = client.post(f"/internal/v1/runs/{run_id}/stop", headers=_auth_headers())
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "cancelled"
+
+    db2 = SessionLocal()
+    try:
+        run = db2.get(PipelineRun, run_id)
+        steps = db2.query(PipelineStep).filter(PipelineStep.run_id == run_id).all()
+        assert run is not None
+        assert run.status == "cancelled"
+        assert {s.status for s in steps} == {"failed"}
+    finally:
+        db2.close()
+
+
 def test_internal_runs_unauthorized(http_runs_env: str) -> None:
     import app.main as mm
 

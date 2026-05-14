@@ -9,6 +9,42 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-43
+Дата: 2026-05-14
+Статус: fixed
+Автоматизация: да (`backend/tests/test_product_generation_api.py`, `wb_image_pipeline_service/tests/test_internal_runs_http.py`)
+
+## Бизнес-описание
+При локальной генерации товара упавшие или зависшие черновики могли оставаться в состоянии, где старые queued шаги WIP теоретически продолжили бы генерацию после повторного старта worker. Это создавало риск внезапного расхода OpenAI-токенов на пачку черновиков без явного действия пользователя.
+
+## Процесс / сценарий
+1) Пользователь запускает генерацию 4 первых фото по референсам.
+2) Если пайплайн упал или завис, система должна остановить старый run/steps и больше не продолжать их автоматически.
+3) Пользователь должен видеть аккуратную кнопку повторного запуска: для первого этапа — «Повторить генерацию фото», для второго этапа — «Сгенерировать контент снова».
+4) Готовые задачи «К публикации» должны остаться как есть.
+5) Факт: retry/stop-контракт был неявным; старые run/steps не имели HTTP stop-контракта, а UI не давал отдельного безопасного действия остановки/повтора.
+
+## Техническое описание
+Монолитный PG API имел только `/start` и `/generate-content`. `/start` был разрешён только из `draft`, а WIP не имел internal stop endpoint. При ручных/аварийных состояниях `in_progress/error` не было гарантированного действия, которое помечает старый WIP run/steps так, чтобы queued tasks не дошли до токен-затратных шагов.
+
+## Root cause (почему произошло)
+- Не был зафиксирован инвариант: старый failed/stuck WIP run не должен продолжаться без клика пользователя.
+- UI показывал ошибку, но не давал явного безопасного retry/stop действия.
+- WIP internal API не имел операции stop для pending/running steps.
+
+## Исправление (что сделали)
+Добавлен WIP endpoint `POST /internal/v1/runs/{run_id}/stop`: без main-frame ассетов он переводит run в `cancelled`, pending/running steps — в `failed`; если main-frame уже есть, run остаётся retryable для content flow через `failed`, а pending/running content steps переводятся в `failed`. Монолит получил `POST /ai/product-generation/jobs/{job_id}/stop` и перед повторным `/start` из `error` сначала останавливает старый remote run, затем создаёт новый. UI получил кнопки `Остановить`, `Повторить генерацию фото`, `Сгенерировать контент снова` без перегруза карточки.
+
+## Профилактика (как не повторить)
+Регрессионные тесты проверяют stop-контракт WIP, остановку монолитной PG-задачи и повторный старт из `error` через новый remote run с предварительным stop старого run.
+
+## Проверка
+- Команды: `ruff check .`, `mypy .`, `pytest`, `python3 -m pytest -q` в `wb_image_pipeline_service`, `npm run lint`, `npm run build`.
+- Сценарии: active PG stop -> job `error` + WIP `/stop`; retry first photos from `error` -> old run stopped + new run created; content retry still starts from saved main-frame selection; WIP worker не запускался.
+
+Затронутые файлы: `backend/app/routers/product_generation.py`, `backend/app/services/product_generation_service.py`, `backend/app/services/product_generation_image_pipeline.py`, `backend/tests/test_product_generation_api.py`, `wb_image_pipeline_service/app/api/internal_runs.py`, `wb_image_pipeline_service/app/services/internal_runs_service.py`, `wb_image_pipeline_service/tests/test_internal_runs_http.py`, `frontend/src/api.js`, `frontend/src/screens/AiModule.jsx`, `frontend/dist/*`, `BUGLOG.md`, `TASKLOG.md`
+
+---
 ID: BUG-42
 Дата: 2026-05-14
 Статус: fixed

@@ -344,6 +344,35 @@ def start_remote_content_generation(run_id: str, selected_asset_id: str) -> None
         raise ImagePipelineClientError(f"unexpected status {r.status_code}")
 
 
+def stop_remote_run(run_id: str) -> None:
+    base = image_pipeline_base_url()
+    secret = image_pipeline_secret()
+    if not base or not secret:
+        raise ImagePipelineClientError("image pipeline env not configured")
+    url = f"{base}/internal/v1/runs/{run_id}/stop"
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+    }
+    try:
+        r = httpx.post(
+            url,
+            headers=headers,
+            timeout=_timeout_sec(),
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("product_generation: stop POST failed run_id=%s: %s", run_id, exc)
+        raise ImagePipelineClientError(str(exc)) from exc
+    if r.status_code not in (200, 201, 404):
+        logger.warning(
+            "product_generation: stop POST status=%s body=%s",
+            r.status_code,
+            r.text[:500],
+        )
+        raise ImagePipelineClientError(f"unexpected status {r.status_code}")
+
+
 def _is_remote_pipeline_run_id(run_id: str | None) -> bool:
     if not run_id:
         return False

@@ -279,6 +279,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
   const [infoMessage, setInfoMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [generatingContent, setGeneratingContent] = useState(false);
+  const [stoppingGeneration, setStoppingGeneration] = useState(false);
   const [jobSnapshot, setJobSnapshot] = useState(null);
   const [selectedMainAssetId, setSelectedMainAssetId] = useState('');
 
@@ -303,6 +304,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     setInfoMessage('');
     setSubmitting(false);
     setGeneratingContent(false);
+    setStoppingGeneration(false);
     setRemoteImageRunStatus('');
     setJobSnapshot(null);
     setSelectedMainAssetId('');
@@ -501,6 +503,49 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     }
   };
 
+  const retryPhotoGeneration = async () => {
+    const jid = String(jobId || '').trim();
+    if (!jid) return;
+    setSubmitting(true);
+    setSubmitError('');
+    setInfoMessage('');
+    try {
+      const started = await api.startProductGenerationJob(jid);
+      setJobSnapshot(started);
+      setJobStatus(String(started?.status || 'in_progress'));
+      const rim = String(started?.image_pipeline?.remote_status || '');
+      setRemoteImageRunStatus(rim || '…');
+      setStage('afterPhotos');
+      setInfoMessage('Генерация фото запущена заново. Старый run не продолжается.');
+      onCreated?.();
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось повторно запустить генерацию фото');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const stopGeneration = async () => {
+    const jid = String(jobId || '').trim();
+    if (!jid) return;
+    setStoppingGeneration(true);
+    setSubmitError('');
+    setInfoMessage('');
+    try {
+      const stopped = await api.stopProductGenerationJob(jid);
+      setJobSnapshot(stopped);
+      setJobStatus(String(stopped?.status || 'error'));
+      const rim = String(stopped?.image_pipeline?.remote_status || '');
+      setRemoteImageRunStatus(rim || '—');
+      setInfoMessage('Генерация остановлена. Повторный запуск начнётся только по кнопке.');
+      onCreated?.();
+    } catch (e) {
+      setSubmitError(e?.message || 'Не удалось остановить генерацию');
+    } finally {
+      setStoppingGeneration(false);
+    }
+  };
+
   const refreshJobStatus = async () => {
     const jid = String(jobId || '').trim();
     if (!jid) return;
@@ -644,6 +689,10 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
     : [];
   const hasMainAssets = generatedAssets.length > 0;
   const hasContentAssets = contentAssets.length >= 7;
+  const isJobError = jobStatus === 'error' || ['failed', 'error', 'cancelled'].includes(String(remoteImageRunStatus || '').toLowerCase());
+  const canRetryPhotoGeneration = isJobError && !hasMainAssets && String(jobId || '').trim();
+  const canStopGeneration = jobStatus === 'in_progress' && String(jobId || '').trim();
+  const canGenerateContent = (isReadyForProductForm || (isJobError && hasMainAssets)) && hasMainAssets && selectedMainAssetId;
 
   return (
     <ModalShell
@@ -653,7 +702,7 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
       width="min(760px, 100%)"
       footer={(
         <>
-          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting || generatingContent}>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={submitting || generatingContent || stoppingGeneration}>
             Закрыть
           </button>
           {stage === 'createProduct' ? (
@@ -672,20 +721,40 @@ function ProductGenerationWizardModal({ open, onClose, onCreated, resumeJobId, o
                 type="button"
                 className="btn btn-outline-secondary"
                 onClick={() => onOpenPipelineLog?.(jobId)}
-                disabled={submitting || !String(jobId || '').trim()}
+                disabled={submitting || stoppingGeneration || !String(jobId || '').trim()}
               >
                 Лог пайплайна
               </button>
-              <button type="button" className="btn btn-outline-secondary" onClick={refreshJobStatus} disabled={submitting}>
+              <button type="button" className="btn btn-outline-secondary" onClick={refreshJobStatus} disabled={submitting || stoppingGeneration}>
                 {submitting ? 'Обновляю…' : 'Проверить готовность'}
               </button>
+              {canStopGeneration ? (
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={stopGeneration}
+                  disabled={submitting || stoppingGeneration || generatingContent}
+                >
+                  {stoppingGeneration ? 'Останавливаю…' : 'Остановить'}
+                </button>
+              ) : null}
+              {canRetryPhotoGeneration ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={retryPhotoGeneration}
+                  disabled={submitting || stoppingGeneration || generatingContent}
+                >
+                  {submitting ? 'Запускаю…' : 'Повторить генерацию фото'}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={generateContent}
-                disabled={!isReadyForProductForm || !hasMainAssets || !selectedMainAssetId || submitting || generatingContent}
+                disabled={!canGenerateContent || submitting || stoppingGeneration || generatingContent}
               >
-                {generatingContent ? 'Запускаю…' : 'Сгенерировать контент'}
+                {generatingContent ? 'Запускаю…' : isJobError && hasMainAssets ? 'Сгенерировать контент снова' : 'Сгенерировать контент'}
               </button>
             </>
           ) : null}

@@ -353,7 +353,12 @@ def test_product_generation_start_remote_image_pipeline(
     monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
     run_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
+    calls: list[str] = []
+
     def fake_post(url: str, **_kwargs: object) -> httpx.Response:
+        calls.append(url)
+        if url == "http://wip.test/internal/v1/runs/old-run/stop":
+            return httpx.Response(200, json={"id": "old-run", "status": "cancelled"})
         assert url == "http://wip.test/internal/v1/runs"
         return httpx.Response(201, json={"id": run_uuid, "status": "created"})
 
@@ -381,6 +386,93 @@ def test_product_generation_start_remote_image_pipeline(
     assert not str(body["pipeline_run_id"]).startswith("local-")
     mock_delay.assert_not_called()
     m_post.assert_called_once()
+
+
+def test_product_generation_restart_after_error_creates_new_remote_run(
+    client_admin: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PRODUCT_GENERATION_REFERENCES_DIR", str(tmp_path))
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    run_uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    db = SessionLocal()
+    try:
+        job = ProductGenerationJob(
+            user_id=ADMIN_PG_ID,
+            status="error",
+            pipeline_run_id="old-run",
+            reference_paths_json=[{"asset_id": "ref-1", "stored_name": "a.png"}],
+            wb_publish_error="old failure",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = str(job.id)
+    finally:
+        db.close()
+
+    calls: list[str] = []
+
+    def fake_post(url: str, **_kwargs: object) -> httpx.Response:
+        calls.append(url)
+        if url == "http://wip.test/internal/v1/runs/old-run/stop":
+            return httpx.Response(200, json={"id": "old-run", "status": "cancelled"})
+        assert url == "http://wip.test/internal/v1/runs"
+        return httpx.Response(201, json={"id": run_uuid, "status": "created"})
+
+    def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+        assert run_uuid in url
+        return httpx.Response(200, json={"status": "created", "steps": [], "assets": []})
+
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+            res = client_admin.post(f"/ai/product-generation/jobs/{job_id}/start")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "in_progress"
+    assert body["pipeline_run_id"] == run_uuid
+    assert calls == ["http://wip.test/internal/v1/runs/old-run/stop", "http://wip.test/internal/v1/runs"]
+
+
+def test_product_generation_stop_marks_job_error_and_stops_remote_run(
+    client_admin: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_BASE_URL", "http://wip.test")
+    monkeypatch.setenv("PRODUCT_GEN_IMAGE_PIPELINE_SECRET", "secret-for-test")
+    db = SessionLocal()
+    try:
+        job = ProductGenerationJob(
+            user_id=ADMIN_PG_ID,
+            status="in_progress",
+            pipeline_run_id="run-to-stop",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = str(job.id)
+    finally:
+        db.close()
+
+    calls: list[str] = []
+
+    def fake_post(url: str, **_kwargs: object) -> httpx.Response:
+        calls.append(url)
+        assert url == "http://wip.test/internal/v1/runs/run-to-stop/stop"
+        return httpx.Response(200, json={"id": "run-to-stop", "status": "cancelled"})
+
+    def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+        assert url == "http://wip.test/internal/v1/runs/run-to-stop"
+        return httpx.Response(200, json={"id": "run-to-stop", "status": "cancelled", "steps": [], "assets": []})
+
+    with patch("app.services.product_generation_image_pipeline.httpx.post", side_effect=fake_post):
+        with patch("app.services.product_generation_image_pipeline.httpx.get", side_effect=fake_get):
+            res = client_admin.post(f"/ai/product-generation/jobs/{job_id}/stop")
+
+    assert res.status_code == 200
+    assert calls == ["http://wip.test/internal/v1/runs/run-to-stop/stop"]
+    assert res.json()["status"] == "error"
 
 
 def test_product_generation_start_remote_minimal_card_fields_in_payload(

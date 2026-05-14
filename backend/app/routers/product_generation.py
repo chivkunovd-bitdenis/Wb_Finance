@@ -200,7 +200,7 @@ def start_job_pipeline(
         if code == "bad_status_start":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Старт пайплайна только из черновика (draft)",
+                detail="Старт пайплайна только из черновика или после ошибки",
             ) from exc
         if code == "no_references":
             raise HTTPException(
@@ -226,6 +226,33 @@ def start_job_pipeline(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Не удалось поставить задачу в очередь (celery/redis недоступны)",
             ) from exc
+    return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
+
+
+@router.post("/jobs/{job_id}/stop", response_model=ProductGenerationJobOut)
+def stop_job_pipeline(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_user),
+) -> ProductGenerationJobOut:
+    try:
+        job = pg_service.stop_job_pipeline(db=db, user=current_user, job_id=job_id)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена") from exc
+        if code == "bad_status_stop":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Остановить можно только активную генерацию",
+            ) from exc
+        if code == "image_pipeline_unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось остановить run в image-сервисе",
+            ) from exc
+        logger.exception("product_generation: unexpected ValueError on stop")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка") from exc
     return enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(job))
 
 

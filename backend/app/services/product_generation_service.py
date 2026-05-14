@@ -24,6 +24,7 @@ from app.services.product_generation_image_pipeline import (
     create_remote_run,
     is_image_pipeline_enabled,
     start_remote_content_generation,
+    stop_remote_run,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,13 +170,20 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
     job = get_job_for_user(db=db, user=user, job_id=job_id)
     if not job:
         raise ValueError("not_found")
-    if job.status != "draft":
+    if job.status not in {"draft", "error"}:
         raise ValueError("bad_status_start")
     refs = list(job.reference_paths_json or [])
     if len(refs) == 0:
         raise ValueError("no_references")
 
     if is_image_pipeline_enabled():
+        old_rid = str(job.pipeline_run_id or "").strip()
+        if job.status == "error" and old_rid and not old_rid.startswith("local-"):
+            try:
+                stop_remote_run(old_rid)
+            except ImagePipelineClientError as exc:
+                logger.warning("product_generation: old remote pipeline stop failed job=%s run=%s: %s", job_id, old_rid, exc)
+                raise ValueError("image_pipeline_unavailable") from exc
         payload = build_image_pipeline_payload(job)
         try:
             run_id = create_remote_run(str(job.id), payload)
@@ -184,6 +192,7 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
             raise ValueError("image_pipeline_unavailable") from exc
         job.status = "in_progress"
         job.pipeline_run_id = run_id
+        job.wb_publish_error = None
         db.add(job)
         db.commit()
         db.refresh(job)
@@ -196,6 +205,7 @@ def start_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenera
 
     job.status = "in_progress"
     job.pipeline_run_id = f"local-{uuid.uuid4()}"
+    job.wb_publish_error = None
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -221,6 +231,29 @@ def revert_local_pipeline_start(*, db: Session, user: User, job_id: str) -> None
         db.add(job)
         db.commit()
         logger.warning("product_generation: reverted pipeline start (enqueue failed) job=%s", job_id)
+
+
+def stop_job_pipeline(*, db: Session, user: User, job_id: str) -> ProductGenerationJob:
+    job = get_job_for_user(db=db, user=user, job_id=job_id)
+    if not job:
+        raise ValueError("not_found")
+    if job.status != "in_progress":
+        raise ValueError("bad_status_stop")
+
+    rid = str(job.pipeline_run_id or "").strip()
+    if rid and not rid.startswith("local-") and is_image_pipeline_enabled():
+        try:
+            stop_remote_run(rid)
+        except ImagePipelineClientError as exc:
+            logger.warning("product_generation: remote pipeline stop failed job=%s run=%s: %s", job_id, rid, exc)
+            raise ValueError("image_pipeline_unavailable") from exc
+
+    job.status = "error"
+    job.wb_publish_error = "stopped manually before retry"
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 def update_job(*, db: Session, user: User, job_id: str, payload: ProductGenerationJobUpdate) -> ProductGenerationJob:

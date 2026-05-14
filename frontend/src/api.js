@@ -614,6 +614,20 @@ export async function startProductGenerationJob(jobId) {
   return res.json();
 }
 
+/** Остановить активный image-run, чтобы старые queued tasks не продолжили генерацию. */
+export async function stopProductGenerationJob(jobId) {
+  const res = await apiFetch(
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/stop`,
+    { method: 'POST', headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
 /** Запустить генерацию 7 контентных фото WB по выбранному сгенерированному фото (admin). */
 export async function generateProductGenerationContent(jobId, selectedAssetId) {
   const res = await apiFetch(

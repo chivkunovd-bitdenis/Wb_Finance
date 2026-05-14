@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.pipeline import PipelineRun
+from app.models.pipeline import PipelineAsset, PipelineRun, PipelineStep
 
 logger = logging.getLogger(__name__)
 
@@ -58,3 +58,43 @@ def get_run_by_id(db: Session, run_id: str) -> PipelineRun | None:
         )
     )
     return db.scalars(stmt).one_or_none()
+
+
+def stop_run(db: Session, run_id: str) -> PipelineRun | None:
+    """
+    Stop a run so queued Celery tasks cannot continue token-spending steps.
+
+    If main frames already exist, keep the run retryable for content generation by marking
+    only pending/running content steps failed and leaving the run in `failed`.
+    If no main frames exist, cancel the whole run.
+    """
+    run = get_run_by_id(db, run_id)
+    if run is None:
+        return None
+
+    has_main_assets = (
+        db.query(PipelineAsset.id)
+        .filter(PipelineAsset.run_id == run_id, PipelineAsset.kind == "main_frame")
+        .first()
+        is not None
+    )
+
+    if has_main_assets:
+        for step in run.steps:
+            if step.step_key in {"content_structure", "content_images"} and step.status in {"pending", "running"}:
+                step.status = "failed"
+                step.error_message = step.error_message or "stopped manually before retry"
+                db.add(step)
+        run.status = "failed"
+    else:
+        for step in run.steps:
+            if step.status in {"pending", "running"}:
+                step.status = "failed"
+                step.error_message = step.error_message or "cancelled manually before retry"
+                db.add(step)
+        run.status = "cancelled"
+
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
