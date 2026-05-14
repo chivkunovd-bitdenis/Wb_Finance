@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.pipeline import PipelineAsset, PipelineRun, PipelineStep
+from app.models.pipeline import PipelineAsset, PipelineRun
 
 logger = logging.getLogger(__name__)
 
