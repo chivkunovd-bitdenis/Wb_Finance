@@ -128,11 +128,16 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
         setArticles(list);
         if (typeof updateCache === 'function') updateCache('articles', list);
 
-        const c = {};
-        list.forEach((a) => {
-          c[a.nm_id] = a.cost_price != null ? String(a.cost_price) : '';
+        setCosts((prev) => {
+          const next = { ...prev };
+          for (const a of list) {
+            const key = a.nm_id;
+            if (next[key] === undefined) {
+              next[key] = a.cost_price != null ? String(a.cost_price) : '';
+            }
+          }
+          return next;
         });
-        setCosts(c);
       })
       .catch((e) => setError(e.message || 'Ошибка загрузки'))
       .finally(() => setLoading(false));
@@ -149,6 +154,9 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
       })
       .catch(() => {});
   }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache]);
+
+  // Не мигать при фоновом refreshTrigger (опрос sync в Layout) — показывать таблицу, пока данные уже есть
+  const showFullLoader = loading && articles.length === 0;
 
   const setCost = (nmId, value) => {
     setCosts((prev) => ({ ...prev, [nmId]: value }));
@@ -240,7 +248,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     }
   };
 
-  if (loading) {
+  if (showFullLoader) {
     return (
       <div className="loader-center">
         <div className="loader-spinner" />
