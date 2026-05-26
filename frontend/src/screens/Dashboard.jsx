@@ -4,7 +4,6 @@ import * as api from '../api';
 import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
 import DailyBriefBlock from '../components/DailyBriefBlock';
-import OfferAiBlock from '../components/OfferAiBlock';
 
 function computeCogsFromShare(revenue, sharePct) {
   const rev = Number(revenue);
@@ -417,7 +416,6 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
     <>
       {/* Ежедневная AI-оперативная сводка — монтируется сразу, независимо от загрузки PnL/Funnel */}
       <DailyBriefBlock />
-      <OfferAiBlock />
 
       {showFullLoader ? (
         <div className="loader-center">
