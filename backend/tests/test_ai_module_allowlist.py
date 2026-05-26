@@ -29,10 +29,14 @@ def test_allowlist_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_ai_module_allowlist_emails() == {"vitalik-hors@mail.ru", "other@x.com"}
 
 
-def test_default_allowlist_is_vitalik_when_env_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_allowlist_when_env_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AI_MODULE_ALLOWLIST_EMAILS", raising=False)
-    assert get_ai_module_allowlist_emails() == {"vitalik-hors@mail.ru"}
+    assert get_ai_module_allowlist_emails() == {
+        "vitalik-hors@mail.ru",
+        "denischivkunov@icloud.com",
+    }
     assert is_ai_module_enabled_for_user(_user(email="Vitalik-hors@mail.ru")) is True
+    assert is_ai_module_enabled_for_user(_user(email="denischivkunov@icloud.com")) is True
     assert is_ai_module_enabled_for_user(_user(email="any@x.com")) is False
     assert is_ai_module_enabled_for_user(_user(email="any@x.com", is_admin=True)) is True
 

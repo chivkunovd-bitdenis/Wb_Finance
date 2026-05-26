@@ -3206,7 +3206,7 @@ export default function AiModule() {
     api.getMe()
       .then((me) => {
         if (cancelled) return;
-        setModuleEnabled(me?.ai_module_enabled !== false);
+        setModuleEnabled(Boolean(me?.ai_module_enabled));
       })
       .catch(() => {
         if (cancelled) return;

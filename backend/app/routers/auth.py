@@ -112,8 +112,16 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 def me(store_ctx: StoreContext = Depends(get_store_context)):
-    current_user = store_ctx.store_owner
-    return _user_response(current_user)
+    owner = store_ctx.store_owner
+    viewer = store_ctx.viewer
+    base = _user_response(owner)
+    # Доступ к ИИ-модулю — по залогиненному пользователю, не по владельцу магазина.
+    return base.model_copy(
+        update={
+            "ai_module_enabled": is_ai_module_enabled_for_user(viewer),
+            "ai_module_product_gen_enabled": is_ai_module_product_gen_enabled_for_user(viewer),
+        }
+    )
 
 
 @router.put("/wb-key", response_model=UserResponse)

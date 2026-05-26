@@ -3,19 +3,37 @@ import { useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import { useStore } from '../StoreContext';
 
+function NavItems({ items }) {
+  return items.map((item) => (
+    <NavLink
+      key={item.to}
+      to={item.to}
+      className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+      end
+    >
+      <span className="icon">{item.icon}</span>
+      <span>{item.label}</span>
+    </NavLink>
+  ));
+}
+
 export default function Sidebar({ onLogout }) {
   const { stores, loadingStores, storesError, refreshStores, activeStoreOwnerId, setActiveStoreOwnerId } = useStore();
   const [storesOpen, setStoresOpen] = useState(false);
-  const [aiModuleEnabled, setAiModuleEnabled] = useState(true);
+  const [aiModuleEnabled, setAiModuleEnabled] = useState(false);
+  const [meChecked, setMeChecked] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     api.getMe()
       .then((me) => {
-        if (!cancelled) setAiModuleEnabled(me?.ai_module_enabled !== false);
+        if (!cancelled) setAiModuleEnabled(Boolean(me?.ai_module_enabled));
       })
       .catch(() => {
         if (!cancelled) setAiModuleEnabled(false);
+      })
+      .finally(() => {
+        if (!cancelled) setMeChecked(true);
       });
     return () => { cancelled = true; };
   }, []);
@@ -29,19 +47,27 @@ export default function Sidebar({ onLogout }) {
     }));
   }, [stores]);
 
-  const nav = useMemo(() => {
+  const analyticsNav = useMemo(() => {
     const items = [
       { to: '/dashboard', label: 'Дашборд', icon: '📊' },
       { to: '/articles', label: 'Артикулы', icon: '📦' },
       { to: '/funnel', label: 'Воронка', icon: '📈' },
-      { to: '/ai-module', label: 'ИИ модуль', icon: '🧠' },
+    ];
+    if (meChecked && aiModuleEnabled) {
+      items.push({ to: '/ai-module', label: 'ИИ модуль', icon: '🧠' });
+    }
+    return items;
+  }, [meChecked, aiModuleEnabled]);
+
+  const settingsNav = useMemo(
+    () => [
       { to: '/costs', label: 'Себестоимость', icon: '💰' },
       { to: '/operational-expenses', label: 'Опер. расходы', icon: '🧾' },
       { to: '/billing', label: 'Подписка', icon: '💳' },
       { to: '/settings', label: 'Настройки', icon: '⚙️' },
-    ];
-    return items.filter((item) => item.to !== '/ai-module' || aiModuleEnabled);
-  }, [aiModuleEnabled]);
+    ],
+    [],
+  );
 
   return (
     <aside className="sidebar">
@@ -117,74 +143,12 @@ export default function Sidebar({ onLogout }) {
         )}
 
         <div className="nav-section-label">Аналитика</div>
-        <NavLink
-          to={nav[0].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[0].icon}</span>
-          <span>{nav[0].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[1].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[1].icon}</span>
-          <span>{nav[1].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[2].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[2].icon}</span>
-          <span>{nav[2].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[3].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[3].icon}</span>
-          <span>{nav[3].label}</span>
-        </NavLink>
+        <NavItems items={analyticsNav} />
 
         <div className="nav-section-label" style={{ marginTop: 8 }}>
           Настройки
         </div>
-        <NavLink
-          to={nav[4].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[4].icon}</span>
-          <span>{nav[4].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[5].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[5].icon}</span>
-          <span>{nav[5].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[6].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[6].icon}</span>
-          <span>{nav[6].label}</span>
-        </NavLink>
-        <NavLink
-          to={nav[7].to}
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          end
-        >
-          <span className="icon">{nav[7].icon}</span>
-          <span>{nav[7].label}</span>
-        </NavLink>
+        <NavItems items={settingsNav} />
       </nav>
 
       <div className="sidebar-bottom">
@@ -204,4 +168,3 @@ export default function Sidebar({ onLogout }) {
     </aside>
   );
 }
-
