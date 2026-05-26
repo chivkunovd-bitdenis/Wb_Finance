@@ -29,31 +29,30 @@ def test_allowlist_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_ai_module_allowlist_emails() == {"vitalik-hors@mail.ru", "other@x.com"}
 
 
-def test_allowlist_disabled_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_allowlist_is_vitalik_when_env_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AI_MODULE_ALLOWLIST_EMAILS", raising=False)
-    assert get_ai_module_allowlist_emails() is None
-    assert is_ai_module_enabled_for_user(_user(email="any@x.com")) is True
+    assert get_ai_module_allowlist_emails() == {"vitalik-hors@mail.ru"}
+    assert is_ai_module_enabled_for_user(_user(email="Vitalik-hors@mail.ru")) is True
+    assert is_ai_module_enabled_for_user(_user(email="any@x.com")) is False
+    assert is_ai_module_enabled_for_user(_user(email="any@x.com", is_admin=True)) is True
 
 
-def test_allowlist_user_access(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_admin_and_allowlisted_have_access(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_MODULE_ALLOWLIST_EMAILS", "vitalik-hors@mail.ru")
     vitalik = _user(email="Vitalik-hors@mail.ru")
-    other = _user(email="other@x.com", is_admin=True)
+    admin = _user(email="other@x.com", is_admin=True)
+    stranger = _user(email="stranger@x.com")
     assert is_ai_module_enabled_for_user(vitalik) is True
-    assert is_ai_module_enabled_for_user(other) is False
+    assert is_ai_module_enabled_for_user(admin) is True
+    assert is_ai_module_enabled_for_user(stranger) is False
     assert is_ai_module_product_gen_enabled_for_user(vitalik) is True
-    assert is_ai_module_product_gen_enabled_for_user(other) is False
+    assert is_ai_module_product_gen_enabled_for_user(admin) is True
+    assert is_ai_module_product_gen_enabled_for_user(stranger) is False
 
 
-def test_product_gen_requires_admin_without_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AI_MODULE_ALLOWLIST_EMAILS", raising=False)
-    assert is_ai_module_product_gen_enabled_for_user(_user(email="a@b.com", is_admin=False)) is False
-    assert is_ai_module_product_gen_enabled_for_user(_user(email="a@b.com", is_admin=True)) is True
-
-
-def test_ai_tasks_forbidden_for_non_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ai_tasks_forbidden_for_stranger(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_MODULE_ALLOWLIST_EMAILS", "vitalik-hors@mail.ru")
-    app.dependency_overrides[get_current_user] = lambda: _user(email="other@x.com", is_admin=True)
+    app.dependency_overrides[get_current_user] = lambda: _user(email="stranger@x.com")
     try:
         with TestClient(app) as client:
             r = client.get("/ai/tasks")

@@ -7,31 +7,28 @@ def _parse_csv_emails(raw: str) -> set[str]:
     return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
 
-def get_ai_module_allowlist_emails() -> set[str] | None:
+_DEFAULT_EXTRA_EMAILS = "vitalik-hors@mail.ru"
+
+
+def get_ai_module_allowlist_emails() -> set[str]:
     """
-    Если переменная задана — ИИ-модуль доступен только перечисленным email (lower-case).
-    Если пусто — ограничение по allowlist не применяется (как раньше).
+    Дополнительные email (кроме is_admin), кому виден ИИ-модуль.
+    По умолчанию — Vitalik; переопределяется AI_MODULE_ALLOWLIST_EMAILS.
     """
-    raw = (os.getenv("AI_MODULE_ALLOWLIST_EMAILS") or "").strip()
-    if not raw:
-        return None
+    raw = (os.getenv("AI_MODULE_ALLOWLIST_EMAILS") or _DEFAULT_EXTRA_EMAILS).strip()
     emails = _parse_csv_emails(raw)
-    return emails if emails else None
+    return emails if emails else _parse_csv_emails(_DEFAULT_EXTRA_EMAILS)
 
 
 def is_ai_module_enabled_for_user(user: User) -> bool:
-    allowlist = get_ai_module_allowlist_emails()
-    if allowlist is None:
+    if bool(getattr(user, "is_admin", False)):
         return True
     email = (getattr(user, "email", None) or "").strip().lower()
-    return email in allowlist
+    return email in get_ai_module_allowlist_emails()
 
 
 def is_ai_module_product_gen_enabled_for_user(user: User) -> bool:
-    allowlist = get_ai_module_allowlist_emails()
-    if allowlist is not None:
-        return is_ai_module_enabled_for_user(user)
-    return bool(getattr(user, "is_admin", False))
+    return is_ai_module_enabled_for_user(user)
 
 
 def is_daily_brief_enabled() -> bool:
