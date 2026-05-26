@@ -34,8 +34,8 @@ function StatusPill({ status, version }) {
 }
 
 export default function OfferAiBlock() {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [adminChecked, setAdminChecked] = useState(false);
+  const [canUse, setCanUse] = useState(false);
+  const [accessChecked, setAccessChecked] = useState(false);
 
   const [status, setStatus] = useState({ status: 'idle', active_version: null, indexed_at: null, error_message: null });
   const [statusLoading, setStatusLoading] = useState(false);
@@ -73,19 +73,18 @@ export default function OfferAiBlock() {
   }
 
   useEffect(() => {
-    // admin gate
     api.getMe()
       .then((me) => {
-        setIsAdmin(Boolean(me?.is_admin));
-        setAdminChecked(true);
+        setCanUse(Boolean(me?.ai_module_enabled));
+        setAccessChecked(true);
       })
-      .catch(() => setAdminChecked(true));
+      .catch(() => setAccessChecked(true));
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!canUse) return;
     refreshStatus();
-  }, [isAdmin]);
+  }, [canUse]);
 
   // Polling while indexing
   useEffect(() => {
@@ -108,11 +107,11 @@ export default function OfferAiBlock() {
 
   // Restore history after refresh (when offer is ready)
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!canUse) return;
     if (!canAsk) return;
     if (!chatId) return;
     loadChatHistory(chatId);
-  }, [isAdmin, canAsk, chatId]);
+  }, [canUse, canAsk, chatId]);
 
   async function onUploadClick() {
     setUploadError('');
@@ -185,8 +184,8 @@ export default function OfferAiBlock() {
     }
   }
 
-  if (!adminChecked) return null;
-  if (!isAdmin) return null;
+  if (!accessChecked) return null;
+  if (!canUse) return null;
 
   return (
     <div className="ai-card" style={{ flexDirection: 'column', alignItems: 'stretch' }}>

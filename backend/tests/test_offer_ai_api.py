@@ -137,7 +137,7 @@ def test_offer_ask_happy_path(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert data["sources"][0]["chunk_id"] == 1
 
 
-def test_offer_chat_requires_admin(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_offer_chat_requires_ai_module_access(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # Seed redis state to ready
     from app.services.offer_index_state import set_offer_index_state, OfferIndexState
 
@@ -150,12 +150,14 @@ def test_offer_chat_requires_admin(client: TestClient, monkeypatch: pytest.Monke
         )
     )
 
-    # Override auth for this test: non-admin user
+    # User without AI module access (not admin, not on allowlist)
     app.dependency_overrides[get_current_user] = lambda: MagicMock(
         id="00000000-0000-0000-0000-000000000002",
         is_active=True,
         is_admin=False,
+        email="stranger@example.com",
     )
+    monkeypatch.setattr("app.dependencies.is_ai_module_enabled_for_user", lambda _user: False)
 
     r = client.post("/offer/chat/start", json={"chat_id": "00000000-0000-0000-0000-000000000001"})
     assert r.status_code == 403

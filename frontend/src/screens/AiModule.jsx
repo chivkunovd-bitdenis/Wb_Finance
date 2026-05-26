@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
+import OfferAiBlock from '../components/OfferAiBlock';
 
 const LS_SELECTED_NM_ID = 'ai_module_selected_nm_id';
 const LS_HIDE_COMPARISON_CALLOUT = 'ai_module_hide_comparison_callout';
@@ -3401,6 +3402,8 @@ export default function AiModule() {
           </div>
         </>
       )}
+
+      <OfferAiBlock />
 
       <ProductPickerModal
         open={pickerOpen}

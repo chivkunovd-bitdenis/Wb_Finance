@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_ai_module_user
 from app.db import get_db
 from app.models.user import User
 from app.schemas.offer_ai import (
@@ -24,19 +24,12 @@ from app.schemas.offer_ai import (
     OfferUploadResponse,
 )
 from app.services.offer_index_state import get_offer_index_state, mark_indexing
-from app.services.offer_chat_service import chat_ask, get_or_create_chat, load_history, require_admin
+from app.services.offer_chat_service import chat_ask, get_or_create_chat, load_history
 from app.services.offer_rag_service import compute_offer_version, ask_offer
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/offer", tags=["offer-ai"])
-
-
-def _require_admin(current_user: User) -> None:
-    try:
-        require_admin(current_user)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 def _safe_meta(obj) -> dict | None:
@@ -71,7 +64,7 @@ def offer_status(current_user: User = Depends(get_current_user)) -> OfferStatusR
 @router.post("/upload", response_model=OfferUploadResponse)
 def upload_offer(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_ai_module_user),
 ) -> OfferUploadResponse:
     name = (file.filename or "offer").lower()
     if not (name.endswith(".pdf") or name.endswith(".txt") or name.endswith(".html")):
@@ -145,10 +138,9 @@ def offer_ask(
 @router.post("/chat/start", response_model=OfferChatStartResponse)
 def offer_chat_start(
     body: OfferChatStartRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_ai_module_user),
     db: Session = Depends(get_db),
 ) -> OfferChatStartResponse:
-    _require_admin(current_user)
     st = get_offer_index_state()
     if st.status != "ready" or not st.active_version:
         raise HTTPException(
@@ -163,10 +155,9 @@ def offer_chat_start(
 @router.post("/chat/reset")
 def offer_chat_reset(
     body: OfferChatStartRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_ai_module_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_admin(current_user)
     from app.services.offer_chat_service import reset_chat
 
     reset_chat(db=db, chat_id=str(body.chat_id), user=current_user)
@@ -176,10 +167,9 @@ def offer_chat_reset(
 @router.get("/chat/history", response_model=OfferChatHistoryResponse)
 def offer_chat_history(
     chat_id: str = Query(min_length=8, max_length=64),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_ai_module_user),
     db: Session = Depends(get_db),
 ) -> OfferChatHistoryResponse:
-    _require_admin(current_user)
     st = get_offer_index_state()
     if st.status != "ready" or not st.active_version:
         raise HTTPException(
@@ -204,10 +194,9 @@ def offer_chat_history(
 @router.post("/chat/ask", response_model=OfferChatAskResponse)
 def offer_chat_ask(
     body: OfferChatAskRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_ai_module_user),
     db: Session = Depends(get_db),
 ) -> OfferChatAskResponse:
-    _require_admin(current_user)
     st = get_offer_index_state()
     if st.status != "ready" or not st.active_version:
         raise HTTPException(
