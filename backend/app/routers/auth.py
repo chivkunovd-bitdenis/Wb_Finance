@@ -6,6 +6,10 @@ from app.models.user import User
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse, UpdateWbApiKeyRequest, TaxSettingsResponse, TaxSettingsUpdate
 from app.core.security import hash_password, verify_password, create_access_token
 from app.dependencies import get_current_user, get_store_context
+from app.core.feature_flags import (
+    is_ai_module_enabled_for_user,
+    is_ai_module_product_gen_enabled_for_user,
+)
 from app.services.store_access_service import StoreContext
 from app.services.billing_service import redeem_promo_code, start_trial_if_needed
 
@@ -23,6 +27,18 @@ def _password_72(s: str) -> str:
 
 def _user_id(u):
     return str(u.id) if u else None
+
+
+def _user_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=_user_id(user),
+        email=user.email,
+        wb_api_key=user.wb_api_key,
+        is_admin=bool(getattr(user, "is_admin", False)),
+        is_active=user.is_active,
+        ai_module_enabled=is_ai_module_enabled_for_user(user),
+        ai_module_product_gen_enabled=is_ai_module_product_gen_enabled_for_user(user),
+    )
 
 
 @router.post("/register", response_model=UserResponse)
@@ -65,13 +81,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
         db.commit()
         db.refresh(user)
-        return UserResponse(
-            id=_user_id(user),
-            email=user.email,
-            wb_api_key=user.wb_api_key,
-            is_admin=bool(user.is_admin),
-            is_active=user.is_active,
-        )
+        return _user_response(user)
     except HTTPException:
         raise
     except Exception as e:
@@ -103,13 +113,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def me(store_ctx: StoreContext = Depends(get_store_context)):
     current_user = store_ctx.store_owner
-    return UserResponse(
-        id=_user_id(current_user),
-        email=current_user.email,
-        wb_api_key=current_user.wb_api_key,
-        is_admin=bool(getattr(current_user, "is_admin", False)),
-        is_active=current_user.is_active,
-    )
+    return _user_response(current_user)
 
 
 @router.put("/wb-key", response_model=UserResponse)
@@ -123,13 +127,7 @@ def update_wb_key(
     start_trial_if_needed(db, current_user)
     db.commit()
     db.refresh(current_user)
-    return UserResponse(
-        id=_user_id(current_user),
-        email=current_user.email,
-        wb_api_key=current_user.wb_api_key,
-        is_admin=bool(getattr(current_user, "is_admin", False)),
-        is_active=current_user.is_active,
-    )
+    return _user_response(current_user)
 
 
 @router.get("/settings", response_model=TaxSettingsResponse)

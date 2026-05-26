@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 
@@ -1547,7 +1548,7 @@ function ProductGenerationJobCard({ row, loading, onOpen }) {
 
 function ProductGenerationAdminCard() {
   const [meChecked, setMeChecked] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [productGenEnabled, setProductGenEnabled] = useState(false);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1569,10 +1570,10 @@ function ProductGenerationAdminCard() {
       try {
         const me = await api.getMe();
         if (cancelled) return;
-        setIsAdmin(Boolean(me?.is_admin));
+        setProductGenEnabled(Boolean(me?.ai_module_product_gen_enabled));
       } catch {
         if (cancelled) return;
-        setIsAdmin(false);
+        setProductGenEnabled(false);
       } finally {
         if (!cancelled) setMeChecked(true);
       }
@@ -1597,10 +1598,10 @@ function ProductGenerationAdminCard() {
   }, []);
 
   useEffect(() => {
-    if (!meChecked || !isAdmin || VITE_PRODUCT_GEN_UI_STUB) return undefined;
+    if (!meChecked || !productGenEnabled || VITE_PRODUCT_GEN_UI_STUB) return undefined;
     load();
     return undefined;
-  }, [meChecked, isAdmin, load]);
+  }, [meChecked, productGenEnabled, load]);
 
   const needsImagePipelinePoll = useMemo(
     () =>
@@ -1614,16 +1615,16 @@ function ProductGenerationAdminCard() {
   );
 
   useEffect(() => {
-    if (!meChecked || !isAdmin || VITE_PRODUCT_GEN_UI_STUB) return undefined;
+    if (!meChecked || !productGenEnabled || VITE_PRODUCT_GEN_UI_STUB) return undefined;
     if (wizardOpen || pipelineLogOpen) return undefined;
     if (!needsImagePipelinePoll) return undefined;
     const timer = setInterval(() => {
       load({ silent: true });
     }, 4000);
     return () => clearInterval(timer);
-  }, [meChecked, isAdmin, needsImagePipelinePoll, wizardOpen, pipelineLogOpen, load]);
+  }, [meChecked, productGenEnabled, needsImagePipelinePoll, wizardOpen, pipelineLogOpen, load]);
 
-  if (!meChecked || !isAdmin) return null;
+  if (!meChecked || !productGenEnabled) return null;
 
   if (VITE_PRODUCT_GEN_UI_STUB) {
     return (
@@ -3197,6 +3198,26 @@ function HypothesesTab({ selectedNmId }) {
 }
 
 export default function AiModule() {
+  const [moduleChecked, setModuleChecked] = useState(false);
+  const [moduleEnabled, setModuleEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getMe()
+      .then((me) => {
+        if (cancelled) return;
+        setModuleEnabled(me?.ai_module_enabled !== false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setModuleEnabled(false);
+      })
+      .finally(() => {
+        if (!cancelled) setModuleChecked(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const [selectedNmId, setSelectedNmId] = useState(() => {
     const v = (lsGet(LS_SELECTED_NM_ID) || '').trim();
     const n = Number(v);
@@ -3330,6 +3351,9 @@ export default function AiModule() {
       setComparisonBusy(false);
     }
   };
+
+  if (!moduleChecked) return null;
+  if (!moduleEnabled) return <Navigate to="/dashboard" replace />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

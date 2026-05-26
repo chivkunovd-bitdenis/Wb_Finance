@@ -1,10 +1,24 @@
 import { NavLink } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import * as api from '../api';
 import { useStore } from '../StoreContext';
 
 export default function Sidebar({ onLogout }) {
   const { stores, loadingStores, storesError, refreshStores, activeStoreOwnerId, setActiveStoreOwnerId } = useStore();
   const [storesOpen, setStoresOpen] = useState(false);
+  const [aiModuleEnabled, setAiModuleEnabled] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getMe()
+      .then((me) => {
+        if (!cancelled) setAiModuleEnabled(me?.ai_module_enabled !== false);
+      })
+      .catch(() => {
+        if (!cancelled) setAiModuleEnabled(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const storeItems = useMemo(() => {
     const list = Array.isArray(stores) ? stores : [];
@@ -15,16 +29,19 @@ export default function Sidebar({ onLogout }) {
     }));
   }, [stores]);
 
-  const nav = [
-    { to: '/dashboard', label: 'Дашборд', icon: '📊' },
-    { to: '/articles', label: 'Артикулы', icon: '📦' },
-    { to: '/funnel', label: 'Воронка', icon: '📈' },
-    { to: '/ai-module', label: 'ИИ модуль', icon: '🧠' },
-    { to: '/costs', label: 'Себестоимость', icon: '💰' },
-    { to: '/operational-expenses', label: 'Опер. расходы', icon: '🧾' },
-    { to: '/billing', label: 'Подписка', icon: '💳' },
-    { to: '/settings', label: 'Настройки', icon: '⚙️' },
-  ];
+  const nav = useMemo(() => {
+    const items = [
+      { to: '/dashboard', label: 'Дашборд', icon: '📊' },
+      { to: '/articles', label: 'Артикулы', icon: '📦' },
+      { to: '/funnel', label: 'Воронка', icon: '📈' },
+      { to: '/ai-module', label: 'ИИ модуль', icon: '🧠' },
+      { to: '/costs', label: 'Себестоимость', icon: '💰' },
+      { to: '/operational-expenses', label: 'Опер. расходы', icon: '🧾' },
+      { to: '/billing', label: 'Подписка', icon: '💳' },
+      { to: '/settings', label: 'Настройки', icon: '⚙️' },
+    ];
+    return items.filter((item) => item.to !== '/ai-module' || aiModuleEnabled);
+  }, [aiModuleEnabled]);
 
   return (
     <aside className="sidebar">

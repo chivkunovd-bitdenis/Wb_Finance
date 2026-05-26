@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import require_admin_user
+from app.dependencies import require_ai_module_product_user
 from app.models.user import User
 from app.schemas.product_generation import (
     ProductGenerationJobCreate,
@@ -50,7 +50,7 @@ def _require_reference_internal_auth(authorization: str | None = Header(default=
 @router.post("/jobs", response_model=ProductGenerationJobOut, status_code=status.HTTP_201_CREATED)
 def create_job(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
     body: ProductGenerationJobCreate | None = Body(default=None),
 ) -> ProductGenerationJobOut:
     job = pg_service.create_job(db=db, user=current_user, payload=body)
@@ -60,7 +60,7 @@ def create_job(
 @router.get("/jobs", response_model=ProductGenerationJobListResponse)
 def list_jobs(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobListResponse:
     rows = pg_service.list_jobs(db=db, user=current_user)
     items = [enrich_job_out_with_image_pipeline(ProductGenerationJobOut.model_validate(r)) for r in rows]
@@ -71,7 +71,7 @@ def list_jobs(
 def get_job(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobOut:
     job = pg_service.get_job_for_user(db=db, user=current_user, job_id=job_id)
     if not job:
@@ -83,7 +83,7 @@ def get_job(
 async def upload_job_references(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
     files: list[UploadFile] = File(...),
 ) -> ProductGenerationJobOut:
     try:
@@ -123,7 +123,7 @@ def download_job_reference_file(
     job_id: str,
     asset_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> FileResponse:
     try:
         path, meta = pg_service.get_reference_file(db=db, user=current_user, job_id=job_id, asset_id=asset_id)
@@ -163,7 +163,7 @@ def download_generated_asset_file(
     job_id: str,
     asset_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> Response:
     job = pg_service.get_job_for_user(db=db, user=current_user, job_id=job_id)
     if not job:
@@ -189,7 +189,7 @@ def download_generated_asset_file(
 def start_job_pipeline(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobOut:
     try:
         job = pg_service.start_job_pipeline(db=db, user=current_user, job_id=job_id)
@@ -233,7 +233,7 @@ def start_job_pipeline(
 def stop_job_pipeline(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobOut:
     try:
         job = pg_service.stop_job_pipeline(db=db, user=current_user, job_id=job_id)
@@ -261,7 +261,7 @@ def start_job_content_generation(
     job_id: str,
     body: dict[str, str] = Body(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobOut:
     selected_asset_id = str(body.get("selected_asset_id") or "").strip()
     try:
@@ -297,7 +297,7 @@ def patch_job(
     job_id: str,
     body: ProductGenerationJobUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_user),
+    current_user: User = Depends(require_ai_module_product_user),
 ) -> ProductGenerationJobOut:
     try:
         job = pg_service.update_job(db=db, user=current_user, job_id=job_id, payload=body)

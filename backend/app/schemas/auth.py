@@ -24,6 +24,8 @@ class UserResponse(BaseModel):
     wb_api_key: str | None
     is_admin: bool
     is_active: bool
+    ai_module_enabled: bool = True
+    ai_module_product_gen_enabled: bool = False
 
     class Config:
         from_attributes = True

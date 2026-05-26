@@ -6,6 +6,10 @@ from app.db import get_db
 from app.models.user import User
 from app.core.security import decode_access_token
 from app.services.billing_service import require_access, start_trial_if_needed
+from app.core.feature_flags import (
+    is_ai_module_enabled_for_user,
+    is_ai_module_product_gen_enabled_for_user,
+)
 from app.services.offer_chat_service import require_admin
 from app.services.store_access_service import (
     StoreAccessDeniedError,
@@ -86,6 +90,24 @@ def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
+    return current_user
+
+
+def require_ai_module_user(current_user: User = Depends(get_current_user)) -> User:
+    if not is_ai_module_enabled_for_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ИИ модуль недоступен для вашего аккаунта",
+        )
+    return current_user
+
+
+def require_ai_module_product_user(current_user: User = Depends(get_current_user)) -> User:
+    if not is_ai_module_product_gen_enabled_for_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Требуются права администратора",
+        )
     return current_user
 
 

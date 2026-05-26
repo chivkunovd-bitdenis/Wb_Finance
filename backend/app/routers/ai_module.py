@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, 
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import get_store_context
+from app.dependencies import get_store_context, require_ai_module_user
 from app.schemas.ai_module import (
     AiCompetitorReportActionItem,
     AiCompetitorReportActionListResponse,
@@ -88,7 +88,11 @@ from app.models.ai_task import AiTask
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ai", tags=["ai-module"])
+router = APIRouter(
+    prefix="/ai",
+    tags=["ai-module"],
+    dependencies=[Depends(require_ai_module_user)],
+)
 
 
 @router.get("/tasks", response_model=AiTaskListResponse)
