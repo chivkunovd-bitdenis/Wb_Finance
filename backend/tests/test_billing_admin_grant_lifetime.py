@@ -70,3 +70,30 @@ def test_admin_grant_lifetime_grants_by_normalized_email(
     assert called["user_id"] == "u1"
     db.commit.assert_called_once()
 
+
+def test_admin_grant_admin_sets_flag(
+    client_with_mock_db: tuple[TestClient, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db = client_with_mock_db
+    from app.routers import billing as billing_router
+    from app.services import billing_service
+
+    monkeypatch.setattr(billing_service, "ADMIN_SECRET", "secret", raising=True)
+    monkeypatch.setattr(billing_router, "ADMIN_SECRET", "secret", raising=True)
+
+    user = SimpleNamespace(id="u1", email="denischivkunov@icloud.com", is_admin=False)
+    db.query.return_value.filter.return_value.first.return_value = user
+
+    r = client.post(
+        "/billing/admin/grant-admin",
+        headers={"X-Admin-Secret": "secret"},
+        json={"email": "denischivkunov@icloud.com"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["is_admin"] is True
+    assert user.is_admin is True
+    db.add.assert_called_once_with(user)
+    db.commit.assert_called_once()
+

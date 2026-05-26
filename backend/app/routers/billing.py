@@ -121,6 +121,10 @@ class GrantLifetimeRequest(BaseModel):
     email: EmailStr
 
 
+class GrantAdminRequest(BaseModel):
+    email: EmailStr
+
+
 @router.post("/admin/grant-lifetime", include_in_schema=False)
 def admin_grant_lifetime(
     body: GrantLifetimeRequest,
@@ -137,6 +141,25 @@ def admin_grant_lifetime(
     grant_lifetime(db, str(user.id))
     db.commit()
     return {"ok": True, "email": email, "status": "lifetime"}
+
+
+@router.post("/admin/grant-admin", include_in_schema=False)
+def admin_grant_admin(
+    body: GrantAdminRequest,
+    db: Session = Depends(get_db),
+    x_admin_secret: str | None = Header(default=None),
+):
+    """Назначить is_admin пользователю по email. Защищено ADMIN_SECRET."""
+    if not ADMIN_SECRET or x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    email = str(body.email).lower().strip()
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+    user.is_admin = True
+    db.add(user)
+    db.commit()
+    return {"ok": True, "email": email, "is_admin": True}
 
 
 @router.get("/admin/promo-codes", include_in_schema=False)

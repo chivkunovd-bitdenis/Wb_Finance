@@ -7,7 +7,7 @@ def _parse_csv_emails(raw: str) -> set[str]:
     return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
 
-_DEFAULT_EXTRA_EMAILS = "vitalik-hors@mail.ru,denischivkunov@icloud.com"
+_DEFAULT_EXTRA_EMAILS = "vitalik-hors@mail.ru"
 
 
 def get_ai_module_allowlist_emails() -> set[str]:
