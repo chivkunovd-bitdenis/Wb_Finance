@@ -224,6 +224,60 @@ def test_dashboard_state_finance_missing_range_dedup_respects_next_run_at(real_d
         pass
 
 
+def test_dashboard_state_wakes_stale_running_missing_tail(real_db_session, monkeypatch):
+    """
+    Регрессия: если точечная догрузка хвоста застряла в status=running (например, tick умер),
+    /dashboard/state должен уметь "оживить" её повторным kick (idempotent), не требуя ручного сброса.
+    """
+    gen = _authed_client(real_db_session)
+    client, session, user_id, token = next(gen)
+
+    from app.models.raw_sales import RawSale
+    from app.models.finance_missing_sync_state import FinanceMissingSyncState
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # Eligibility + missing-tail: raw_sales есть в окне, но вчера отсутствует.
+    session.add(
+        RawSale(
+            user_id=user_id,
+            date=yesterday - timedelta(days=2),
+            nm_id=123,
+            doc_type="Продажа",
+            retail_price=100,
+            ppvz_for_pay=90,
+            delivery_rub=5,
+            penalty=0,
+            additional_payment=0,
+            storage_fee=0,
+            quantity=1,
+        )
+    )
+    # Stuck running state for the missing tail range.
+    st = FinanceMissingSyncState(
+        user_id=user_id,
+        date_from=yesterday,
+        date_to=yesterday,
+        status="running",
+        next_run_at=None,
+        error_message=None,
+        updated_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    session.add(st)
+    session.commit()
+
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        mock_kick.assert_called()
+
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+
+
 def test_sync_finance_backfill_step_defers_when_pending_missing_exists(monkeypatch, real_db_session):
     from app.models.user import User
     from app.models.finance_missing_sync_state import FinanceMissingSyncState

@@ -322,6 +322,14 @@ def _maybe_start_finance_backfill(
         now_dt = datetime.now(timezone.utc)
         if state is not None:
             if state.status == "running":
+                # If the step is really running (or waiting for WB cooldown), do nothing.
+                # But if it looks stale, wake orchestrator via an idempotent kick.
+                updated = state.updated_at
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                # Conservative: avoid kick storms; only wake if no progress for a while.
+                if now_dt - updated >= timedelta(minutes=10):
+                    return _kick_finance_range_with_funnel_tail(str(user.id), miss.date_from, miss.date_to)
                 return False
             if state.next_run_at is not None:
                 nr = state.next_run_at
@@ -335,6 +343,9 @@ def _maybe_start_finance_backfill(
                 updated = updated.replace(tzinfo=timezone.utc)
             if now_dt - updated <= FINANCE_MISSING_TAIL_COOLDOWN:
                 return False
+            # If a queued state did not progress for too long, re-kick (idempotent) to revive.
+            if state.status == "queued" and now_dt - updated >= timedelta(minutes=30):
+                return _kick_finance_range_with_funnel_tail(str(user.id), miss.date_from, miss.date_to)
         else:
             state = FinanceMissingSyncState(
                 user_id=str(user.id),

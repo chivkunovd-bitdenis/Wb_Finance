@@ -61,6 +61,10 @@ FUNNEL_TAIL_SINGLE_FLIGHT_SEC = 120
 # Orchestrator pacing: keep WB requests spaced even after cooldown.
 ORCH_STEP_DELAY_SEC = 20
 
+# If a user is stuck in orchestrator status=running (e.g. tick died), we must be able to
+# wake a new tick on subsequent kicks without creating a storm.
+ORCH_RUNNING_STALE_WAKE_SEC = 5 * 60  # 5 minutes
+
 # WB иногда возвращает реальное окно "когда можно снова" через заголовки.
 # В логах это видно как reset_sec=... (X-RateLimit-Reset). Значение может быть часами.
 WB_MAX_RETRY_AFTER_SEC = 12 * 60 * 60  # safety cap: 12h
@@ -932,9 +936,17 @@ def wb_orchestrator_kick(user_id: str, intents_patch: dict | None = None) -> dic
         st.intents = _intents_merge(cast(dict, st.intents or {}), cast(dict, intents_patch or {}))
         cooldown_dt = _parse_iso_utc(st.cooldown_until)
         cooldown_expired = st.status == "cooldown" and (cooldown_dt is None or cooldown_dt <= _utcnow())
-        # schedule tick if idle or if a persisted cooldown has already expired; if running, it will pick up intents
-        # on the next loop.
-        if st.status == "idle" or cooldown_expired:
+
+        running_is_stale = False
+        if st.status == "running" and st.updated_at is not None:
+            updated = st.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            running_is_stale = (_utcnow() - updated).total_seconds() >= ORCH_RUNNING_STALE_WAKE_SEC
+
+        # schedule tick if idle/cooldown-expired, or if 'running' looks stale (tick may have died).
+        # If running is healthy, it will pick up intents on the next loop.
+        if st.status == "idle" or cooldown_expired or running_is_stale:
             st.status = "scheduled"
             db.add(st)
             db.commit()

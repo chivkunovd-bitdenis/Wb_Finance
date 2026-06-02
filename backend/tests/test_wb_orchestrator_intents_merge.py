@@ -138,3 +138,35 @@ def test_orchestrator_kick_wakes_expired_cooldown():
     assert state.intents["high"]["funnel_tail"] is True
     assert state.intents["high"]["finance_range"] == {"date_from": "2026-04-28", "date_to": "2026-04-29"}
 
+
+def test_orchestrator_kick_wakes_stale_running():
+    """
+    Регрессия: если tick умер/потерялся, persisted status=running может зависнуть.
+    Новый kick должен уметь разбудить tick без ручного сброса в БД.
+    """
+    user_id = "fed8d7b9-b816-4252-bd9a-a213d73cd99d"
+    state = WbOrchestratorState(
+        user_id=user_id,
+        status="running",
+        cooldown_until=None,
+        intents={"high": {"finance_range": {"date_from": "2026-05-30", "date_to": "2026-06-01"}}},
+        last_step="finance_missing 2026-05-30..2026-05-30",
+    )
+    # Mark state as stale.
+    state.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    session = _FakeSession(state)
+
+    with (
+        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch.object(wb_orchestrator_tick, "delay", return_value=None) as mock_delay,
+    ):
+        out = wb_orchestrator_kick(
+            user_id,
+            {"high": {"funnel_tail": True}},
+        )
+
+    assert out == {"ok": True, "status": "scheduled"}
+    mock_delay.assert_called_once_with(user_id)
+    assert state.status == "scheduled"
+    assert state.intents["high"]["funnel_tail"] is True
+
