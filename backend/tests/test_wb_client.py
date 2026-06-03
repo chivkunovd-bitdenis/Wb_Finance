@@ -172,6 +172,30 @@ def test_fetch_funnel_products_for_day_parses(mock_post):
 
 
 @patch("app.services.wb_client.requests.post")
+def test_fetch_funnel_products_for_day_order_sum_fallback_keys(mock_post):
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {
+        "data": {
+            "products": [
+                {
+                    "product": {"nmId": 1, "vendorCode": "v"},
+                    "statistic": {
+                        "selected": {
+                            "orderCount": 2,
+                            "ordersSumRub": 999.5,
+                            "conversions": {},
+                            "wbClub": {},
+                        }
+                    },
+                }
+            ]
+        }
+    }
+    out = fetch_funnel_products_for_day("2026-06-01", [1], "fake-token")
+    assert out[0]["order_sum"] == 999.5
+
+
+@patch("app.services.wb_client.requests.post")
 def test_fetch_funnel_products_for_day_all_products_when_nm_ids_empty(mock_post):
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = {"data": {"products": []}}

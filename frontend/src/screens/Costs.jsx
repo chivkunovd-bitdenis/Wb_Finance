@@ -1,6 +1,7 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
+import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 
 function TaxRateBlock({ onTaxRateChange }) {
   const [taxPct, setTaxPct] = useState('');
@@ -101,6 +102,7 @@ function TaxRateBlock({ onTaxRateChange }) {
 }
 
 export default function Costs({ range, refreshTrigger, cache, updateCache, onRefresh, onTaxRateChange }) {
+  const storeId = useActiveStoreId();
   const [articles, setArticles] = useState(() => (cache?.articles && Array.isArray(cache.articles) ? cache.articles : []));
   const [costs, setCosts] = useState(() => {
     const list = cache?.articles && Array.isArray(cache.articles) ? cache.articles : [];
@@ -118,15 +120,28 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [funnelRows, setFunnelRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
 
+  const resetForStore = useCallback(() => {
+    setArticles([]);
+    setCosts({});
+    setFunnelRows([]);
+    setExpandedGroups(new Set());
+    setError('');
+    setLoading(true);
+  }, []);
+
+  useResetOnStoreChange(storeId, resetForStore);
+
   useEffect(() => {
+    const reqStore = storeId;
     setLoading(true);
     setError('');
     api
       .getArticles()
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setArticles(list);
-        if (typeof updateCache === 'function') updateCache('articles', list);
+        if (typeof updateCache === 'function') updateCache('articles', list, reqStore);
 
         const c = {};
         list.forEach((a) => {
@@ -134,21 +149,27 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
         });
         setCosts(c);
       })
-      .catch((e) => setError(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoading(false));
-  }, [refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
+      });
+  }, [refreshTrigger, updateCache, storeId]);
 
   useEffect(() => {
     if (!range?.dateFrom || !range?.dateTo) return;
+    const reqStore = storeId;
     api
       .getFunnel(range.dateFrom, range.dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setFunnelRows(list);
-        if (typeof updateCache === 'function') updateCache('funnel', list);
+        if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
       .catch(() => {});
-  }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache]);
+  }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache, storeId]);
 
   const setCost = (nmId, value) => {
     setCosts((prev) => ({ ...prev, [nmId]: value }));

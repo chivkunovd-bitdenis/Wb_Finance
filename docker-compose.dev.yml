@@ -2,15 +2,15 @@ services:
   # Local dev override: avoid port collisions on host.
   postgres:
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
 
   redis:
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
 
   qdrant:
     ports:
-      - "6334:6333"
+      - "127.0.0.1:6334:6333"
 
   api:
     ports:

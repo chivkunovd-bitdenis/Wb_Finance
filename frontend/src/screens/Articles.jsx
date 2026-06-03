@@ -1,7 +1,8 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
+import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 
 function formatNum(n) {
   if (n == null || n === '') return '—';
@@ -62,6 +63,7 @@ function aggregateSku(rows) {
 
 export default function Articles({ range, refreshTrigger, cache, updateCache }) {
   const { dateFrom, dateTo } = range || {};
+  const storeId = useActiveStoreId();
 
   const [sku, setSku] = useState(() => (cache?.sku && Array.isArray(cache.sku) ? cache.sku : []));
   const [articles, setArticles] = useState([]);
@@ -70,40 +72,65 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
   const [expanded, setExpanded] = useState(new Set());
   const [funnelRows, setFunnelRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
 
+  const resetForStore = useCallback(() => {
+    setSku([]);
+    setArticles([]);
+    setFunnelRows([]);
+    setExpanded(new Set());
+    setError('');
+    setLoading(true);
+  }, []);
+
+  useResetOnStoreChange(storeId, resetForStore);
+
   useEffect(() => {
+    const reqStore = storeId;
     api
       .getArticles()
-      .then((data) => setArticles(Array.isArray(data) ? data : []))
-      .catch(() => setArticles([]));
-  }, [refreshTrigger]);
+      .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
+        setArticles(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setArticles([]);
+      });
+  }, [refreshTrigger, storeId]);
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     setLoading(true);
     setError('');
     api
       .getSku(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setSku(list);
-        if (typeof updateCache === 'function') updateCache('sku', list);
+        if (typeof updateCache === 'function') updateCache('sku', list, reqStore);
       })
-      .catch((e) => setError(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
+      });
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   // vendor_code берём из воронки (funnel_daily.vendor_code), потому что в `articles` он часто пустой
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     api
       .getFunnel(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setFunnelRows(list);
-        if (typeof updateCache === 'function') updateCache('funnel', list);
+        if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
       .catch(() => {});
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   // Не мигать при смене дат — показывать старые данные, пока новые не пришли
   const showFullLoader = loading && sku.length === 0;

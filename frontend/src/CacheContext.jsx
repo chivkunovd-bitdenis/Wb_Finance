@@ -18,9 +18,9 @@ export function CacheProvider({ children }) {
     }
   });
 
-  const updateCache = useCallback((slice, data) => {
+  const updateCache = useCallback((slice, data, storeIdOverride) => {
     setCacheState((prev) => {
-      const storeId = activeStoreOwnerId || 'self';
+      const storeId = storeIdOverride || activeStoreOwnerId || 'self';
       const prevObj = prev && typeof prev === 'object' ? prev : {};
       const prevByStore = prevObj.byStore && typeof prevObj.byStore === 'object' ? prevObj.byStore : {};
       const prevLru = Array.isArray(prevObj.lruStores) ? prevObj.lruStores : [];

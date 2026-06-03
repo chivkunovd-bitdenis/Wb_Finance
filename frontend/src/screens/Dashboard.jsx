@@ -1,6 +1,7 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
+import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
 import DailyBriefBlock from '../components/DailyBriefBlock';
@@ -46,6 +47,7 @@ function formatNum(n) {
 
 export default function Dashboard({ range, refreshTrigger, cache, updateCache }) {
   const { dateFrom, dateTo } = range || {};
+  const storeId = useActiveStoreId();
   const [planFactEnabled, setPlanFactEnabled] = useState(false);
   const [planFactEdit, setPlanFactEdit] = useState(false);
   const [planFactMonths, setPlanFactMonths] = useState([]);
@@ -71,20 +73,37 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   const [error, setError] = useState('');
   const [errorFunnel, setErrorFunnel] = useState('');
 
+  const resetForStore = useCallback(() => {
+    setPnl([]);
+    setFunnelRows([]);
+    setError('');
+    setErrorFunnel('');
+    setLoading(true);
+    setLoadingFunnel(true);
+  }, []);
+
+  useResetOnStoreChange(storeId, resetForStore);
+
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     setLoading(true);
     setError('');
     api
       .getPnl(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setPnl(list);
-        if (typeof updateCache === 'function') updateCache('pnl', list);
+        if (typeof updateCache === 'function') updateCache('pnl', list, reqStore);
       })
-      .catch((e) => setError(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
+      });
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   useEffect(() => {
     if (!planFactEnabled) return;
@@ -123,18 +142,24 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     setLoadingFunnel(true);
     setErrorFunnel('');
     api
       .getFunnel(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setFunnelRows(list);
-        if (typeof updateCache === 'function') updateCache('funnel', list);
+        if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
-      .catch((e) => setErrorFunnel(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoadingFunnel(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setErrorFunnel(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoadingFunnel(false);
+      });
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   const filtered = useMemo(() => {
     if (!dateFrom || !dateTo) return [];

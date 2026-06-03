@@ -1019,18 +1019,10 @@ def _orch_funnel_tail_step(db, *, user_id: str) -> dict:
     """
     Repair funnel only for rolling 7 days, one WB request per tick (one day).
     """
+    from app.services.funnel_tail_repair import funnel_days_needing_repair
+
     start_d, end_d = _funnel_rolling_window_dates()
-    present_dates = {
-        d
-        for (d,) in (
-            db.query(FunnelDaily.date)
-            .filter(FunnelDaily.user_id == user_id, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
-            .distinct()
-            .all()
-        )
-    }
-    window_days = [start_d + timedelta(days=i) for i in range((end_d - start_d).days + 1)]
-    missing = [d for d in window_days if d not in present_dates]
+    missing = funnel_days_needing_repair(db, user_id, start=start_d, through=end_d)
     if not missing:
         return {"ok": True, "message": "complete"}
     day_d = max(missing)
@@ -1797,18 +1789,10 @@ def sync_funnel_tail_repair(user_id: str, retry_raw: str | None = None) -> dict:
             if age.total_seconds() < FUNNEL_TAIL_SINGLE_FLIGHT_SEC:
                 return {"ok": True, "status": "running"}
 
+        from app.services.funnel_tail_repair import funnel_days_needing_repair
+
         start_d, end_d = _funnel_rolling_window_dates()
-        present_dates = {
-            d
-            for (d,) in (
-                db.query(FunnelDaily.date)
-                .filter(FunnelDaily.user_id == uid, FunnelDaily.date >= start_d, FunnelDaily.date <= end_d)
-                .distinct()
-                .all()
-            )
-        }
-        window_days = [start_d + timedelta(days=i) for i in range((end_d - start_d).days + 1)]
-        missing = [d for d in window_days if d not in present_dates]
+        missing = funnel_days_needing_repair(db, str(user_id), start=start_d, through=end_d)
         if not missing:
             state.status = "idle"
             state.error_message = None

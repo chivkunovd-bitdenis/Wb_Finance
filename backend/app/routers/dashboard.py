@@ -31,6 +31,7 @@ import logging
 from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick, wb_orchestrator_tick
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
+from app.services.funnel_tail_repair import funnel_days_needing_repair, funnel_rolling_window
 from sqlalchemy.exc import IntegrityError
 from app.schemas.dashboard import (
     PnlDayResponse,
@@ -219,6 +220,24 @@ def _kick_finance_range_with_funnel_tail(user_id: str, date_from: date_type, dat
         return False
 
 
+def _clear_funnel_tail_intent(db: Session, user_id: str) -> None:
+    """Снять залипший intent funnel_tail, когда rolling-окно уже закрыто."""
+    orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
+    if not orch or not isinstance(orch.intents, dict):
+        return
+    high = dict(orch.intents.get("high") or {})
+    if high.get("funnel_tail") is not True:
+        return
+    high.pop("funnel_tail", None)
+    intents = dict(orch.intents)
+    intents["high"] = high
+    orch.intents = intents
+    if orch.status in {"scheduled", "cooldown"} and not high and not dict(orch.intents.get("low") or {}):
+        orch.status = "idle"
+    db.add(orch)
+    db.commit()
+
+
 def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type) -> bool:
     """
     Dashboard-entry contract: even if finance is already complete, missing funnel days in the
@@ -227,25 +246,24 @@ def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type)
     if not user.wb_api_key or not user.wb_api_key.strip():
         return False
 
-    window_from = through - timedelta(days=6)
-    present_dates = {
-        d
-        for (d,) in (
-            db.query(FunnelDaily.date)
-            .filter(FunnelDaily.user_id == user.id, FunnelDaily.date >= window_from, FunnelDaily.date <= through)
-            .distinct()
-            .all()
-        )
-    }
-    window_days = [window_from + timedelta(days=i) for i in range((through - window_from).days + 1)]
+    window_from, window_through = funnel_rolling_window(through=through)
+    missing_days = funnel_days_needing_repair(
+        db,
+        str(user.id),
+        start=window_from,
+        through=window_through,
+    )
 
     orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(user.id)).first()
     high = orch.intents.get("high", {}) if orch and isinstance(orch.intents, dict) else {}
     has_pending_funnel_tail = isinstance(high, dict) and high.get("funnel_tail") is True
     is_idle_or_scheduled = orch is not None and orch.status in {"idle", "scheduled"}
 
-    # Existing stale/pending intents must be processed for all users, not only for the one manually woken.
-    # If data is already complete, the tick will clear the consumed intent; if not, it will continue repair.
+    if not missing_days:
+        if has_pending_funnel_tail:
+            _clear_funnel_tail_intent(db, str(user.id))
+        return False
+
     if has_pending_funnel_tail:
         if is_idle_or_scheduled:
             try:
@@ -253,9 +271,6 @@ def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type)
                 return True
             except Exception as exc:
                 logger.exception("Celery delay failed (wb_orchestrator_tick funnel_tail wake): %s", exc)
-        return False
-
-    if all(d in present_dates for d in window_days):
         return False
 
     try:
@@ -683,9 +698,19 @@ def get_dashboard_state(
         Первый ответ /dashboard/state может вернуться раньше, чем celery обработает kick,
         поэтому учитываем локальный факт постановки `funnel_tail_requested`.
         """
+        window_from, window_through = funnel_rolling_window(through=through_cap)
+        still_needs_repair = bool(
+            funnel_days_needing_repair(
+                db,
+                str(store_user.id),
+                start=window_from,
+                through=window_through,
+            )
+        )
         row = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(store_user.id)).first()
         high = row.intents.get("high", {}) if row and isinstance(row.intents, dict) else {}
-        pending = bool(funnel_tail_requested or (isinstance(high, dict) and high.get("funnel_tail") is True))
+        intent_pending = isinstance(high, dict) and high.get("funnel_tail") is True
+        pending = bool(still_needs_repair and (funnel_tail_requested or intent_pending))
         status = "idle"
         if pending:
             status = row.status if row and row.status != "idle" else "queued"

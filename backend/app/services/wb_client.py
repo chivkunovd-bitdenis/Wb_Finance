@@ -277,6 +277,19 @@ def _int_nm(nm_raw: object) -> int | None:
     return v if v > 0 else None
 
 
+def _metric_float(block: dict, *keys: str) -> float:
+    """Первое найденное числовое поле (WB периодически меняет имена метрик воронки)."""
+    for key in keys:
+        raw = block.get(key)
+        if raw is None:
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) -> list[dict]:
     """
     Воронка за один календарный день через POST /sales-funnel/products (агрегаты за день на товар).
@@ -359,7 +372,7 @@ def fetch_funnel_products_for_day(day: str, nm_ids: list[int], wb_api_key: str) 
             "open_count": int(sel.get("openCount") or 0),
             "cart_count": int(sel.get("cartCount") or 0),
             "order_count": int(sel.get("orderCount") or 0),
-            "order_sum": float(sel.get("orderSum") or 0),
+            "order_sum": _metric_float(sel, "orderSum", "ordersSumRub", "orderSumRub", "ordersSum"),
             "buyout_percent": buyout_f,
             "cr_to_cart": cr_to_cart,
             "cr_to_order": cr_to_order,
@@ -491,7 +504,7 @@ def _parse_funnel_history_response(data: object, _date_from: str, _date_to: str)
                 "open_count": int(h.get("openCount") or 0),
                 "cart_count": int(h.get("cartCount") or 0),
                 "order_count": int(h.get("orderCount") or 0),
-                "order_sum": float(h.get("orderSum") or 0),
+                "order_sum": _metric_float(h, "orderSum", "ordersSumRub", "orderSumRub", "ordersSum"),
                 "buyout_percent": float(h.get("buyoutPercent") or 0),
                 "cr_to_cart": float(h.get("addToCartConversion") or h.get("cr1") or 0),
                 "cr_to_order": float(h.get("cartToOrderConversion") or h.get("cr2") or 0),

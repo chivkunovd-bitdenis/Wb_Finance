@@ -7,10 +7,16 @@ cd "$ROOT"
 echo "==> git pull"
 git pull
 
+bash "$(dirname "$0")/ensure-redis-password.sh"
+set -a
+# shellcheck disable=SC1091
+source "$ROOT/backend/.env"
+set +a
+
 echo "==> поднимаем redis и очищаем Celery очередь (FLUSHDB)"
 docker compose up -d redis
 docker compose stop celery_worker celery_beat || true
-docker compose exec -T redis redis-cli FLUSHDB
+docker compose exec -T redis redis-cli -a "$REDIS_PASSWORD" FLUSHDB
 docker compose up -d postgres
 docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_missing_sync_state SET status = 'idle', next_run_at = NULL, error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status IN ('running', 'error') OR next_run_at IS NOT NULL;"
 docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"

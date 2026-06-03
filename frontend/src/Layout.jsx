@@ -15,6 +15,7 @@ import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
 import { useStore } from './StoreContext';
+import { isFinanceMissingSyncActive, isFunnelTailSyncActive } from './storeDataGuard';
 
 export default function Layout() {
   const { logout: authLogout } = useAuth();
@@ -78,14 +79,8 @@ export default function Layout() {
   const funnelTailSync = dashboardState?.funnel_tail_sync || null;
   const financeStatus2026 = financeBackfill2026?.status || 'idle';
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
-  const financeMissingActive = Boolean(
-    financeMissingSync &&
-      (['queued', 'running'].includes(financeMissingSync.status) ||
-        (financeMissingSync.status === 'idle' && financeMissingSync.next_run_at)),
-  );
-  const funnelTailActive = Boolean(
-    funnelTailSync?.pending || ['queued', 'scheduled', 'running', 'cooldown'].includes(funnelTailSync?.status),
-  );
+  const financeMissingActive = isFinanceMissingSyncActive(financeMissingSync);
+  const funnelTailActive = isFunnelTailSyncActive(funnelTailSync);
   const loadBillingStatus = useCallback(async () => {
     try {
       const data = await api.getBillingStatus();
@@ -420,10 +415,8 @@ export default function Layout() {
                   <span className="loader-spinner-sm" style={{ marginLeft: 4 }} />
                 </div>
               )}
-              {(financeMissingSync?.status === 'queued'
-                || financeMissingSync?.status === 'running'
-                || (financeMissingSync?.status === 'idle' && financeMissingSync?.next_run_at)
-                || financeMissingSync?.status === 'error'
+              {(financeMissingActive
+                || (financeMissingSync?.status === 'error' && financeMissingSync?.error_message)
                 || funnelTailActive) && (
                 <div
                   style={{

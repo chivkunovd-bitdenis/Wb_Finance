@@ -1,6 +1,7 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
+import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 
 function formatDateShort(iso) {
   if (!iso) return '';
@@ -19,6 +20,7 @@ function pct1(value) {
 
 export default function Funnel({ range, refreshTrigger, cache, updateCache, dashboardState }) {
   const { dateFrom, dateTo } = range || {};
+  const storeId = useActiveStoreId();
 
   const [rows, setRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
   const [loading, setLoading] = useState(() => !(cache?.funnel?.length));
@@ -34,44 +36,77 @@ export default function Funnel({ range, refreshTrigger, cache, updateCache, dash
   const [expanded, setExpanded] = useState(new Set()); // open/close article days
   const [expandedCategories, setExpandedCategories] = useState(new Set()); // open/close category groups (hidden by default)
 
+  const resetForStore = useCallback(() => {
+    setRows([]);
+    setSkuRows([]);
+    setArticles([]);
+    setExpanded(new Set());
+    setExpandedCategories(new Set());
+    setError('');
+    setErrorSku('');
+    setErrorArticles('');
+    setLoading(true);
+    setLoadingSku(true);
+  }, []);
+
+  useResetOnStoreChange(storeId, resetForStore);
+
   useEffect(() => {
+    const reqStore = storeId;
     api
       .getArticles()
-      .then((data) => setArticles(Array.isArray(data) ? data : []))
-      .catch((e) => setErrorArticles(e.message || 'Ошибка загрузки'));
-  }, [refreshTrigger]);
+      .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
+        setArticles(Array.isArray(data) ? data : []);
+      })
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setErrorArticles(e.message || 'Ошибка загрузки');
+      });
+  }, [refreshTrigger, storeId]);
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     setLoading(true);
     setError('');
     setRows([]);
     api
       .getFunnel(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setRows(list);
-        if (typeof updateCache === 'function') updateCache('funnel', list);
+        if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
-      .catch((e) => setError(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
+      });
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
+    const reqStore = storeId;
     setLoadingSku(true);
     setErrorSku('');
     setSkuRows([]);
     api
       .getSku(dateFrom, dateTo)
       .then((data) => {
+        if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setSkuRows(list);
-        if (typeof updateCache === 'function') updateCache('sku', list);
+        if (typeof updateCache === 'function') updateCache('sku', list, reqStore);
       })
-      .catch((e) => setErrorSku(e.message || 'Ошибка загрузки'))
-      .finally(() => setLoadingSku(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+      .catch((e) => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setErrorSku(e.message || 'Ошибка загрузки');
+      })
+      .finally(() => {
+        if (!isStaleStoreResponse(reqStore, storeId)) setLoadingSku(false);
+      });
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
 
   const showFullLoader = loading || loadingSku;
 

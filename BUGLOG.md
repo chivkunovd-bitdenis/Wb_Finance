@@ -9,6 +9,82 @@
 - **Автоматизация**: указывать `да/нет` и чем выявлено/что автоматизировали (тест, алерт, CI, ручной репорт).
 
 ---
+ID: BUG-47
+Дата: 2026-06-03
+Статус: fixed
+Автоматизация: нет (ручной разбор логов Redis на VPS)
+
+## Бизнес-описание
+Фоновая синхронизация (воронка, финансы, суммы заказов) периодически останавливалась: Celery «падал», баннер крутился, данные не догружались.
+
+## Процесс / сценарий
+1) Пользователи работают в дашборде.
+2) Внезапно перестают догружаться последние дни / пропадают суммы заказов.
+3) В логах Celery: `ReadOnlyError: You can't write against a read only replica`.
+
+## Техническое описание
+Redis в Docker был опубликован на `0.0.0.0:6379` без пароля. Сканеры из интернета выполняли `REPLICAOF 183.11.226.207:7125` — Redis становился slave чужого master и read-only. Аналогично торчали наружу Postgres `5432` и Qdrant `6333`.
+
+## Root cause (почему произошло)
+- Инфраструктура: открытые порты БД/очереди на VPS без firewall и без `requirepass`.
+- Классическая атака на открытый Redis (SLAVEOF hijack).
+
+## Исправление (что сделали)
+- Убраны публичные порты redis/postgres/qdrant/wip API; api только `127.0.0.1:8000`.
+- Redis: `requirepass`, отключены команды `REPLICAOF`/`SLAVEOF`.
+- `REDIS_URL`/`WIP_REDIS_URL` с паролем в `backend/.env`; скрипты `ensure-redis-password.sh`, `harden-server-ufw.sh`, `deploy-prod.sh`.
+- UFW: только 22/80/443 (+8444).
+
+## Профилактика (как не повторить)
+Не публиковать Redis/Postgres в интернет; пароль + firewall; мониторить `redis logs` на `REPLICAOF`.
+
+## Проверка
+- На VPS: `ss -tlnp` — нет `0.0.0.0:6379`; `redis-cli -a ... ping`; `celery inspect ping`; `ufw status`.
+
+Затронутые файлы: `docker-compose.yml`, `docker-compose.dev.yml`, `backend/.env.example`, `backend/celery_app/celery.py`, `scripts/*.sh`, `КАК_ОБНОВИТЬ_СЕРВЕР.md`
+
+---
+ID: BUG-46
+Дата: 2026-06-03
+Статус: fixed
+Автоматизация: да (pytest: hollow funnel days, orderSum fallback keys, funnel tail autostart/clear; frontend lint/build)
+
+## Бизнес-описание
+У части пользователей пропала «сумма заказов» за вчера; на дашборде бесконечно крутился баннер «Догружаем финансы и воронку»; при переключении магазина в «Артикулах» на секунду появлялись чужие артикулы.
+
+## Процесс / сценарий
+1) Пользователь открывает дашборд/артикулы за текущий месяц — в колонке «Заказы ₽» пусто или ноль за вчера при ненулевых заказах.
+2) Сверху постоянно виден спиннер фоновой догрузки воронки+финансов, хотя данные уже есть.
+3) Куратор переключает магазин в сайдбаре — таблица артикулов показывает SKU другого владельца до обновления.
+
+## Техническое описание
+- Rolling repair воронки считал день «готовым», если в `funnel_daily` есть строки, даже когда `order_count>0`, а `order_sum=0` (частичный/устаревший ответ WB). Повторная догрузка не запускалась.
+- Парсер WB products API читал только `orderSum`; при смене имени поля (`ordersSumRub` и др.) суммы сохранялись нулями.
+- UI баннер показывал спиннер при `idle`+любой `next_run_at`, при `error` и при залипшем `funnel_tail` intent без реальной работы оркестратора.
+- Фронт: ответы API без привязки к `activeStoreOwnerId` и запись в LRU-кэш без `storeIdOverride` — гонка при смене магазина подмешивала чужие SKU.
+
+## Root cause (почему произошло)
+- Недоучтён кейс «пустые метрики при наличии дня в витрине».
+- Нет fallback для альтернативных ключей суммы заказов в ответе WB.
+- Баннер не различал «реально идёт синк» и «залипшее служебное состояние».
+- Недостаток изоляции запросов/кэша по магазину на клиенте.
+
+## Исправление (что сделали)
+- Сервис `funnel_tail_repair`: день нуждается в repair, если его нет в витрине или сумма заказов нулевая при ненулевых заказах; используется в dashboard/orchestrator/celery tail.
+- `wb_client`: fallback ключей `ordersSumRub`, `orderSumRub`, `ordersSum`.
+- Dashboard: снятие залипшего `funnel_tail` intent, если repair не нужен; `funnel_tail_sync.pending` только при реальных дырах.
+- Фронт: `storeDataGuard` — сброс state при смене магазина, игнор устаревших ответов, `updateCache(..., storeId)`; уточнены условия спиннера баннера.
+
+## Профилактика (как не повторить)
+Тесты на hollow days, fallback order sum, clear stale funnel intent, lint/build фронта.
+
+## Проверка
+- Команды: `ruff check .`, `pytest` (новые/смежные модули), `npm run lint`, `npm run build`
+- Сценарии: переключение магазинов — только SKU активного магазина; баннер гаснет после закрытия дыр; вчерашний день с заказами получает `order_sum` после фонового repair
+
+Затронутые файлы: `backend/app/services/funnel_tail_repair.py`, `backend/app/services/wb_client.py`, `backend/app/routers/dashboard.py`, `backend/celery_app/tasks.py`, `backend/tests/*`, `frontend/src/storeDataGuard.js`, `frontend/src/CacheContext.jsx`, `frontend/src/Layout.jsx`, `frontend/src/screens/*.jsx`, `frontend/dist/*`, `BUGLOG.md`, `TASKLOG.md`
+
+---
 ID: BUG-45
 Дата: 2026-06-02
 Статус: fixed
