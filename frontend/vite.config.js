@@ -29,6 +29,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/auth': 'http://localhost:8000',
+      '/billing': 'http://localhost:8000',
       '/sync': 'http://localhost:8000',
       '/stores': 'http://localhost:8000',
       '/health': 'http://localhost:8000',

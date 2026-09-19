@@ -39,3 +39,25 @@ export function isFunnelTailSyncActive(tail) {
   if (!tail?.pending) return false;
   return ['queued', 'scheduled', 'running', 'cooldown'].includes(tail.status);
 }
+
+/**
+ * «Отпечаток» прогресса фоновых досинхронизаций из /dashboard/state.
+ * Меняется только когда оркестратор реально продвинулся (закрыл шаг, взял новый диапазон,
+ * появились свежие даты), а не на каждом опросе и не на каждом 429/cooldown от WB.
+ * Экраны перечитывают данные только при смене отпечатка — иначе поля ввода
+ * (налоговая ставка, себестоимость, планы) сбрасываются каждые 5 секунд.
+ */
+export function syncProgressSignature(state) {
+  if (!state) return '';
+  const fin = state.finance_missing_sync || {};
+  const tail = state.funnel_tail_sync || {};
+  return [
+    state.max_date || '',
+    state.has_funnel ? 1 : 0,
+    fin.status || '',
+    fin.date_from || '',
+    fin.date_to || '',
+    tail.pending ? 1 : 0,
+    tail.last_step || '',
+  ].join('|');
+}

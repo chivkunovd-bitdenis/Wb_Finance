@@ -15,7 +15,7 @@ import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
 import { useStore } from './StoreContext';
-import { isFinanceMissingSyncActive, isFunnelTailSyncActive } from './storeDataGuard';
+import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignature } from './storeDataGuard';
 
 export default function Layout() {
   const { logout: authLogout } = useAuth();
@@ -63,6 +63,11 @@ export default function Layout() {
   const [waitForFunnelAfterInitial, setWaitForFunnelAfterInitial] = useState(false);
   const [initialError, setInitialError] = useState('');
   const [dashboardState, setDashboardState] = useState(null);
+  // Актуальный state для интервалов без перезапуска эффекта на каждое обновление.
+  const dashboardStateRef = useRef(null);
+  useEffect(() => {
+    dashboardStateRef.current = dashboardState;
+  }, [dashboardState]);
   const [backfill2026Syncing, setBackfill2026Syncing] = useState(false);
   const [backfill2026TriggeredOnce, setBackfill2026TriggeredOnce] = useState(false);
   const [backfill2025Syncing, setBackfill2025Syncing] = useState(false);
@@ -241,14 +246,22 @@ export default function Layout() {
     return () => clearInterval(id);
   }, [funnelYtdStatus, funnelYtdLaunchPending]);
 
+  // Пока идёт досинхронизация хвоста (финансы/воронка), опрашиваем state каждые 5 с,
+  // но экраны перечитываем только когда оркестратор реально продвинулся (сменился отпечаток).
+  // Иначе на «Себестоимости» и «Дашборде» каждые 5 с сбрасывались поля ввода (BUG-48).
   useEffect(() => {
     if (!financeMissingActive && !funnelTailActive) return;
+    let lastSignature = syncProgressSignature(dashboardStateRef.current);
     const id = setInterval(() => {
       api
         .getDashboardState()
         .then((s) => {
           setDashboardState(s);
-          setRefreshTrigger((t) => t + 1);
+          const sig = syncProgressSignature(s);
+          if (sig !== lastSignature) {
+            lastSignature = sig;
+            setRefreshTrigger((t) => t + 1);
+          }
         })
         .catch(() => {});
     }, 5000);

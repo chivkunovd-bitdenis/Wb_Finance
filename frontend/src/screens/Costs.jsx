@@ -1,5 +1,5 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
 import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 
@@ -119,10 +119,13 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [funnelRows, setFunnelRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
+  // nm_id, которые пользователь правит руками: фоновая перечитка списка их не перетирает.
+  const dirtyCostsRef = useRef(new Set());
 
   const resetForStore = useCallback(() => {
     setArticles([]);
     setCosts({});
+    dirtyCostsRef.current = new Set();
     setFunnelRows([]);
     setExpandedGroups(new Set());
     setError('');
@@ -133,7 +136,9 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
 
   useEffect(() => {
     const reqStore = storeId;
-    setLoading(true);
+    // Лоадер не включаем заново: он стоит с первого рендера (без кэша) и при смене магазина.
+    // При фоновой перечитке (refreshTrigger во время досинхронизации) карточка остаётся на месте,
+    // иначе блок налоговой ставки размонтируется и введённое значение пропадает.
     setError('');
     api
       .getArticles()
@@ -143,11 +148,16 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
         setArticles(list);
         if (typeof updateCache === 'function') updateCache('articles', list, reqStore);
 
-        const c = {};
-        list.forEach((a) => {
-          c[a.nm_id] = a.cost_price != null ? String(a.cost_price) : '';
+        const dirty = dirtyCostsRef.current;
+        setCosts((prev) => {
+          const c = {};
+          list.forEach((a) => {
+            c[a.nm_id] = dirty.has(a.nm_id)
+              ? (prev[a.nm_id] ?? '')
+              : a.cost_price != null ? String(a.cost_price) : '';
+          });
+          return c;
         });
-        setCosts(c);
       })
       .catch((e) => {
         if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
@@ -172,6 +182,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
   }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache, storeId]);
 
   const setCost = (nmId, value) => {
+    dirtyCostsRef.current.add(nmId);
     setCosts((prev) => ({ ...prev, [nmId]: value }));
   };
 
@@ -250,6 +261,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     setSaving(true);
     try {
       await api.saveArticlesCost(items);
+      dirtyCostsRef.current = new Set();
       if (range?.dateFrom && range?.dateTo) {
         await api.triggerSyncRecalculate(range.dateFrom, range.dateTo);
       }
