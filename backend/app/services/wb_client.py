@@ -2,14 +2,42 @@
 Клиент к API Wildberries. Логика как в GAS (Code.js): те же URL, пагинация rrid.
 """
 import logging
+import os
 import random
+import threading
 import time
 
 import requests
 
 logger = logging.getLogger(__name__)
 
+# Устаревший отчёт statistics-api: с 19.09.2026 WB отдаёт на него 429 с окном в несколько суток
+# для ключей, которые ходят ежедневно (BUG-49). Оставлен только как аварийный откат:
+# WB_SALES_SOURCE=statistics_api.
 SALES_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
+# Актуальный отчёт реализации (finance-api), period=daily. Лимит: 1 запрос/мин на аккаунт.
+# Соответствие полей проверено 21.09.2026 на живых данных за 2026-09-18: суммы retailPrice/forPay/
+# deliveryService/paidStorage/quantity совпали с raw_sales, загруженными старым отчётом, копейка в копейку.
+SALES_FINANCE_URL = "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed"
+SALES_FINANCE_MIN_INTERVAL_SEC = 61
+
+_sales_finance_lock = threading.Lock()
+_sales_finance_last_call = 0.0
+
+
+def _sales_source() -> str:
+    raw = (os.getenv("WB_SALES_SOURCE") or "").strip().lower()
+    return "statistics_api" if raw == "statistics_api" else "finance_api"
+
+
+def _sales_finance_pace() -> None:
+    """Держим паузу ≥61 с между вызовами finance-api в рамках процесса (лимит WB 1 запрос/мин)."""
+    global _sales_finance_last_call
+    with _sales_finance_lock:
+        wait = SALES_FINANCE_MIN_INTERVAL_SEC - (time.monotonic() - _sales_finance_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _sales_finance_last_call = time.monotonic()
 
 
 def _wb_header_int(resp: requests.Response, name: str) -> int | None:
@@ -104,12 +132,72 @@ def _parse_date(value) -> str | None:
     return str(value)[:10]
 
 
+def _sales_row_from_finance_api(row: dict) -> dict | None:
+    """Строка ежедневного отчёта finance-api → наш формат raw_sales (та же схема, что у старого отчёта)."""
+    d = _parse_date(row.get("dateFrom") or row.get("rrDate"))
+    if not d:
+        return None
+    return {
+        "date": d,
+        "nm_id": row.get("nmId"),
+        "doc_type": row.get("docTypeName") or "",
+        "retail_price": row.get("retailPrice"),
+        "ppvz_for_pay": row.get("forPay"),
+        "delivery_rub": row.get("deliveryService"),
+        "penalty": row.get("penalty"),
+        "additional_payment": row.get("additionalPayment"),
+        "storage_fee": row.get("paidStorage"),
+        "quantity": row.get("quantity", 1),
+        "subject_name": row.get("subjectName"),
+    }
+
+
+def fetch_sales_finance_api(date_from: str, date_to: str, wb_api_key: str) -> list[dict]:
+    """
+    Продажи за период через finance-api sales-reports/detailed (period=daily), пагинация по rrdId.
+    Формат результата идентичен fetch_sales.
+    """
+    headers = {"Authorization": wb_api_key, "Content-Type": "application/json"}
+    all_rows: list[dict] = []
+    rrd_id = 0
+    while True:
+        body = {"dateFrom": date_from, "dateTo": date_to, "limit": 100000, "rrdId": rrd_id, "period": "daily"}
+        _sales_finance_pace()
+        resp = requests.post(SALES_FINANCE_URL, headers=headers, json=body, timeout=120)
+        if resp.status_code == 204:
+            break
+        if resp.status_code != 200:
+            _log_wb_http_error(
+                resp=resp,
+                op="sales",
+                url=SALES_FINANCE_URL,
+                extra={"date_from": date_from, "date_to": date_to, "rrid": rrd_id},
+                level=logging.WARNING if resp.status_code in {429, 500, 502, 503, 504} else logging.ERROR,
+            )
+            resp.raise_for_status()
+        data = resp.json()
+        if not data or not isinstance(data, list):
+            break
+        for row in data:
+            parsed = _sales_row_from_finance_api(row)
+            if parsed:
+                all_rows.append(parsed)
+        if len(data) >= 100000 and data[-1].get("rrdId"):
+            rrd_id = int(data[-1]["rrdId"])
+        else:
+            break
+    return all_rows
+
+
 def fetch_sales(date_from: str, date_to: str, wb_api_key: str) -> list[dict]:
     """
-    Загрузить продажи за период. Пагинация по rrid (как в GAS fetchWbWithRrid).
+    Загрузить продажи за период. По умолчанию — finance-api (см. SALES_FINANCE_URL);
+    WB_SALES_SOURCE=statistics_api — старый отчёт с пагинацией по rrid (как в GAS fetchWbWithRrid).
     Возвращает список словарей с ключами: date, nm_id, doc_type, retail_price, ppvz_for_pay,
     delivery_rub, penalty, additional_payment, storage_fee, quantity.
     """
+    if _sales_source() == "finance_api":
+        return fetch_sales_finance_api(date_from, date_to, wb_api_key)
     headers = {"Authorization": wb_api_key}
     all_rows = []
     rrid = 0

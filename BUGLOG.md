@@ -11,7 +11,7 @@
 ---
 ID: BUG-49
 Дата: 2026-09-21
-Статус: fixed (частично: воронка разблокирована; финансы ждут окна WB)
+Статус: fixed
 Автоматизация: да (pytest `backend/tests/test_wb_orchestrator_per_op_block.py`)
 
 ## Бизнес-описание
@@ -32,7 +32,9 @@ ID: BUG-49
 
 ## Исправление (что сделали)
 - В `intents` состояния оркестратора добавлен ключ `blocked: {finance|funnel: iso_until}`. При 429/5xx блокируется только операция, которая его получила (`current_op`). Если есть другая незаблокированная работа — статус `scheduled` и следующий tick через `ORCH_STEP_DELAY_SEC`, без глобального cooldown. Заблокированные intents пропускаются, но не теряются. Если осталась только заблокированная работа — cooldown до ближайшего окна (`last_step=wb_blocked_wait`).
-- Не сделано (отдельная задача): переезд загрузки продаж на `finance-api/.../sales-reports/detailed` (period=daily) и чтение заголовка `X-RateLimit-Retry`, на который ссылается тело ответа WB.
+- Загрузка продаж переведена на `finance-api/.../sales-reports/detailed` (period=daily, пагинация rrdId, пауза ≥61 с между вызовами в процессе — лимит WB 1 запрос/мин). Соответствие полей проверено на живых данных владельца за 2026-09-18: 15 строк, retailPrice 2499.99 = retail_price, forPay 1364.38 = ppvz_for_pay, deliveryService 244.82 = delivery_rub, paidStorage 18.06 = storage_fee, quantity 17 — совпало с raw_sales от старого отчёта. Откат: `WB_SALES_SOURCE=statistics_api` в `backend/.env`.
+- На finance-api при 429 WB отдаёт `X-Ratelimit-Retry` = `X-Ratelimit-Reset` (видел 18 и 18), так что существующее чтение Reset корректно.
+- `WB_API_KEY` в `backend/.env` на проде протух (WB: token is expired) — на оркестратор не влияет (он берёт ключи пользователей), но скрипты, которые читают env, работать не будут.
 
 ## Профилактика (как не повторить)
 Cooldown/блокировка — всегда по операции/хосту WB, никогда на пользователя целиком. Следить за reset_sec в логах: рост окна на reportDetailByPeriod — сигнал переезжать на finance-api.
@@ -41,7 +43,7 @@ Cooldown/блокировка — всегда по операции/хосту 
 - `pytest backend/tests/test_wb_orchestrator_per_op_block.py backend/tests/test_wb_orchestrator_intents_merge.py` — 9 passed; `ruff`, `mypy` чисто; набор падений полного прогона без локального Postgres не изменился относительно main.
 - Прод: после деплоя и рестарта celery_worker разбудить оркестратор Виталика и убедиться, что `funnel_daily` за 18–20.09 появился, а `finance_range` остался в intents с `blocked.finance`.
 
-Затронутые файлы: `backend/celery_app/tasks.py`, `backend/tests/test_wb_orchestrator_per_op_block.py`, `BUGLOG.md`
+Затронутые файлы: `backend/celery_app/tasks.py`, `backend/app/services/wb_client.py`, `backend/tests/test_wb_orchestrator_per_op_block.py`, `backend/tests/test_wb_client.py`, `BUGLOG.md`
 
 ---
 ID: BUG-48

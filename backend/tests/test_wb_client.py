@@ -16,8 +16,98 @@ from app.services.wb_client import (
 )
 
 
+@patch("app.services.wb_client.time.sleep")
+@patch("app.services.wb_client.requests.post")
+def test_fetch_sales_default_uses_finance_api_and_maps_fields(mock_post, _mock_sleep, monkeypatch):
+    """
+    BUG-49: продажи по умолчанию идут через finance-api sales-reports/detailed (period=daily).
+    Поля camelCase маппятся в схему raw_sales (проверено на живых данных 2026-09-18).
+    """
+    monkeypatch.delenv("WB_SALES_SOURCE", raising=False)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = [
+        {
+            "reportId": 136922220260918,
+            "dateFrom": "2026-09-18",
+            "dateTo": "2026-09-18",
+            "rrDate": "2026-09-18",
+            "rrdId": 1232610467,
+            "nmId": 806600331,
+            "docTypeName": "Продажа",
+            "sellerOperName": "Продажа",
+            "subjectName": "Леггинсы",
+            "quantity": 1,
+            "retailPrice": "2499.99",
+            "retailAmount": "1919.72",
+            "forPay": "1364.38",
+            "deliveryService": "244.82",
+            "deliveryAmount": 3,
+            "penalty": "0",
+            "additionalPayment": "0",
+            "paidStorage": "18.06",
+        },
+        {"reportId": 1, "dateFrom": "2026-09-18", "nmId": 1, "docTypeName": "", "sellerOperName": "Доставка",
+         "quantity": 0, "retailPrice": "0", "forPay": "0", "deliveryService": "32", "penalty": "0",
+         "additionalPayment": "0", "paidStorage": "0"},
+    ]
+    result = fetch_sales("2026-09-18", "2026-09-18", "fake-token")
+
+    assert mock_post.call_count == 1
+    url = mock_post.call_args.args[0]
+    assert url == "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed"
+    body = mock_post.call_args.kwargs["json"]
+    assert body == {"dateFrom": "2026-09-18", "dateTo": "2026-09-18", "limit": 100000, "rrdId": 0, "period": "daily"}
+    assert len(result) == 2
+    sale = result[0]
+    assert sale["date"] == "2026-09-18"
+    assert sale["nm_id"] == 806600331
+    assert sale["doc_type"] == "Продажа"
+    assert sale["retail_price"] == "2499.99"
+    assert sale["ppvz_for_pay"] == "1364.38"
+    assert sale["delivery_rub"] == "244.82"
+    assert sale["storage_fee"] == "18.06"
+    assert sale["quantity"] == 1
+    assert sale["subject_name"] == "Леггинсы"
+    assert result[1]["doc_type"] == ""
+    assert result[1]["delivery_rub"] == "32"
+
+
+@patch("app.services.wb_client.time.sleep")
+@patch("app.services.wb_client.requests.post")
+def test_fetch_sales_finance_api_paginates_by_rrd_id_and_stops_on_204(mock_post, _mock_sleep, monkeypatch):
+    monkeypatch.delenv("WB_SALES_SOURCE", raising=False)
+    page = [{"dateFrom": "2026-09-18", "nmId": i, "rrdId": 1000 + i, "quantity": 1} for i in range(100000)]
+    full = MagicMock(status_code=200)
+    full.json.return_value = page
+    no_content = MagicMock(status_code=204)
+    mock_post.side_effect = [full, no_content]
+
+    result = fetch_sales("2026-09-18", "2026-09-18", "fake-token")
+
+    assert len(result) == 100000
+    assert mock_post.call_count == 2
+    assert mock_post.call_args_list[1].kwargs["json"]["rrdId"] == 1000 + 99999
+
+
+@patch("app.services.wb_client.time.sleep")
+@patch("app.services.wb_client.requests.post")
+def test_fetch_sales_finance_api_raises_http_error_on_429(mock_post, _mock_sleep, monkeypatch):
+    monkeypatch.delenv("WB_SALES_SOURCE", raising=False)
+    resp = MagicMock(spec=Response)
+    resp.status_code = 429
+    resp.headers = {"X-Ratelimit-Retry": "18", "X-RateLimit-Reset": "18"}
+    resp.text = "{}"
+    resp.json.return_value = {"title": "Too Many Requests"}
+    resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
+    mock_post.return_value = resp
+
+    with pytest.raises(requests.HTTPError):
+        fetch_sales("2026-09-18", "2026-09-18", "fake-token")
+
+
 @patch("app.services.wb_client.requests.get")
-def test_fetch_sales_parses_response(mock_get):
+def test_fetch_sales_parses_response(mock_get, monkeypatch):
+    monkeypatch.setenv("WB_SALES_SOURCE", "statistics_api")
     mock_get.return_value.status_code = 200
     mock_get.return_value.json.return_value = [
         {
@@ -43,7 +133,8 @@ def test_fetch_sales_parses_response(mock_get):
 
 
 @patch("app.services.wb_client.requests.get")
-def test_fetch_sales_empty_response(mock_get):
+def test_fetch_sales_empty_response(mock_get, monkeypatch):
+    monkeypatch.setenv("WB_SALES_SOURCE", "statistics_api")
     mock_get.return_value.status_code = 200
     mock_get.return_value.json.return_value = []
     result = fetch_sales("2025-03-01", "2025-03-05", "fake-token")
