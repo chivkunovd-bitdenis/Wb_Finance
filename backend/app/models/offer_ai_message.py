@@ -18,13 +18,17 @@ class OfferAiMessage(Base):
     )
     role = Column(String(16), nullable=False)  # user|assistant
     content = Column(Text, nullable=False)
-    # Snapshot of retrieval context for assistant answers (5 chunks + meta).
+    # Snapshot of retrieval context for assistant answers: offer RAG chunks and/or web
+    # search citations (unified assistant chat reuses this field for both).
     retrieved_chunks = Column(JSONB, nullable=True)
     # For pattern-B: the standalone question used for retrieval.
     standalone_question = Column(Text, nullable=True)
+    # 'chat' (regular Q&A) | 'cfo' (AI CFO daily-brief-style analysis run).
+    kind = Column(String(16), nullable=False, default="chat")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     __table_args__ = (
         CheckConstraint("role in ('user', 'assistant')", name="ck_offer_ai_message_role"),
+        CheckConstraint("kind in ('chat', 'cfo')", name="ck_offer_ai_message_kind"),
     )
 

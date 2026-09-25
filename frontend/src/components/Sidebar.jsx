@@ -52,6 +52,7 @@ export default function Sidebar({ onLogout }) {
       { to: '/dashboard', label: 'Дашборд', icon: '📊' },
       { to: '/articles', label: 'Артикулы', icon: '📦' },
       { to: '/funnel', label: 'Воронка', icon: '📈' },
+      { to: '/ai-chat', label: 'ИИ-чат', icon: '💬' },
     ];
     if (meChecked && aiModuleEnabled) {
       items.push({ to: '/ai-module', label: 'ИИ модуль', icon: '🧠' });

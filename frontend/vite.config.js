@@ -41,6 +41,7 @@ export default defineConfig({
       '/dashboard/funnel': 'http://localhost:8000',
       '/dashboard/sku': 'http://localhost:8000',
       '/dashboard/operational-expenses': 'http://localhost:8000',
+      '/dashboard/assistant': 'http://localhost:8000',
     },
   },
 })

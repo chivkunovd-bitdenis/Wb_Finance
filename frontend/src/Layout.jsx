@@ -14,6 +14,7 @@ import OperationalExpenses from './screens/OperationalExpenses';
 import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
+import AiChat from './screens/AiChat';
 import { useStore } from './StoreContext';
 import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignature } from './storeDataGuard';
 
@@ -313,6 +314,7 @@ export default function Layout() {
     if (p.startsWith('/operational-expenses')) return 'Опер. расходы';
     if (p.startsWith('/billing')) return 'Подписка';
     if (p.startsWith('/ai-module')) return 'ИИ модуль';
+    if (p.startsWith('/ai-chat')) return 'ИИ-чат';
     return 'Дашборд';
   }, [location.pathname]);
 
@@ -573,6 +575,7 @@ export default function Layout() {
                   element={<Billing billingStatus={billingStatus} onRefreshStatus={loadBillingStatus} />}
                 />
                 <Route path="/ai-module" element={<AiModule />} />
+                <Route path="/ai-chat" element={<AiChat />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </>

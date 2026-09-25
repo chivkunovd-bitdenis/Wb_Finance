@@ -1071,3 +1071,46 @@ export async function revokeStoreAccess(granteeEmail) {
   }
   return res.json();
 }
+
+// ── Единый ИИ-чат (AI CFO + RAG по оферте + веб-поиск) ────────────────────────
+
+/** История чата активного магазина. Возвращает { messages: [...] }. */
+export async function getAssistantHistory() {
+  const res = await apiFetch(`${API_BASE}/dashboard/assistant/history`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Задать вопрос ассистенту. Возвращает сообщение-ответ ассистента. */
+export async function askAssistant(message) {
+  const res = await apiFetch(`${API_BASE}/dashboard/assistant/ask`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ message }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Запустить анализ AI CFO (стандартный дневной прогноз) по кнопке над чатом. */
+export async function runCfoAnalysis(date) {
+  const res = await apiFetch(`${API_BASE}/dashboard/assistant/cfo-analysis`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ date: date || null }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}

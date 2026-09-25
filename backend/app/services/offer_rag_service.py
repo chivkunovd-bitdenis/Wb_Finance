@@ -225,6 +225,26 @@ def _ensure_collection(client: QdrantClient, *, vector_size: int) -> None:
     )
 
 
+def count_version_points(*, version: str) -> int:
+    """
+    Сколько точек в Qdrant проиндексировано для этой версии оферты.
+    0 если коллекция ещё не создана (например, первый деплой) — не бросаем исключение.
+    """
+    client = _qdrant()
+    try:
+        existing = client.get_collections().collections
+        if not any(c.name == OFFER_COLLECTION for c in existing):
+            return 0
+        flt = qmodels.Filter(
+            must=[qmodels.FieldCondition(key="offer_version", match=qmodels.MatchValue(value=version))]
+        )
+        res = client.count(collection_name=OFFER_COLLECTION, count_filter=flt, exact=True)
+        return int(res.count or 0)
+    except Exception:
+        logger.exception("offer_ai: failed to count points version=%s", version)
+        return 0
+
+
 def delete_version_points(*, version: str) -> int:
     client = _qdrant()
     try:
@@ -297,6 +317,28 @@ def index_offer_file(*, file_path: str, version: str, prev_version: str | None) 
         deleted_old,
     )
     return {"version": version, "chunks": len(chunks), "deleted_old": deleted_old}
+
+
+def retrieve_offer_chunks(*, query: str, version: str, top_k: int = 5) -> list[dict]:
+    """
+    Голый retrieval (без LLM-синтеза ответа): используется агентским tool search_offer,
+    где синтез делает сам агент (Responses API), а не отдельный LlamaIndex query engine.
+    """
+    _llama_settings()
+    retriever = _QdrantOfferRetriever(qdrant=_qdrant(), offer_version=version, similarity_top_k=top_k)
+    nodes = retriever._retrieve(type("QB", (), {"query_str": query})())
+    out: list[dict] = []
+    for n in nodes:
+        node = n.node
+        meta = getattr(node, "metadata", {}) or {}
+        out.append(
+            {
+                "chunk_id": int(meta.get("chunk_id") or 0),
+                "score": float(getattr(n, "score", 0.0) or 0.0),
+                "text": str(getattr(node, "text", "") or ""),
+            }
+        )
+    return out
 
 
 @dataclass(frozen=True)
