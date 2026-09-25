@@ -1170,10 +1170,12 @@ function ProductGenerationAssetGallery({
   useEffect(() => {
     const jid = String(jobId || '').trim();
     if (!jid || rows.length === 0) {
+      /* eslint-disable react-hooks/set-state-in-effect -- сброс галереи при смене задачи/пустом списке */
       setAssetFiles({});
       setPreviewAsset(null);
       setError('');
       setLoading(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
       return undefined;
     }
     let cancelled = false;
@@ -1182,31 +1184,33 @@ function ProductGenerationAssetGallery({
     setError('');
     setAssetFiles({});
     setPreviewAsset(null);
-    (async () => {
-      try {
-        const pairs = await Promise.all(
-          rows.map(async (row, idx) => {
-            const aid = String(row.asset_id || '').trim();
-            const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
-            const url = URL.createObjectURL(file.blob);
-            urls.push(url);
-            return [
-              aid,
-              {
-                blob: file.blob,
-                filename: file.filename || productGenerationAssetFallbackFilename(row, idx, file.blob),
-                url,
-              },
-            ];
-          }),
-        );
-        if (!cancelled) setAssetFiles(Object.fromEntries(pairs));
-      } catch (e) {
-        if (!cancelled) setError(e?.message || 'Не удалось загрузить превью фото');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    // Превью грузим лёгкими JPEG и показываем каждое сразу, как пришло (раньше ждали все
+    // оригиналы по ~1.7 МБ разом). Оригинал качается только по кнопке «Скачать».
+    let pending = rows.length;
+    rows.forEach((row, idx) => {
+      const aid = String(row.asset_id || '').trim();
+      api
+        .downloadProductGenerationGeneratedAsset(jid, aid, { preview: true })
+        .then((file) => {
+          if (cancelled) return;
+          const url = URL.createObjectURL(file.blob);
+          urls.push(url);
+          setAssetFiles((prev) => ({
+            ...prev,
+            [aid]: {
+              url,
+              filename: productGenerationAssetFallbackFilename(row, idx, null),
+            },
+          }));
+        })
+        .catch((e) => {
+          if (!cancelled) setError(e?.message || 'Не удалось загрузить превью фото');
+        })
+        .finally(() => {
+          pending -= 1;
+          if (!cancelled && pending <= 0) setLoading(false);
+        });
+    });
     return () => {
       cancelled = true;
       urls.forEach((url) => URL.revokeObjectURL(url));
@@ -1218,11 +1222,25 @@ function ProductGenerationAssetGallery({
     return Boolean(assetFiles[aid]?.url);
   });
 
+  // Скачивание — всегда оригинал (полное разрешение), а не превью из галереи.
+  const downloadOriginal = async (row, idx) => {
+    const jid = String(jobId || '').trim();
+    const aid = String(row?.asset_id || '').trim();
+    if (!jid || !aid) return;
+    try {
+      const file = await api.downloadProductGenerationGeneratedAsset(jid, aid);
+      const url = URL.createObjectURL(file.blob);
+      triggerBlobDownload(url, file.filename || productGenerationAssetFallbackFilename(row, idx, file.blob));
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      setError(e?.message || 'Не удалось скачать фото');
+    }
+  };
+
   const downloadOne = (row) => {
     const aid = String(row?.asset_id || '').trim();
-    const file = assetFiles[aid];
-    if (!file?.url) return;
-    triggerBlobDownload(file.url, file.filename);
+    if (!assetFiles[aid]?.url) return;
+    downloadOriginal(row, rows.indexOf(row));
   };
 
   const openOrSelect = (row, index, file) => {
@@ -1237,10 +1255,8 @@ function ProductGenerationAssetGallery({
 
   const downloadAll = () => {
     downloadReadyRows.forEach((row, idx) => {
-      const aid = String(row.asset_id || '').trim();
-      const file = assetFiles[aid];
       window.setTimeout(() => {
-        triggerBlobDownload(file?.url, file?.filename);
+        downloadOriginal(row, rows.indexOf(row));
       }, idx * 150);
     });
   };

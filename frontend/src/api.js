@@ -669,9 +669,9 @@ export async function downloadProductGenerationReference(jobId, assetId) {
 }
 
 /** Скачать сгенерированное WIP-фото (`main_frame`) задачи генерации товара (admin). */
-export async function downloadProductGenerationGeneratedAsset(jobId, assetId) {
+export async function downloadProductGenerationGeneratedAsset(jobId, assetId, { preview = false } = {}) {
   const res = await apiFetch(
-    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/generated-assets/${encodeURIComponent(assetId)}/file`,
+    `${API_BASE}/ai/product-generation/jobs/${encodeURIComponent(jobId)}/generated-assets/${encodeURIComponent(assetId)}/file${preview ? '?preview=1' : ''}`,
     { headers: headers() },
   );
   if (res.status === 401) throw new Error('unauthorized');

@@ -18,6 +18,7 @@ from app.schemas.product_generation import (
     ProductGenerationJobUpdate,
 )
 from app.services import product_generation_service as pg_service
+from app.services.image_preview import make_preview_jpeg
 from app.services.product_generation_image_pipeline import (
     ImagePipelineClientError,
     enrich_job_out_with_image_pipeline,
@@ -162,6 +163,7 @@ def download_reference_file_internal(
 def download_generated_asset_file(
     job_id: str,
     asset_id: str,
+    preview: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_ai_module_product_user),
 ) -> Response:
@@ -178,6 +180,20 @@ def download_generated_asset_file(
     except ImagePipelineClientError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Image-сервис недоступен") from exc
     safe_name = filename.replace('"', "")
+    if preview:
+        # Оригинал ~1.7 МБ PNG: по сети до пользователя это секунды на каждую картинку.
+        # Для превью в галерее отдаём уменьшенный JPEG (~100 КБ); оригинал — без ?preview.
+        small = make_preview_jpeg(content)
+        if small is not None:
+            stem = safe_name.rsplit(".", 1)[0] or "preview"
+            return Response(
+                content=small,
+                media_type="image/jpeg",
+                headers={
+                    "Content-Disposition": f'inline; filename="{stem}_preview.jpg"',
+                    "Cache-Control": "private, max-age=86400",
+                },
+            )
     return Response(
         content=content,
         media_type=media_type,
