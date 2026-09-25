@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,7 +23,7 @@ from app.schemas.assistant import (
     AssistantHistoryResponse,
     AssistantMessageItem,
 )
-from app.services.assistant_agent_service import run_agent, run_cfo_analysis
+from app.services.assistant_agent_service import run_agent
 from app.services.assistant_chat_service import (
     AGENT_CONTEXT_LIMIT,
     HISTORY_LIMIT,
@@ -31,7 +31,10 @@ from app.services.assistant_chat_service import (
     get_or_create_assistant_chat,
     load_history,
 )
+from app.services.cfo_audit_service import resolve_default_date_to, run_cfo_audit
 from app.services.store_access_service import StoreContext
+
+_CFO_AUDIT_MAX_SPAN_DAYS = 92
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,46 @@ def assistant_ask(
     return _to_item(msg)
 
 
+def _parse_iso_date(raw: str, *, field: str) -> date:
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неверный формат даты в поле {field} (ожидается YYYY-MM-DD)",
+        ) from exc
+
+
+def _resolve_cfo_range(body: AssistantCfoAnalysisRequest, db: Session, store_owner_id: str) -> tuple[date, date]:
+    if body.date_from or body.date_to:
+        date_to = _parse_iso_date(body.date_to, field="date_to") if body.date_to else None
+        date_from = _parse_iso_date(body.date_from, field="date_from") if body.date_from else None
+        if date_to is None:
+            date_to = resolve_default_date_to(db, store_owner_id=store_owner_id)
+        if date_from is None:
+            date_from = date_to - timedelta(days=29)
+    elif body.date:
+        # Обратная совместимость со старым контрактом {date}: трактуем как date_to,
+        # окно — 30 дней назад (как раньше делал daily_brief_service).
+        date_to = _parse_iso_date(body.date, field="date")
+        date_from = date_to - timedelta(days=29)
+    else:
+        date_to = resolve_default_date_to(db, store_owner_id=store_owner_id)
+        date_from = date_to - timedelta(days=29)
+
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="date_from не может быть позже date_to"
+        )
+    span_days = (date_to - date_from).days
+    if span_days > _CFO_AUDIT_MAX_SPAN_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Период не может превышать {_CFO_AUDIT_MAX_SPAN_DAYS} дней",
+        )
+    return date_from, date_to
+
+
 @router.post("/cfo-analysis", response_model=AssistantMessageItem)
 def assistant_cfo_analysis(
     body: AssistantCfoAnalysisRequest,
@@ -104,17 +147,11 @@ def assistant_cfo_analysis(
         db=db, viewer_id=str(store_ctx.viewer.id), store_owner_id=str(store_ctx.store_owner.id)
     )
 
-    date_for: date | None = None
-    if body.date:
-        try:
-            date_for = date.fromisoformat(body.date)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный формат даты (ожидается YYYY-MM-DD)"
-            ) from exc
+    store_owner_id = str(store_ctx.store_owner.id)
+    date_from, date_to = _resolve_cfo_range(body, db, store_owner_id)
 
     try:
-        text = run_cfo_analysis(db, store_owner_id=str(store_ctx.store_owner.id), date_for=date_for)
+        text = run_cfo_audit(db, store_owner_id=store_owner_id, date_from=date_from, date_to=date_to)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
@@ -128,5 +165,7 @@ def assistant_cfo_analysis(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Не удалось получить анализ AI CFO"
         ) from exc
 
-    msg = append_message(db=db, chat=chat, role="assistant", content=text, kind="cfo")
+    period_label = f"{date_from:%d.%m.%Y}–{date_to:%d.%m.%Y}"
+    content = f"**Анализ AI CFO · {period_label}**\n\n{text}"
+    msg = append_message(db=db, chat=chat, role="assistant", content=content, kind="cfo")
     return _to_item(msg)

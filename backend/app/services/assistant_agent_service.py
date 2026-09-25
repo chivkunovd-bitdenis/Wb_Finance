@@ -24,7 +24,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date
 from typing import Any
 
 import httpx
@@ -32,8 +31,6 @@ from sqlalchemy.orm import Session
 
 from app.services import assistant_store_data_service
 from app.services.canonical_offer import ensure_canonical_offer_indexed
-from app.services.daily_brief_service import _build_prompt as _cfo_build_prompt
-from app.services.daily_brief_service import build_daily_brief_payload, call_ai
 from app.services.offer_rag_service import retrieve_offer_chunks
 from app.services.store_access_service import StoreContext
 
@@ -276,16 +273,3 @@ def run_agent(
         final_text = "Не удалось получить ответ модели за отведённое число шагов. Попробуйте переформулировать вопрос."
 
     return AgentResult(content=final_text, sources=collected_sources)
-
-
-def run_cfo_analysis(db: Session, *, store_owner_id: str, date_for: date | None) -> str:
-    """
-    Тот же payload/prompt, что и у ежедневной AI CFO сводки (daily_brief_service), но вызывается
-    напрямую по явному действию пользователя — независимо от DAILY_BRIEF_ENABLED (тот флаг
-    гейтит только автоматический celery beat, не ручной запуск из чата).
-    """
-    payload = build_daily_brief_payload(db, store_owner_id, date_for)
-    if not payload.launch_skus and not payload.established_skus and not payload.portfolio:
-        return "Нет данных за вчера для формирования анализа AI CFO."
-    prompt = _cfo_build_prompt(payload)
-    return call_ai(prompt)

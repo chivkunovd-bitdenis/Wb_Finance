@@ -575,7 +575,7 @@ export default function Layout() {
                   element={<Billing billingStatus={billingStatus} onRefreshStatus={loadBillingStatus} />}
                 />
                 <Route path="/ai-module" element={<AiModule />} />
-                <Route path="/ai-chat" element={<AiChat />} />
+                <Route path="/ai-chat" element={<AiChat range={range} />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </>

@@ -10,10 +10,14 @@ const ACTIVE_STORE_KEY = 'wb_finance_active_store_owner_id';
 
 const FETCH_TIMEOUT_MS = 60_000;
 
-/** fetch с таймаутом, чтобы UI не зависал при «залипшем» ответе */
-async function apiFetch(input, init = {}) {
+/**
+ * fetch с таймаутом, чтобы UI не зависал при «залипшем» ответе.
+ * timeoutMs — опциональный override для отдельных вызовов (например, AI CFO аудит,
+ * который может считаться несколько минут — там 60 с дефолта не хватит).
+ */
+async function apiFetch(input, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: ctrl.signal });
   } finally {
@@ -1100,13 +1104,21 @@ export async function askAssistant(message) {
   return res.json();
 }
 
-/** Запустить анализ AI CFO (стандартный дневной прогноз) по кнопке над чатом. */
-export async function runCfoAnalysis(date) {
-  const res = await apiFetch(`${API_BASE}/dashboard/assistant/cfo-analysis`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ date: date || null }),
-  });
+// Бэкенд может считать полный CFO-аудит до ~3 минут (LLM разбирает time-series по всем SKU) —
+// держим фронтовый таймаут с запасом над серверным (240 с).
+const CFO_ANALYSIS_TIMEOUT_MS = 260_000;
+
+/** Запустить полный аудит AI CFO по кнопке над чатом за период [dateFrom, dateTo]. */
+export async function runCfoAnalysis(dateFrom, dateTo) {
+  const res = await apiFetch(
+    `${API_BASE}/dashboard/assistant/cfo-analysis`,
+    {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ date_from: dateFrom || null, date_to: dateTo || null }),
+    },
+    CFO_ANALYSIS_TIMEOUT_MS,
+  );
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {
     const raw = await res.text();

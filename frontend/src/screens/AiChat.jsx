@@ -34,29 +34,59 @@ function inlineFormat(escaped) {
   return out;
 }
 
+// ── Разбор построчно: маркированные ("- п." / "* п.") и нумерованные ("1. п.") списки,
+// горизонтальные линии ("---") как <hr/>, остальное — абзацы. AI CFO активно использует
+// все эти элементы (см. cfo_audit_service.build_cfo_audit_prompt), поэтому рендерер должен
+// понимать их, а не показывать сырые дефисы/цифры. ──
+
 function renderAssistantMarkup(raw) {
   const escaped = escapeHtml(raw);
   const lines = escaped.split('\n');
   const html = [];
-  let inList = false;
+  let listType = null; // 'ul' | 'ol' | null
+
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+
   for (const line of lines) {
     const trimmed = line.trim();
-    const isListItem = /^[-*]\s+/.test(trimmed);
-    if (isListItem) {
-      if (!inList) {
-        html.push('<ul>');
-        inList = true;
-      }
-      html.push(`<li>${inlineFormat(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+
+    if (/^-{3,}$/.test(trimmed)) {
+      closeList();
+      html.push('<hr/>');
       continue;
     }
-    if (inList) {
-      html.push('</ul>');
-      inList = false;
+
+    const bulletMatch = /^[-*]\s+(.*)$/.exec(trimmed);
+    if (bulletMatch) {
+      if (listType !== 'ul') {
+        closeList();
+        html.push('<ul>');
+        listType = 'ul';
+      }
+      html.push(`<li>${inlineFormat(bulletMatch[1])}</li>`);
+      continue;
     }
+
+    const numberedMatch = /^\d+[.)]\s+(.*)$/.exec(trimmed);
+    if (numberedMatch) {
+      if (listType !== 'ol') {
+        closeList();
+        html.push('<ol>');
+        listType = 'ol';
+      }
+      html.push(`<li>${inlineFormat(numberedMatch[1])}</li>`);
+      continue;
+    }
+
+    closeList();
     html.push(trimmed === '' ? '<br/>' : `<div>${inlineFormat(line)}</div>`);
   }
-  if (inList) html.push('</ul>');
+  closeList();
   return html.join('');
 }
 
@@ -119,10 +149,11 @@ function ChatMessage({ message }) {
   );
 }
 
-function TypingIndicator() {
+function TypingIndicator({ label }) {
   return (
     <div className="ai-chat-row ai-chat-row-assistant">
       <div className="ai-chat-bubble ai-chat-bubble-assistant ai-chat-typing">
+        {label && <span className="ai-chat-typing-label">{label}</span>}
         <span className="ai-chat-typing-dot" />
         <span className="ai-chat-typing-dot" />
         <span className="ai-chat-typing-dot" />
@@ -131,7 +162,15 @@ function TypingIndicator() {
   );
 }
 
-export default function AiChat() {
+function formatShortDate(iso) {
+  if (!iso) return '';
+  const parts = String(iso).split('-');
+  if (parts.length !== 3) return '';
+  const [, m, d] = parts;
+  return `${d}.${m}`;
+}
+
+export default function AiChat({ range }) {
   const storeId = useActiveStoreId();
 
   const [messages, setMessages] = useState([]);
@@ -236,22 +275,29 @@ export default function AiChat() {
     setCfoError('');
     setCfoLoading(true);
     try {
-      const reply = await api.runCfoAnalysis();
+      const reply = await api.runCfoAnalysis(range?.dateFrom, range?.dateTo);
       setMessages((prev) => [...prev, reply]);
     } catch (e) {
       setCfoError(e?.message || 'Не удалось получить анализ AI CFO');
     } finally {
       setCfoLoading(false);
     }
-  }, [cfoLoading]);
+  }, [cfoLoading, range]);
+
+  const periodLabel = range?.dateFrom && range?.dateTo
+    ? `за ${formatShortDate(range.dateFrom)}–${formatShortDate(range.dateTo)}`
+    : '';
 
   return (
     <div className="ai-chat-screen">
       <div className="ai-chat-header">
         <div className="ai-chat-header-title">AI CFO</div>
-        <button type="button" className="btn-primary" onClick={onCfoAnalysis} disabled={cfoLoading}>
-          {cfoLoading ? 'Анализирую…' : 'Анализ AI CFO'}
-        </button>
+        <div className="ai-chat-header-cfo">
+          <button type="button" className="btn-primary" onClick={onCfoAnalysis} disabled={cfoLoading}>
+            {cfoLoading ? 'Анализирую…' : 'Анализ AI CFO'}
+          </button>
+          {periodLabel && <div className="ai-chat-header-cfo-period">{periodLabel}</div>}
+        </div>
       </div>
       {cfoError && <div className="ai-chat-inline-error">{cfoError}</div>}
 
@@ -284,7 +330,9 @@ export default function AiChat() {
           <ChatMessage key={m.id} message={m} />
         ))}
 
-        {(sending || cfoLoading) && <TypingIndicator />}
+        {(sending || cfoLoading) && (
+          <TypingIndicator label={cfoLoading ? 'AI CFO анализирует динамику по артикулам…' : undefined} />
+        )}
 
         <div ref={listEndRef} />
       </div>

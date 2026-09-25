@@ -23,4 +23,8 @@ class AssistantAskRequest(BaseModel):
 
 
 class AssistantCfoAnalysisRequest(BaseModel):
+    # Новый контракт — явный период. `date` оставлен для обратной совместимости со старыми
+    # клиентами: если задан только он, трактуем как date_to с окном в 30 дней назад.
     date: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
