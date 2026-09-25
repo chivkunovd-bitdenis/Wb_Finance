@@ -54,6 +54,10 @@ services:
 
   api:
     restart: unless-stopped
+    # Встроенный DNS Docker (127.0.0.11) на VPS периодически не резолвит внешние домены WB.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -112,6 +116,9 @@ services:
 
   celery_worker:
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -144,6 +151,9 @@ services:
 
   celery_beat:
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -176,6 +186,11 @@ services:
   caddy:
     restart: unless-stopped
     image: caddy:2-alpine
+    # Без явного DNS контейнер Caddy на этом VPS получает SERVFAIL на внешние
+    # имена → Let's Encrypt не выпускает сертификаты → HTTPS снаружи мёртв.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "80:80"
       - "443:443"
@@ -195,6 +210,10 @@ services:
   # ИИ: микросервис каскада картинок (PG-B.3). Redis DB index /2 — не пересекается с Celery монолита (/0).
   wb_image_pipeline_api:
     restart: unless-stopped
+    # Встроенный DNS Docker на VPS не резолвит внешние домены (OpenAI, WB) — как у api/celery.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./wb_image_pipeline_service
       dockerfile: Dockerfile
@@ -230,6 +249,10 @@ services:
 
   wb_image_pipeline_worker:
     restart: unless-stopped
+    # Встроенный DNS Docker на VPS не резолвит внешние домены (OpenAI, WB) — как у api/celery.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./wb_image_pipeline_service
       dockerfile: Dockerfile
@@ -252,6 +275,10 @@ services:
 
   wb_auth:
     restart: unless-stopped
+    # Встроенный DNS Docker на VPS не резолвит внешние домены (OpenAI, WB) — как у api/celery.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./backend
       dockerfile: Dockerfile.wb_auth
