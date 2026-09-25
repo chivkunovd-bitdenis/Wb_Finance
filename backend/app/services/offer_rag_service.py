@@ -251,12 +251,14 @@ def delete_version_points(*, version: str) -> int:
         flt = qmodels.Filter(
             must=[qmodels.FieldCondition(key="offer_version", match=qmodels.MatchValue(value=version))]
         )
-        res = client.delete(
+        # delete() возвращает UpdateResult без счётчика — считаем точки до удаления.
+        n = int(client.count(collection_name=OFFER_COLLECTION, count_filter=flt, exact=True).count or 0)
+        client.delete(
             collection_name=OFFER_COLLECTION,
             points_selector=qmodels.FilterSelector(filter=flt),
             wait=True,
         )
-        return int(res.points_count or 0)
+        return n
     except Exception:
         logger.exception("offer_ai: failed to delete old points version=%s", version)
         return 0
