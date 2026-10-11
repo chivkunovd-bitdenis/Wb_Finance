@@ -50,51 +50,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: SSH → pull → rebuild → migrate
+      - name: SSH → deploy exact verified SHA
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          RELEASE_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: RELEASE_SHA
           script: |
-            set -e
-
+            set -euo pipefail
             DEPLOY_DIR="/root/wb-finance"
-            REPO_URL="https://github.com/chivkunovd-bitdenis/Wb_Finance.git"
-
-            # Если папка не git-репо — клонируем заново, сохранив .env
-            if [ ! -d "$DEPLOY_DIR/.git" ]; then
-              echo "Not a git repo — cloning fresh..."
-              if [ -f "$DEPLOY_DIR/backend/.env" ]; then
-                cp "$DEPLOY_DIR/backend/.env" /tmp/wb_finance_env_backup
-                echo ".env backed up"
-              fi
-              rm -rf "$DEPLOY_DIR"
-              git clone "$REPO_URL" "$DEPLOY_DIR"
-              if [ -f /tmp/wb_finance_env_backup ]; then
-                cp /tmp/wb_finance_env_backup "$DEPLOY_DIR/backend/.env"
-                echo ".env restored"
-              fi
-            fi
-
-            cd "$DEPLOY_DIR"
-
-            # Подтянуть последний код
-            git pull origin main
-
-            # Критично: перед запуском нового релиза очищаем очередь Celery.
-            # Иначе старые отложенные задачи (в т.ч. ретраи) продолжат выполняться уже с новым WB-ключом.
-            docker compose up -d redis
-            docker compose stop celery_worker celery_beat || true
-            docker compose exec -T redis redis-cli FLUSHDB
-            docker compose up -d postgres
-            docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_missing_sync_state SET status = 'idle', next_run_at = NULL, error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status IN ('running', 'error') OR next_run_at IS NOT NULL;"
-            docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE finance_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
-            docker compose exec -T postgres psql -U wb_finance -d wb_finance -c "UPDATE funnel_backfill_state SET status = 'idle', error_message = NULL, updated_at = NOW() - INTERVAL '1 hour' WHERE status = 'running' OR error_message IN ('__retry_scheduled__', '__autostart_scheduled__');"
-
-            # Пересобрать и поднять все контейнеры (миграции — в entrypoint api,
-            # см. backend/docker_entrypoint_api.py; повторный alembic здесь ломал
-            # деплой при «overlaps», т.к. без логики skip из entrypoint)
-            docker compose up -d --build
-
-            echo "Deploy finished successfully"
+            git -C "$DEPLOY_DIR" fetch origin main
+            test "$(git -C "$DEPLOY_DIR" rev-parse origin/main)" = "$RELEASE_SHA"
+            git -C "$DEPLOY_DIR" show "$RELEASE_SHA:scripts/release-ozon.sh" | bash -s -- "$RELEASE_SHA" "$DEPLOY_DIR"

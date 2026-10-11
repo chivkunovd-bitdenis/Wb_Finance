@@ -15,7 +15,7 @@ celery_app = Celery(
     "wb_finance",
     broker=_redis_url,
     backend=_redis_url,
-    include=["celery_app.tasks"],
+    include=["celery_app.tasks", "celery_app.ozon_tasks"],
 )
 celery_app.conf.task_serializer = "json"
 celery_app.conf.result_serializer = "json"

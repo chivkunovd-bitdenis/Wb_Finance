@@ -11,6 +11,9 @@ RUN python -m playwright install-deps chromium && python -m playwright install c
 
 COPY . .
 
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

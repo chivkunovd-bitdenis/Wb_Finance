@@ -35,6 +35,7 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
       '/openapi.json': 'http://localhost:8000',
       '/dashboard/state': 'http://localhost:8000',
+      '/dashboard/marketplace': 'http://localhost:8000',
       '/dashboard/pnl': 'http://localhost:8000',
       '/dashboard/articles': 'http://localhost:8000',
       '/dashboard/articles/cost': 'http://localhost:8000',

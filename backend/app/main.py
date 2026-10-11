@@ -11,6 +11,7 @@ from app.routers import offer_ai
 from app.routers import assistant
 from app.routers import ai_module
 from app.routers import product_generation
+from app.routers import marketplace_finance
 from app.middleware.request_logging import RequestLoggingMiddleware
 
 app = FastAPI(title="WB Finance API", version="0.1.0")
@@ -48,6 +49,7 @@ app.include_router(offer_ai.router)
 app.include_router(assistant.router)
 app.include_router(ai_module.router)
 app.include_router(product_generation.router)
+app.include_router(marketplace_finance.router)
 
 
 @app.get("/health")

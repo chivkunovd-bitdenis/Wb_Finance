@@ -15,6 +15,7 @@ import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
 import AiChat from './screens/AiChat';
+import MarketplaceFinance, { WbOnlyNotice } from './screens/MarketplaceFinance';
 import { useStore } from './StoreContext';
 import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignature } from './storeDataGuard';
 
@@ -58,6 +59,7 @@ export default function Layout() {
     return getDefaultRange().dateFrom;
   });
   const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
+  const [marketplace, setMarketplace] = useState('wb');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialTriggered, setInitialTriggered] = useState(false);
@@ -117,6 +119,10 @@ export default function Layout() {
 
   // Инициализация как в GAS: проверяем состояние данных и при необходимости запускаем первую синхронизацию
   useEffect(() => {
+    if (marketplace !== 'wb') {
+      setInitialLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     let attempts = 0;
 
@@ -200,10 +206,11 @@ export default function Layout() {
     return () => {
       cancelled = true;
     };
-  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId]);
+  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId, marketplace]);
 
   // Если данных 2026 ещё нет — запускаем фоновую догрузку 2026 (как в GAS loader-2026)
   useEffect(() => {
+    if (marketplace !== 'wb') return;
     if (initialLoading) return;
     if (!dashboardState || !dashboardState.has_data) return;
     if (dashboardState.has_2026) return;
@@ -223,9 +230,10 @@ export default function Layout() {
           .catch(() => {})
           .finally(() => setRefreshTrigger((t) => t + 1));
       });
-  }, [initialLoading, dashboardState, backfill2026TriggeredOnce]);
+  }, [initialLoading, dashboardState, backfill2026TriggeredOnce, marketplace]);
 
   useEffect(() => {
+    if (marketplace !== 'wb') return undefined;
     if (funnelYtdStatus !== 'running' && !funnelYtdLaunchPending) return;
     const id = setInterval(() => {
       api
@@ -245,12 +253,13 @@ export default function Layout() {
         .catch(() => {});
     }, 5000);
     return () => clearInterval(id);
-  }, [funnelYtdStatus, funnelYtdLaunchPending]);
+  }, [funnelYtdStatus, funnelYtdLaunchPending, marketplace]);
 
   // Пока идёт досинхронизация хвоста (финансы/воронка), опрашиваем state каждые 5 с,
   // но экраны перечитываем только когда оркестратор реально продвинулся (сменился отпечаток).
   // Иначе на «Себестоимости» и «Дашборде» каждые 5 с сбрасывались поля ввода (BUG-48).
   useEffect(() => {
+    if (marketplace !== 'wb') return undefined;
     if (!financeMissingActive && !funnelTailActive) return;
     let lastSignature = syncProgressSignature(dashboardStateRef.current);
     const id = setInterval(() => {
@@ -267,10 +276,11 @@ export default function Layout() {
         .catch(() => {});
     }, 5000);
     return () => clearInterval(id);
-  }, [financeMissingActive, funnelTailActive]);
+  }, [financeMissingActive, funnelTailActive, marketplace]);
 
   // Архив 2025: если есть данные, но 2025 ещё нет — запускаем фоновую догрузку (неблокирующая жёлтая плашка, как в GAS)
   useEffect(() => {
+    if (marketplace !== 'wb') return;
     if (initialLoading) return;
     if (!dashboardState?.has_data) return;
     if (dashboardState.has_2025) return;
@@ -285,10 +295,11 @@ export default function Layout() {
         console.warn('Ошибка догрузки архива 2025', e);
         setBackfill2025Syncing(false);
       });
-  }, [initialLoading, dashboardState?.has_data, dashboardState?.has_2025, backfill2025TriggeredOnce, financeStatus2026]);
+  }, [initialLoading, dashboardState?.has_data, dashboardState?.has_2025, backfill2025TriggeredOnce, financeStatus2026, marketplace]);
 
   // Пока идёт догрузка 2025 — опрашиваем state; когда has_2025 станет true, гасим плашку
   useEffect(() => {
+    if (marketplace !== 'wb') return undefined;
     if (!backfill2025Syncing) return;
     const id = setInterval(() => {
       api.getDashboardState()
@@ -299,7 +310,7 @@ export default function Layout() {
         .catch(() => setBackfill2025Syncing(false));
     }, 15000);
     return () => clearInterval(id);
-  }, [backfill2025Syncing]);
+  }, [backfill2025Syncing, marketplace]);
 
   // Снять плашку 2025, когда state обновился и has_2025 стал true (напр. после ручного обновления)
   useEffect(() => {
@@ -320,14 +331,14 @@ export default function Layout() {
 
   /** Ошибка первичной синхронизации не должна блокировать «Подписку» и оплату. */
   const isBillingPath = (location.pathname || '').startsWith('/billing');
-  const blockContentForSyncError = Boolean(initialError) && !isBillingPath;
+  const blockContentForSyncError = Boolean(initialError) && !isBillingPath && marketplace === 'wb';
 
   useEffect(() => {
     loadBillingStatus();
   }, [loadBillingStatus, location.pathname]);
 
   return (
-    <div className="layout">
+    <div className={`layout ${marketplace === 'wb' ? '' : 'marketplace-mode'}`.trim()}>
       <Sidebar onLogout={logout} />
 
       <div className="main">
@@ -346,10 +357,12 @@ export default function Layout() {
             setRefreshTrigger((t) => t + 1);
           }}
           onOpenBilling={() => navigate('/billing')}
+          marketplace={marketplace}
+          onMarketplaceChange={setMarketplace}
         />
 
         <div className="content">
-          {initialLoading ? (
+          {initialLoading && marketplace === 'wb' ? (
             <div className="loader-center">
               <div className="loader-spinner" />
               <p style={{ fontWeight: 700 }}>Первая синхронизация данных с Wildberries...</p>
@@ -370,6 +383,8 @@ export default function Layout() {
             </div>
           ) : (
             <>
+              {marketplace === 'wb' && (
+                <>
               {initialError && isBillingPath && (
                 <div
                   role="alert"
@@ -517,10 +532,17 @@ export default function Layout() {
                     Догрузка воронки остановилась: {dashboardState.funnel_ytd_backfill.error_message}
                   </div>
                 )}
+                </>
+              )}
 
               {billingStatus?.subscription_status !== 'lifetime' && billingStatus?.days_left <= 3 && (
                 <div className="alert alert-danger" style={{ marginBottom: 12 }}>
                   Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
+                </div>
+              )}
+              {marketplace === 'wb' && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
+                <div className="marketplace-notice marketplace-notice-warning" data-testid="wb-profit-basis-note">
+                  <strong>Маржа WB — предварительная оценка.</strong> В сохранённых данных нет полной детализации удержаний и оснований доплат, поэтому итог не сверён со всеми статьями финансового отчёта. Текущая себестоимость применяется к прошлым продажам; незаполненная себестоимость в прежнем расчёте считается нулевой.
                 </div>
               )}
               <Routes>
@@ -536,19 +558,25 @@ export default function Layout() {
                   <>
                 <Route
                   path="/dashboard"
-                  element={<Dashboard range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />}
+                  element={marketplace === 'wb'
+                    ? <Dashboard range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
+                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="dashboard" marketplace={marketplace} range={range} refreshTrigger={0} />}
                 />
                 <Route
                   path="/articles"
-                  element={<Articles range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />}
+                  element={marketplace === 'wb'
+                    ? <Articles range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
+                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="articles" marketplace={marketplace} range={range} refreshTrigger={0} />}
                 />
                 <Route
                   path="/funnel"
-                  element={<Funnel range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} dashboardState={dashboardState} />}
+                  element={marketplace === 'wb'
+                    ? <Funnel range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} dashboardState={dashboardState} />
+                    : <WbOnlyNotice feature="Воронка продаж" />}
                 />
                 <Route
                   path="/costs"
-                  element={
+                  element={marketplace === 'wb' ? (
                     <Costs
                       range={range}
                       refreshTrigger={refreshTrigger}
@@ -556,11 +584,11 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  }
+                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="costs" marketplace={marketplace} range={range} refreshTrigger={0} />}
                 />
                 <Route
                   path="/operational-expenses"
-                  element={
+                  element={marketplace === 'wb' ? (
                     <OperationalExpenses
                       range={range}
                       refreshTrigger={refreshTrigger}
@@ -568,14 +596,14 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  }
+                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="expenses" marketplace={marketplace} range={range} refreshTrigger={0} />}
                 />
                 <Route
                   path="/billing"
                   element={<Billing billingStatus={billingStatus} onRefreshStatus={loadBillingStatus} />}
                 />
-                <Route path="/ai-module" element={<AiModule />} />
-                <Route path="/ai-chat" element={<AiChat range={range} />} />
+                <Route path="/ai-module" element={marketplace === 'wb' ? <AiModule /> : <WbOnlyNotice feature="ИИ-модуль WB" />} />
+                <Route path="/ai-chat" element={marketplace === 'wb' ? <AiChat range={range} /> : <WbOnlyNotice feature="ИИ-чат WB" />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </>
