@@ -33,6 +33,14 @@ from app.models.ai_wb_cabinet_credential import AiWbCabinetCredential
 from app.models.ai_competitor_report_action import AiCompetitorReportAction
 from app.models.ai_review_reply import AiReviewReply
 from app.models.product_generation_job import ProductGenerationJob
+from app.models.ozon import (
+    OzonAccrualSnapshot,
+    OzonConnection,
+    OzonProduct,
+    OzonProductCost,
+    OzonSyncDay,
+    OzonSyncRun,
+)
 
 __all__ = [
     "Base",
@@ -70,4 +78,10 @@ __all__ = [
     "AiCompetitorReportAction",
     "AiReviewReply",
     "ProductGenerationJob",
+    "OzonConnection",
+    "OzonAccrualSnapshot",
+    "OzonSyncDay",
+    "OzonProduct",
+    "OzonProductCost",
+    "OzonSyncRun",
 ]
