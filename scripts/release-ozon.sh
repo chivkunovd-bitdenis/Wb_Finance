@@ -5,6 +5,13 @@ umask 077
 
 fail() { printf 'release-ozon: %s\n' "$*" >&2; exit 1; }
 is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+validate_source() {
+  local source="$1" untracked
+  [[ "$(git -C "$source" rev-parse HEAD)" == "$EXPECTED_SHA" ]] || fail "release source worktree has the wrong SHA"
+  git -C "$source" diff --quiet "$EXPECTED_SHA" -- || fail "release source worktree has tracked changes; refusing to build"
+  untracked="$(git -C "$source" ls-files --others)" || fail "cannot inspect release source worktree files"
+  [[ -z "$untracked" ]] || fail "release source worktree has untracked files, including ignored files; refusing to build"
+}
 
 if [[ "${1:-}" == "--rollback" ]]; then
   fail "manual rollback uses the saved rollback-compose.yml described in docs/ozon-finance/RELEASE.md"
@@ -39,17 +46,16 @@ git -C "$SERVER_ROOT" cat-file -e "$EXPECTED_SHA^{commit}" 2>/dev/null || fail "
 SOURCE_DIR="$RELEASE_ROOT/$EXPECTED_SHA/source"
 if [[ "$PREPARED" != "--prepared" ]]; then
   if [[ -e "$SOURCE_DIR" ]]; then
-    [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$EXPECTED_SHA" ]] || fail "existing release source has the wrong SHA"
+    validate_source "$SOURCE_DIR"
   else
     mkdir -p "$(dirname "$SOURCE_DIR")"
     git -C "$SERVER_ROOT" worktree add --detach "$SOURCE_DIR" "$EXPECTED_SHA" >/dev/null 2>&1
+    validate_source "$SOURCE_DIR"
   fi
   exec bash "$SOURCE_DIR/scripts/release-ozon.sh" "$EXPECTED_SHA" "$SERVER_ROOT" --prepared
 fi
 
-[[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$EXPECTED_SHA" ]] || fail "prepared release source has the wrong SHA"
-git -C "$SOURCE_DIR" diff --quiet "$EXPECTED_SHA" -- || fail "release source worktree has tracked changes; refusing to build"
-[[ -z "$(git -C "$SOURCE_DIR" ls-files --others --exclude-standard)" ]] || fail "release source worktree has non-ignored untracked files; refusing to build"
+validate_source "$SOURCE_DIR"
 SERVER_SHA="$(git -C "$SERVER_ROOT" rev-parse HEAD)"
 [[ "$SERVER_SHA" != "$EXPECTED_SHA" ]] || fail "server checkout already points at this commit; refusing ambiguous redeploy"
 

@@ -26,6 +26,7 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self._git("-C", str(self.server), "config", "user.name", "Release Test")
         self._git("-C", str(self.server), "config", "user.email", "release-test@example.invalid")
         self._write_base_files()
+        (self.server / ".gitignore").write_text("*.local\n")
         self._git("-C", str(self.server), "add", ".")
         self._git("-C", str(self.server), "commit", "-m", "base")
         self.base_sha = self._git("-C", str(self.server), "rev-parse", "HEAD").stdout.strip()
@@ -92,7 +93,18 @@ class ReleaseOzonScriptTests(unittest.TestCase):
 
         result = self._run(self.release_sha)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("non-ignored untracked files", result.stderr)
+        self.assertIn("untracked files, including ignored files", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_ignored_source_file_is_rejected_before_reexec_or_docker(self) -> None:
+        source = self.base / "releases" / self.release_sha / "source"
+        source.parent.mkdir(parents=True)
+        self._git("-C", str(self.server), "worktree", "add", "--detach", str(source), self.release_sha)
+        (source / "backend" / "private.local").write_text("ignored build context file\n")
+
+        result = self._run(self.release_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("untracked files, including ignored files", result.stderr)
         self.assertFalse(self.log.exists())
 
     def test_database_backup_failure_does_not_stop_or_build_services(self) -> None:
