@@ -323,10 +323,12 @@ assert ScriptDirectory.from_config(Config("/app/alembic.ini")).get_heads()
 with engine.connect() as connection:
     connection.exec_driver_sql("SET TRANSACTION READ ONLY")
     assert connection.execute(text("SELECT 1")).scalar_one() == 1
-' >"$PROBE_LOG" 2>&1; then
+' >/dev/null 2>&1; then
+  printf 'status=failed\n' >"$PROBE_LOG"
   chmod 600 "$PROBE_LOG"
-  fail "built API preflight failed; sanitized details are retained in private diagnostics at $PROBE_LOG"
+  fail "built API preflight failed; private diagnostics contain only a sanitized status marker at $PROBE_LOG"
 fi
+printf 'status=passed\n' >"$PROBE_LOG"
 chmod 600 "$PROBE_LOG"
 
 SERVICES_STOPPED=1

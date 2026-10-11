@@ -129,9 +129,11 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         log = self.log.read_text()
         self.assertNotIn(" stop ", f" {log} ")
         self.assertNotIn(" up ", f" {log} ")
+        self.assertNotIn("postgresql://secret-user:secret-password", log)
         backup_dir = next((self.base / "backups" / "releases").iterdir())
         probe_log = backup_dir / "api-preflight.log"
-        self.assertIn("postgresql://secret-user:secret-password", probe_log.read_text())
+        self.assertEqual(probe_log.read_text(), "status=failed\n")
+        self.assertNotIn("postgresql://secret-user:secret-password", probe_log.read_text())
         self.assertEqual(probe_log.stat().st_mode & 0o777, 0o600)
 
     def test_exact_sha_builds_and_publishes_without_removing_cached_assets(self) -> None:
@@ -149,6 +151,8 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertIn(f"VCS_REF={self.release_sha}", log)
         self.assertIn("run --rm --no-deps --entrypoint python api -c", log)
         self.assertTrue(self.probe_marker.exists())
+        backup_dir = next((self.base / "backups" / "releases").iterdir())
+        self.assertEqual((backup_dir / "api-preflight.log").read_text(), "status=passed\n")
         self.assertIn(self.release_sha, manifest["release_worktree"])
         self.assertNotIn("FLUSHDB", log)
 
