@@ -12,21 +12,24 @@ The backend code is bind-mounted in Compose, so the release override mounts sour
 
 If the new API fails its health check after application services stop, the helper automatically brings the prior API, worker, and scheduler back using image tags and source paths saved before the build. If the frontend index was already switched, it restores the previous index atomically. It does not restore the database automatically.
 
-For a deliberate rollback after a successful release, use the `rollback-compose.yml` path printed in that release's manifest. From the server, apply the saved override:
+For a deliberate rollback after a successful release, use the backup directory printed in that release's manifest. Run the following as one block after replacing the placeholder. The same release lock covers both the container changes and frontend restore; if another release holds it, stop and wait. Keep both old and new hashed assets in place for cached pages.
 
 ```bash
-docker compose --project-directory /root/wb-finance \
-  -f /root/wb-finance/docker-compose.yml \
-  -f /root/backups/wb-finance/releases/<release-sha>-<utc-run-id>/rollback-compose.yml \
-  up -d --no-deps api celery_worker celery_beat
-```
-
-After the prior API passes `http://127.0.0.1:8000/health`, restore the saved frontend entry point. Keep the new hashed assets in place; old cached pages may still request them.
-
-```bash
-install -m 0644 /root/backups/wb-finance/releases/<release-sha>-<utc-run-id>/frontend-dist-before/index.html \
-  /root/wb-finance/frontend/dist/.index.rollback
-mv -f /root/wb-finance/frontend/dist/.index.rollback /root/wb-finance/frontend/dist/index.html
+(
+  set -euo pipefail
+  RELEASE_BACKUP='/root/backups/wb-finance/releases/<release-sha>-<utc-run-id>'
+  exec 9>/run/lock/wb-finance-ozon-release.lock
+  flock -n 9 || { echo 'Another release is running; rollback was not started.' >&2; exit 1; }
+  docker compose --project-directory /root/wb-finance \
+    -f /root/wb-finance/docker-compose.yml \
+    -f "$RELEASE_BACKUP/rollback-compose.yml" \
+    up -d --no-deps api celery_worker celery_beat
+  curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 5 \
+    --max-time 5 http://127.0.0.1:8000/health
+  install -m 0644 "$RELEASE_BACKUP/frontend-dist-before/index.html" \
+    /root/wb-finance/frontend/dist/.index.rollback
+  mv -f /root/wb-finance/frontend/dist/.index.rollback /root/wb-finance/frontend/dist/index.html
+)
 ```
 
 The Ozon schema changes in this release only add tables and indexes. The migrations' `downgrade()` functions drop Ozon tables, so rollback must not run `alembic downgrade` or drop those tables: doing so would erase imported accruals, settings, and user-entered costs. The rollback override keeps the forward release's migration files mounted, allowing the existing entrypoint to recognize the database's newer head while the previous application code runs. Keep the database at that additive schema version. A database restore from the saved dump is a separate recovery decision because it discards writes made after the snapshot.
