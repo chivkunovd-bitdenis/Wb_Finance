@@ -65,3 +65,12 @@ WB regression totals unchanged; colliding WB nm_id and Ozon sku remain two produ
 
 ## Proof boundary
 Public documentation and one explicitly authorized real seller account were checked. September daily accrual components and sale quantities reconcile with the monthly realization report; a further October sale and SKU-to-offer-id catalog lookup were verified. Live returns, multipage days, storage, advertising, penalties and compensation have not appeared in this sample. Exact ID+name classification uses the saved public dictionary; unknown or changed types remain visible and prevent unsupported profit claims. Tests do not extend this real-account proof to unseen events. Main and production remain unchanged until an explicit release decision.
+
+
+## Исправление запуска после первого выката
+
+Участники: владелец сервиса и выпуск приложения. Владелец запускает обновление; действующий сайт должен продолжить работу, если новая сборка не умеет подключиться к базе. Система собирает приложение, проверяет чтение базы новой сборкой до остановки старой версии, затем выполняет обычное переключение. Адрес базы и секреты остаются прежними. Обычный адрес PostgreSQL явно использует установленный драйвер psycopg2 во всех путях запуска. Явно указанный другой драйвер сохраняется.
+
+Проверка успеха: сборка с SQLAlchemy 2.1 и обычным адресом PostgreSQL подключается установленным psycopg2; API, проверка версии схемы и Alembic используют один выбор драйвера. Проверка отказа: ошибка импорта или подключения при предварительной проверке завершает выпуск до остановки работающих сервисов.
+
+Для разработки: DATABASE_URL → общая нормализация схемы → app.db / docker_entrypoint_api / alembic/env → create_engine; compose build → одноразовый read-only startup probe → stop/up. Интеграционная проверка CI использует обычный postgresql://, чтобы не скрывать производственную конфигурацию.

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.base import Base
 import app.models  # noqa: F401
+from app.database_url import normalize_database_url
 
 config = context.config
 if config.config_file_name is not None:
@@ -17,7 +18,10 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-database_url = os.getenv("DATABASE_URL", "postgresql://wb_finance:wb_finance@localhost:5432/wb_finance")
+database_url = normalize_database_url(
+    (os.getenv("DATABASE_URL") or "").strip()
+    or "postgresql://wb_finance:wb_finance@localhost:5432/wb_finance"
+)
 config.set_main_option("sqlalchemy.url", database_url)
 
 

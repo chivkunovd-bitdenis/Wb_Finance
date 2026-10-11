@@ -309,6 +309,26 @@ for service in api celery_worker celery_beat; do
   [[ "$revision" == "$EXPECTED_SHA" ]] || fail "built $service image has an unexpected revision label"
 done
 
+# Exercise the built API image and its live Compose environment before stopping any service.
+# Import the app and migration graph, then make only an explicitly read-only database query.
+PROBE_LOG="$BACKUP_DIR/api-preflight.log"
+if ! compose "$DEPLOY_OVERRIDE" run --rm --no-deps --entrypoint python api -c '
+import app.main
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import text
+from app.db import engine
+
+assert ScriptDirectory.from_config(Config("/app/alembic.ini")).get_heads()
+with engine.connect() as connection:
+    connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+    assert connection.execute(text("SELECT 1")).scalar_one() == 1
+' >"$PROBE_LOG" 2>&1; then
+  chmod 600 "$PROBE_LOG"
+  fail "built API preflight failed; sanitized details are retained in private diagnostics at $PROBE_LOG"
+fi
+chmod 600 "$PROBE_LOG"
+
 SERVICES_STOPPED=1
 compose "$DEPLOY_OVERRIDE" stop -t 60 celery_worker celery_beat api
 compose "$DEPLOY_OVERRIDE" up -d --no-deps api

@@ -29,8 +29,9 @@ def _script_heads() -> list[str]:
 
 def _db_version_rows(url: str) -> list[str]:
     from sqlalchemy import create_engine, text
+    from app.database_url import normalize_database_url
 
-    eng = create_engine(url)
+    eng = create_engine(normalize_database_url(url))
     with eng.connect() as conn:
         rows = conn.execute(text("SELECT version_num FROM alembic_version ORDER BY version_num")).fetchall()
     return [str(r[0]).strip() for r in rows]
