@@ -50,6 +50,7 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.log = self.base / "docker.log"
         self.rollback_marker = self.base / "rolled-back"
         self.new_api_marker = self.base / "new-api"
+        self.probe_marker = self.base / "api-probed"
         self.env = os.environ.copy()
         self.env.update(
             {
@@ -62,6 +63,7 @@ class ReleaseOzonScriptTests(unittest.TestCase):
                 "FAKE_IMAGE_TAGS": str(self.base / "image-tags.log"),
                 "FAKE_ROLLBACK_MARKER": str(self.rollback_marker),
                 "FAKE_NEW_API_MARKER": str(self.new_api_marker),
+                "FAKE_PROBE_MARKER": str(self.probe_marker),
                 "FAKE_EXPECTED_SHA": self.release_sha,
                 "FAKE_SERVER_ROOT": str(self.server),
             }
@@ -117,6 +119,23 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertNotIn(" stop ", f" {log} ")
         self.assertNotIn(" up ", f" {log} ")
 
+    def test_api_preflight_failure_does_not_stop_running_services_or_leak_dsn(self) -> None:
+        self.env["FAKE_PROBE_FAIL"] = "1"
+        result = self._run(self.release_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("built API preflight failed", result.stderr)
+        self.assertNotIn("postgresql://secret-user:secret-password", result.stderr)
+        self.assertTrue(self.probe_marker.exists())
+        log = self.log.read_text()
+        self.assertNotIn(" stop ", f" {log} ")
+        self.assertNotIn(" up ", f" {log} ")
+        self.assertNotIn("postgresql://secret-user:secret-password", log)
+        backup_dir = next((self.base / "backups" / "releases").iterdir())
+        probe_log = backup_dir / "api-preflight.log"
+        self.assertEqual(probe_log.read_text(), "status=failed\n")
+        self.assertNotIn("postgresql://secret-user:secret-password", probe_log.read_text())
+        self.assertEqual(probe_log.stat().st_mode & 0o777, 0o600)
+
     def test_exact_sha_builds_and_publishes_without_removing_cached_assets(self) -> None:
         self.env["FAKE_HEALTH_SUCCESS"] = "1"
         result = self._run(self.release_sha)
@@ -130,6 +149,10 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertTrue((self.server / "frontend" / "dist" / "assets" / "index-new.js").exists())
         log = self.log.read_text()
         self.assertIn(f"VCS_REF={self.release_sha}", log)
+        self.assertIn("run --rm --no-deps --entrypoint python api -c", log)
+        self.assertTrue(self.probe_marker.exists())
+        backup_dir = next((self.base / "backups" / "releases").iterdir())
+        self.assertEqual((backup_dir / "api-preflight.log").read_text(), "status=passed\n")
         self.assertIn(self.release_sha, manifest["release_worktree"])
         self.assertNotIn("FLUSHDB", log)
 
@@ -196,6 +219,14 @@ if [[ "$1" == compose ]]; then
   if [[ " $* " == *" pg_dump "* ]]; then
     [[ "${FAKE_DUMP_FAIL:-0}" != 1 ]] || exit 31
     printf 'fake postgres dump\n'
+    exit 0
+  fi
+  if [[ " $* " == *" run --rm --no-deps --entrypoint python api -c "* ]]; then
+    touch "$FAKE_PROBE_MARKER"
+    if [[ "${FAKE_PROBE_FAIL:-0}" == 1 ]]; then
+      printf 'connection to postgresql://secret-user:secret-password@db/private failed\n'
+      exit 32
+    fi
     exit 0
   fi
   if [[ " $* " == *" ps "* ]]; then

@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.db import DATABASE_URL as APP_DATABASE_URL
+from app.database_url import normalize_database_url
 from app.models.base import Base
 
 # Импорт моделей, чтобы Base.metadata знал все таблицы
@@ -98,7 +99,7 @@ def _get_engine():
     url = (os.getenv("DATABASE_URL") or "").strip() or (APP_DATABASE_URL or "").strip()
     if not url:
         return None
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(normalize_database_url(url), pool_pre_ping=True)
 
 
 @pytest.fixture(scope="function")
