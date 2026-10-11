@@ -1,21 +1,23 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy import text
 
 from app.core.crypto import encrypt_text
 from app.models.article import Article
-from app.models.ozon import OzonAccrualSnapshot, OzonConnection, OzonProductCost, OzonSyncDay
+from app.models.ozon import OzonAccrualSnapshot, OzonConnection, OzonProductCost, OzonSyncDay, OzonSyncRun
 from app.models.pnl_daily import PnlDaily
 from app.models.sku_daily import SkuDaily
 from app.models.user import User
 from app.services.marketplace_finance_service import (
     MarketplaceFinanceError,
     _dedupe_accruals,
+    _lock_key,
     build_overview,
     enqueue_sync,
     run_sync_run,
@@ -520,3 +522,109 @@ def test_genuine_empty_day_has_known_zero_ledger_and_unknown_external_metrics(re
     assert state.daily_data["commission"] == "0"
     for field in ("ads_spend", "tax", "operation_expenses", "margin"):
         assert state.daily_data[field] is None
+
+
+def test_duplicate_worker_contention_does_not_mutate_queued_run(real_db_session, monkeypatch):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-sync-contention@example.com")
+    owner_id = str(owner.id)
+    day = date(2026, 10, 5)
+    real_db_session.add(owner)
+    real_db_session.commit()
+    real_db_session.add_all(
+        [
+            _connection(owner_id),
+            OzonSyncRun(
+                user_id=owner_id,
+                date_from=day,
+                date_to=day,
+                status="queued",
+                progress=0,
+                error_message=None,
+            ),
+        ]
+    )
+    real_db_session.commit()
+    run = real_db_session.query(OzonSyncRun).filter_by(user_id=owner_id).one()
+    bind = real_db_session.get_bind()
+    holder = bind.engine.connect()
+    lock_key = _lock_key(owner_id)
+    try:
+        holder.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": lock_key})
+        holder.commit()
+
+        result = run_sync_run(db=real_db_session, run_id=str(run.id))
+
+        real_db_session.refresh(run)
+        assert result == {"status": "busy", "current_status": "queued"}
+        assert run.status == "queued"
+        assert run.error_message is None
+    finally:
+        holder.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": lock_key})
+        holder.commit()
+        holder.close()
+
+
+def test_live_owner_lock_prevents_stale_run_replacement(real_db_session, monkeypatch):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-sync-stale-locked@example.com")
+    owner_id = str(owner.id)
+    day = date(2026, 10, 4)
+    stale_updated_at = datetime.now(UTC) - timedelta(hours=4)
+    real_db_session.add(owner)
+    real_db_session.commit()
+    real_db_session.add_all(
+        [
+            _connection(owner_id),
+            OzonSyncRun(
+                user_id=owner_id,
+                date_from=day,
+                date_to=day,
+                status="running",
+                progress=0,
+                updated_at=stale_updated_at,
+            ),
+        ]
+    )
+    real_db_session.commit()
+    existing = real_db_session.query(OzonSyncRun).filter_by(user_id=owner_id).one()
+    bind = real_db_session.get_bind()
+    holder = bind.engine.connect()
+    lock_key = _lock_key(owner_id)
+    try:
+        holder.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": lock_key})
+        holder.commit()
+
+        with pytest.raises(MarketplaceFinanceError, match="Синхронизация уже ожидает запуска или выполняется"):
+            enqueue_sync(db=real_db_session, user_id=owner_id, date_from=day, date_to=day)
+
+        real_db_session.refresh(existing)
+        assert existing.status == "running"
+        assert existing.updated_at == stale_updated_at
+        assert real_db_session.query(OzonSyncRun).filter_by(user_id=owner_id).count() == 1
+    finally:
+        holder.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": lock_key})
+        holder.commit()
+        holder.close()
+
+
+def test_missing_day_keeps_specific_refresh_failure_visible(real_db_session, monkeypatch):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-missing-error@example.com")
+    day = date(2026, 10, 10)
+    real_db_session.add(owner)
+    real_db_session.commit()
+    real_db_session.add_all([
+        _connection(str(owner.id)),
+        OzonSyncDay(user_id=str(owner.id), day=day, status="missing",
+                    last_attempt_status="failed", warnings=[],
+                    last_error="Ozon ограничил частоту запросов"),
+    ])
+    real_db_session.commit()
+    result = build_overview(db=real_db_session, store_owner=owner,
+                            marketplace="ozon", date_from=day, date_to=day)
+    assert result["coverage"]["complete"] is False
+    assert result["daily"][0]["revenue"] is None
+    assert any("2026-10-10: день не загружен из-за ошибки: Ozon ограничил" in w
+               for w in result["warnings"])
+    assert not any("последний сохранённый срез" in w for w in result["warnings"])

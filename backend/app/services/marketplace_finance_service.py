@@ -177,20 +177,39 @@ def save_connection(*, db: Session, user_id: str, client_id: str, api_key: str) 
     clean_api_key = (api_key or "").strip()
     if not clean_client_id or not clean_api_key:
         raise MarketplaceFinanceError("client_id and api_key are required")
+    lock = _acquire_owner_lock(db, user_id)
+    if lock is None:
+        raise MarketplaceFinanceError("Подключение нельзя менять во время синхронизации")
+    try:
+        return _save_connection_while_locked(
+            db=db,
+            user_id=user_id,
+            client_id=clean_client_id,
+            api_key=clean_api_key,
+        )
+    finally:
+        _release_owner_lock(lock, user_id)
+
+
+def _save_connection_while_locked(
+    *, db: Session, user_id: str, client_id: str, api_key: str
+) -> OzonConnection:
     row = db.query(OzonConnection).filter(OzonConnection.user_id == user_id).first()
     active = (
         db.query(OzonSyncRun)
         .filter(OzonSyncRun.user_id == user_id, OzonSyncRun.status.in_(("queued", "running")))
         .first()
     )
-    if active is not None and not _retire_stale_run_if_unlocked(db, run=active, user_id=user_id):
-        raise MarketplaceFinanceError("Подключение нельзя менять во время синхронизации")
+    if active is not None:
+        if not _run_is_stale(active):
+            raise MarketplaceFinanceError("Подключение нельзя менять во время синхронизации")
+        _mark_stale_run_failed(db, active)
     if row is not None:
         try:
             current_client_id = decrypt_text(row.client_id_enc)
         except (CryptoConfigError, ValueError) as exc:
             raise MarketplaceFinanceError("Текущее подключение не удаётся расшифровать; проверьте настройки шифрования") from exc
-        if current_client_id != clean_client_id:
+        if current_client_id != client_id:
             has_ledger = (
                 db.query(OzonAccrualSnapshot.id)
                 .filter(OzonAccrualSnapshot.user_id == user_id)
@@ -209,8 +228,8 @@ def save_connection(*, db: Session, user_id: str, client_id: str, api_key: str) 
             if has_ledger:
                 raise MarketplaceFinanceError("Client-Id нельзя менять, пока сохранена история этого магазина")
     try:
-        encrypted_client_id = encrypt_text(clean_client_id)
-        encrypted_api_key = encrypt_text(clean_api_key)
+        encrypted_client_id = encrypt_text(client_id)
+        encrypted_api_key = encrypt_text(api_key)
     except CryptoConfigError as exc:
         raise MarketplaceFinanceError("Server encryption is not configured") from exc
 
@@ -250,22 +269,12 @@ def _run_is_stale(run: OzonSyncRun, *, now: datetime | None = None) -> bool:
     return (now or datetime.now(UTC)) - updated_at > timedelta(hours=2)
 
 
-def _retire_stale_run_if_unlocked(db: Session, *, run: OzonSyncRun, user_id: str) -> bool:
-    """Retire a stuck status only after proving no worker holds the owner lock."""
-    if not _run_is_stale(run):
-        return False
-    lock = _acquire_owner_lock(db, user_id)
-    if lock is None:
-        return False
-    try:
-        run.status = "failed"
-        run.error_message = "Синхронизация остановлена: более двух часов не было обновлений. Запустите её снова."
-        run.finished_at = datetime.now(UTC)
-        db.add(run)
-        db.commit()
-        return True
-    finally:
-        _release_owner_lock(lock, user_id)
+def _mark_stale_run_failed(db: Session, run: OzonSyncRun) -> None:
+    run.status = "failed"
+    run.error_message = "Синхронизация остановлена: более двух часов не было обновлений. Запустите её снова."
+    run.finished_at = datetime.now(UTC)
+    db.add(run)
+    db.commit()
 
 
 def _sync_payload(run: OzonSyncRun | None) -> dict[str, Any] | None:
@@ -312,22 +321,33 @@ def enqueue_sync(*, db: Session, user_id: str, date_from: date, date_to: date) -
         raise MarketplaceFinanceError("date_to must be on or after date_from")
     if (date_to - date_from).days + 1 > MAX_SYNC_DAYS:
         raise MarketplaceFinanceError(f"A manual Ozon sync can cover at most {MAX_SYNC_DAYS} days")
-    connection = db.query(OzonConnection).filter(OzonConnection.user_id == user_id).first()
-    if connection is None:
-        raise MarketplaceFinanceError("Connect Ozon before starting a sync")
-    active = (
-        db.query(OzonSyncRun)
-        .filter(OzonSyncRun.user_id == user_id, OzonSyncRun.status.in_(("queued", "running")))
-        .order_by(OzonSyncRun.created_at.desc())
-        .first()
-    )
-    if active is not None:
-        _retire_stale_run_if_unlocked(db, run=active, user_id=user_id)
-    run = OzonSyncRun(user_id=user_id, date_from=date_from, date_to=date_to, status="queued", progress=0)
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-    return run
+    lock = _acquire_owner_lock(db, user_id)
+    if lock is None:
+        raise MarketplaceFinanceError("Синхронизация уже ожидает запуска или выполняется")
+    try:
+        connection = db.query(OzonConnection).filter(OzonConnection.user_id == user_id).first()
+        if connection is None:
+            raise MarketplaceFinanceError("Connect Ozon before starting a sync")
+        active = (
+            db.query(OzonSyncRun)
+            .filter(OzonSyncRun.user_id == user_id, OzonSyncRun.status.in_(("queued", "running")))
+            .order_by(OzonSyncRun.created_at.desc())
+            .first()
+        )
+        if active is not None:
+            if not _run_is_stale(active):
+                raise MarketplaceFinanceError("Синхронизация уже ожидает запуска или выполняется")
+            # Keep the owner lock through both stale-run retirement and insertion of the
+            # replacement. A waiting Celery delivery then sees either failed or queued,
+            # never an acknowledged run orphaned by a racing replacement.
+            _mark_stale_run_failed(db, active)
+        run = OzonSyncRun(user_id=user_id, date_from=date_from, date_to=date_to, status="queued", progress=0)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        return run
+    finally:
+        _release_owner_lock(lock, user_id)
 
 
 def get_product_cost(*, db: Session, user_id: str, sku: str) -> Decimal | None:
@@ -672,14 +692,10 @@ def run_sync_run(*, db: Session, run_id: str) -> dict[str, Any]:
     user_id = str(run.user_id)
     lock = _acquire_owner_lock(db, user_id)
     if lock is None:
-        if run.status == "queued":
-            run.status = "failed"
-            run.error_message = "Другая синхронизация уже выполняется; запустите обновление позже."
-            run.finished_at = datetime.now(UTC)
-            db.add(run)
-            db.commit()
-            return {"status": "failed", "error": run.error_message}
-        return {"status": "already_running"}
+        # A duplicate delivery can observe `queued` while the first worker already
+        # holds the owner lock but has not committed `running` yet. Never change the
+        # shared run record on contention; the lock owner remains responsible for it.
+        return {"status": "busy", "current_status": run.status}
 
     client_id: str | None = None
     api_key: str | None = None
@@ -835,7 +851,10 @@ def _warning_list(state: OzonSyncDay | None) -> list[str]:
     values: list[Any] = state.warnings if isinstance(state.warnings, list) else []
     warnings = [_friendly_warning(str(item)) for item in values if item]
     if state.last_attempt_status == "failed" and state.last_error:
-        warnings.append(f"Обновить день не удалось; показывается последний сохранённый срез: {state.last_error}")
+        if state.status in {"complete", "empty"}:
+            warnings.append(f"{state.day}: обновить день не удалось; показывается последний сохранённый срез: {state.last_error}")
+        else:
+            warnings.append(f"{state.day}: день не загружен из-за ошибки: {state.last_error}")
     return warnings
 
 
@@ -1055,6 +1074,7 @@ def build_overview(
             if not required:
                 required = [False]
         complete = all(required)
+        warnings.extend(_warning_list(state))
         if not complete:
             missing_dates.append(day.isoformat())
             daily.append({"date": day.isoformat(), **{field: None for field in DAILY_AMOUNT_FIELDS}})
@@ -1066,8 +1086,6 @@ def build_overview(
             continue
 
         ozon_daily = state.daily_data if state and isinstance(state.daily_data, dict) else None
-        if state:
-            warnings.extend(_warning_list(state))
         if marketplace == "ozon":
             result: dict[str, Any] = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
             # OperationalExpense belongs to the existing WB store calculation; do not copy it into Ozon.

@@ -152,7 +152,12 @@ function MarketplaceState({ connection, coverage, warnings, sync, onRefresh, ref
         <div className="marketplace-notice marketplace-notice-warning" data-testid="marketplace-warnings">
           <strong>Замечания к данным</strong>
           <ul>{warnings.slice(0, 5).map((warning, index) => <li key={`${warningText(warning)}-${index}`}>{warningText(warning)}</li>)}</ul>
-          {warnings.length > 5 && <div>Ещё замечаний: {warnings.length - 5}.</div>}
+          {warnings.length > 5 && (
+            <details className="marketplace-warning-overflow">
+              <summary>Показать остальные замечания ({warnings.length - 5})</summary>
+              <ul>{warnings.slice(5).map((warning, index) => <li key={`${warningText(warning)}-${index + 5}`}>{warningText(warning)}</li>)}</ul>
+            </details>
+          )}
         </div>
       )}
     </div>

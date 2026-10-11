@@ -145,8 +145,8 @@ def test_per_accrual_reconciliation_warnings_do_not_cancel_each_other():
     normalized = normalize_accruals([first, second], [])
     daily = daily_row(normalized)
 
-    # Day-level signed differences net to zero, but each source operation stays visible.
-    assert daily["reconciliation_difference"] == Decimal("0.00")
+    # Opposing discrepancies must remain nonzero both daily and when summed over a period.
+    assert daily["reconciliation_difference"] == Decimal("2.00")
     assert any("начисление 301 не сверяется" in warning for warning in normalized["warnings"])
     assert any("начисление 302 не сверяется" in warning for warning in normalized["warnings"])
 

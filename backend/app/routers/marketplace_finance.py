@@ -54,6 +54,7 @@ def _translate_service_error(exc: MarketplaceFinanceError) -> HTTPException:
         ("manual ozon sync can cover at most", "За один раз можно синхронизировать не более 31 дня."),
         ("connect ozon before starting a sync", "Сначала подключите Ozon в настройках."),
         ("marketplace must be ozon or all", "Выберите Ozon или все площадки."),
+        ("синхронизация уже ожидает", "Синхронизация уже ожидает запуска или выполняется."),
         ("client_id and api_key are required", "Укажите Client-Id и API-ключ Ozon."),
         ("ozon is not connected", "Подключение Ozon не настроено."),
         ("server encryption is not configured", "На сервере не настроено шифрование подключений."),
@@ -69,7 +70,7 @@ def _translate_service_error(exc: MarketplaceFinanceError) -> HTTPException:
             break
     if not any(ord(char) > 127 for char in message):
         safe_message = safe_message if safe_message != message else "Не удалось выполнить запрос. Проверьте данные и попробуйте снова."
-    if "Connect Ozon" in message or "not connected" in message:
+    if "Connect Ozon" in message or "not connected" in message or "синхронизация уже ожидает" in lowered:
         code = status.HTTP_409_CONFLICT
     if "encryption" in message.lower() or "decrypted" in message.lower() or "шифрован" in message.lower() or "расшифров" in message.lower():
         code = status.HTTP_503_SERVICE_UNAVAILABLE

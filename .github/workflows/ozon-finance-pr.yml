@@ -6,6 +6,8 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
+      - 'docs/ozon-finance/**'
+      - 'TASKLOG.md'
       - '.github/workflows/ozon-finance-pr.yml'
   workflow_dispatch:
 
@@ -24,7 +26,7 @@ jobs:
           POSTGRES_DB: wb_finance_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U wb_finance -d wb_finance_test'
+          --health-cmd "pg_isready -U wb_finance -d wb_finance_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://wb_finance:local-test-only@127.0.0.1:5432/wb_finance_test

@@ -139,6 +139,23 @@ export default function Settings() {
   );
 }
 
+function getOzonConnectionStatus(connection, { loading = false, saving = false, loadError = '' } = {}) {
+  const status = String(connection?.status || '').toLowerCase();
+  if (loading || saving || ['syncing', 'queued', 'pending', 'running'].includes(status)) {
+    return { label: 'Проверяем', className: 'tag-marketplace-syncing' };
+  }
+  if (loadError || ['error', 'needs_reauth', 'failed'].includes(status)) {
+    return { label: 'Ошибка', className: 'tag-marketplace-error' };
+  }
+  if (status === 'ready') {
+    return { label: 'Подключён', className: 'tag-marketplace-connected' };
+  }
+  if (status === 'configured' || connection?.configured === true) {
+    return { label: 'Данные сохранены', className: 'tag-gray' };
+  }
+  return { label: 'Не подключён', className: 'tag-gray' };
+}
+
 function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) {
   const [connection, setConnection] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -151,6 +168,7 @@ function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) 
   const requestGeneration = useRef(0);
   const savedClientId = String(connection?.client_id || '');
   const isDirty = clientId.trim() !== savedClientId || apiKey.length > 0;
+  const connectionStatus = getOzonConnectionStatus(connection, { loading, saving, loadError });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -231,13 +249,13 @@ function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) 
           <h3>Подключение Ozon</h3>
           <p>Ключ нужен только для чтения начислений, товаров и финансовых деталей.</p>
         </div>
-        <span className={`tag ${connection?.configured ? 'tag-marketplace-connected' : 'tag-gray'}`} data-testid="ozon-connection-status">
-          {loading ? 'Проверяем…' : connection?.configured ? 'Подключён' : 'Не подключён'}
+        <span className={`tag ${connectionStatus.className}`} data-testid="ozon-connection-status">
+          {connectionStatus.label}
         </span>
       </div>
 
       {loadError && <div className="marketplace-notice marketplace-notice-error" role="alert">{loadError}</div>}
-      {connection?.status === 'error' && connection?.error && (
+      {['error', 'needs_reauth'].includes(String(connection?.status || '').toLowerCase()) && connection?.error && (
         <div className="marketplace-notice marketplace-notice-error" role="alert">Ошибка подключения: {connection.error}</div>
       )}
 
@@ -277,11 +295,11 @@ function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) 
       ) : (
         <div className="marketplace-settings-readonly" data-testid="ozon-connection-viewer-readonly">
           {activeStore?.owner_email ? `Магазин ${activeStore.owner_email}.` : 'Подключением может управлять только владелец магазина.'}
-          {' '}Доступ для просмотра: {connection?.configured ? 'подключён' : 'не подключён'}.
+          {' '}Статус кабинета: {connectionStatus.label.toLowerCase()}.
         </div>
       )}
       {formError && <div className="marketplace-notice marketplace-notice-error" role="alert" data-testid="ozon-connection-form-error">{formError}</div>}
-      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-connection-saved">Подключение сохранено. API-ключ очищен из формы.</div>}
+      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-connection-saved">Данные сохранены. API-ключ очищен из формы.</div>}
     </section>
   );
 }

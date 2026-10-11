@@ -75,9 +75,9 @@ function makeOverview(marketplace, options = {}) {
     currency: 'RUB',
     daily,
     products,
-    warnings: options.warning ? [options.warning] : [],
+    warnings: Array.isArray(options.warnings) ? options.warnings : (options.warning ? [options.warning] : []),
     coverage: options.partial ? { complete: false, missing_dates: ['2026-10-09'] } : { complete: true, missing_dates: [] },
-    connection: options.connection || { configured: true, status: 'connected' },
+    connection: options.connection || { configured: true, status: 'ready' },
     sync: { status: 'idle' },
   };
 }
@@ -111,9 +111,9 @@ async function mockApplication(page, options = {}) {
       if (method === 'PUT') {
         const body = route.request().postDataJSON();
         options.connectionWrites?.push({ client_id: body.client_id, api_key: body.api_key });
-        return route.fulfill({ json: { configured: true, client_id: body.client_id, status: 'connected' } });
+        return route.fulfill({ json: { configured: true, client_id: body.client_id, status: 'configured' } });
       }
-      return route.fulfill({ json: options.connection || { configured: true, client_id: 'client-1', status: 'connected' } });
+      return route.fulfill({ json: options.connection || { configured: true, client_id: 'client-1', status: 'configured' } });
     }
     if (path === '/dashboard/marketplace/sync' && method === 'POST') {
       return route.fulfill({ status: 202, json: { status: 'queued' } });
@@ -197,6 +197,30 @@ test.describe('Marketplace finance', () => {
     await expect(page.getByTestId('marketplace-day-2026-10-10').getByText('0,00 ₽').first()).toBeVisible();
   });
 
+  test('shows warnings beyond the first five after explicit expansion', async ({ page }) => {
+    await mockApplication(page, {
+      overview: {
+        warnings: [
+          'Предупреждение 1',
+          'Предупреждение 2',
+          'Предупреждение 3',
+          'Предупреждение 4',
+          'Предупреждение 5',
+          'Расхождение последнего начисления: сумма не совпала с итогом операции.',
+        ],
+      },
+    });
+
+    await page.getByTestId('marketplace-selector').selectOption('ozon');
+    const warnings = page.getByTestId('marketplace-warnings');
+    const lastWarning = warnings.getByText('Расхождение последнего начисления: сумма не совпала с итогом операции.');
+    await expect(warnings.locator('ul').first().locator('li')).toHaveCount(5);
+    await expect(lastWarning).toBeHidden();
+    await expect(warnings.locator('details summary')).toHaveText('Показать остальные замечания (1)');
+    await warnings.locator('details summary').click();
+    await expect(lastWarning).toBeVisible();
+  });
+
   test('shows a recoverable error when the overview endpoint fails', async ({ page }) => {
     let shouldFail = true;
     await mockApplication(page, {
@@ -223,14 +247,44 @@ test.describe('Marketplace finance', () => {
     const clientId = page.getByTestId('ozon-client-id');
     const apiKey = page.getByTestId('ozon-api-key');
     await expect(clientId).toBeVisible();
+    await expect(page.getByTestId('ozon-connection-status')).toHaveText('Данные сохранены');
     await clientId.fill('client-new');
     await apiKey.fill('secret-e2e-key-value');
     await page.getByTestId('ozon-connection-save').click();
     await expect(page.getByTestId('ozon-connection-saved')).toBeVisible();
+    await expect(page.getByTestId('ozon-connection-status')).toHaveText('Данные сохранены');
+    await expect(page.getByTestId('ozon-connection-status')).not.toHaveText('Подключён');
     await expect(apiKey).toHaveValue('');
     await expect.poll(() => connectionWrites.length).toBe(1);
     expect(connectionWrites[0]).toEqual({ client_id: 'client-new', api_key: 'secret-e2e-key-value' });
     expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('secret-e2e-key-value');
+  });
+
+  test('connection status distinguishes saved, checking, ready, error and missing states', async ({ page }) => {
+    const connection = { configured: true, client_id: 'client-1', status: 'configured' };
+    await mockApplication(page, { connection });
+    await page.goto('/settings');
+    const status = page.getByTestId('ozon-connection-status');
+    await expect(status).toHaveText('Данные сохранены');
+
+    connection.status = 'syncing';
+    await page.reload();
+    await expect(status).toHaveText('Проверяем');
+
+    connection.status = 'ready';
+    await page.reload();
+    await expect(status).toHaveText('Подключён');
+
+    connection.status = 'error';
+    connection.error = 'Проверьте доступ к кабинету.';
+    await page.reload();
+    await expect(status).toHaveText('Ошибка');
+
+    connection.configured = false;
+    connection.status = 'missing';
+    delete connection.error;
+    await page.reload();
+    await expect(status).toHaveText('Не подключён');
   });
 
   test('cost editor preserves explicit zero and can clear a saved amount', async ({ page }) => {

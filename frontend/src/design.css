@@ -1300,6 +1300,25 @@ tbody td.left {
   color: #155724;
 }
 
+.tag-marketplace-syncing {
+  background: #e7f3ff;
+  color: #004085;
+}
+
+.tag-marketplace-error {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+.marketplace-warning-overflow {
+  margin-top: 6px;
+}
+
+.marketplace-warning-overflow summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
 .marketplace-product-detail {
   padding: 10px;
   background: var(--bg-secondary);

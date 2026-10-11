@@ -103,7 +103,9 @@ def normalize_accruals(
         )
         if complete:
             difference = authoritative_total - raw_components
-            _sum(row, "reconciliation_difference", difference)
+            # Sum magnitudes so failures cannot cancel within a day or across
+            # days in the UI. Direction remains in the per-accrual warning.
+            _sum(row, "reconciliation_difference", abs(difference))
             if difference != 0:
                 warnings.append(
                     f"{day}: начисление {accrual_id} не сверяется: total_amount отличается "
