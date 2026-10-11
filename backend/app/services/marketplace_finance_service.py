@@ -1218,6 +1218,7 @@ def build_overview(
         warnings.append("Ozon не подключён; общий отчёт будет неполным, пока Ozon не подключён и не синхронизирован")
     if marketplace == "all":
         warnings.append("Эквайринг Wildberries отдельно не выделяется из комиссии; количества в сводной строке не объединяются")
+        warnings.append("Прибыль WB и общий итог предварительные: старый импорт WB не сохраняет все удержания и основания доплат; полной сверки с финансовым отчётом нет")
     if marketplace == "ozon" and not ozon_enabled:
         warnings.append("Ozon не подключён")
     if require_ozon and tax_rate is None:
@@ -1330,6 +1331,12 @@ def build_overview(
     return {
         "marketplace": marketplace,
         "currency": "RUB",
+        "accounting_basis": {
+            "margin": "preliminary_wb_and_ozon" if marketplace == "all" else "current_cost_estimate",
+            "costs": "current_sku_cost_restates_all_dates",
+            "tax": "estimated_revenue_times_wb_rate",
+            "wb_fully_reconciled": False if marketplace == "all" else None,
+        },
         "daily": daily,
         "products": products,
         "warnings": warnings,

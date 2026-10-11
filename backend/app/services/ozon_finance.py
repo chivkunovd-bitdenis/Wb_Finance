@@ -120,6 +120,24 @@ _register_type_names(
     "127 AnalyticsPlus, 128 AnalyticsPro, 129 AnalyticsCorrection",
 )
 
+# These exact Ozon dictionary types can arise from return handling. The fee
+# itself remains a known expense, but neither the affected sales quantity nor
+# the corresponding COGS reversal can be inferred from that fee alone.
+_RETURN_RELATED_TYPE_ID_NAMES = {
+    ("2", "BackwardShipment"),
+    ("6", "Cancellation"),
+    ("9", "ClientReturn"),
+    ("40", "PartialReturn"),
+    ("45", "PickUpPointReturnAcceptance"),
+    ("53", "PreparingToReturn"),
+    ("59", "ReturnFlowLogistic"),
+    ("60", "ReturnStorageInTheWarehouse"),
+    ("65", "RfbsEasyReturn"),
+    ("71", "SellerReturns"),
+    ("113", "B2CPickUpPointReturnAcceptance"),
+    ("115", "B2CBackwardLogistics"),
+}
+
 # These dictionary entries are real, but their meaning is a payout adjustment,
 # settlement, correction, seller bonus, or security amount rather than a proven
 # P&L category. Keep their signed values in unallocated_amount.
@@ -217,6 +235,7 @@ def normalize_accruals(
         quantity_complete = row.pop("_quantity_complete", True)
         quantity_sku_complete = row.pop("_quantity_sku_complete", True)
         return_activity = row.pop("_return_activity", False)
+        unscoped_return_activity = row.pop("_unscoped_return_activity", False)
         missing_sku_cost = False
         cogs = Decimal("0")
         for product_key, product in products_by_key.items():
@@ -224,7 +243,7 @@ def normalize_accruals(
                 continue
             product.pop("_has_sale_activity", None)
             product_quantity_complete = product.pop("_quantity_complete", True)
-            product_return = product.pop("_return_activity", False)
+            product_return = product.pop("_return_activity", False) or unscoped_return_activity
             sold_quantity = product.get("sold_quantity")
             product["returned_quantity"] = None if product_return or not product_quantity_complete else Decimal("0")
             product["net_quantity"] = (
@@ -299,6 +318,7 @@ def normalize_accruals(
             "reconciliation_matches": bool(reconciliation_matches),
             "profitability_complete": bool(row["profitability_complete"]),
             "unknown_sku_posting": bool(row.pop("_unknown_sku_posting", False)),
+            "unscoped_return_activity": bool(unscoped_return_activity),
         }
         row["source_categories"] = list(dict.fromkeys(row["source_categories"]))
         row["source_accrual_ids"] = list(dict.fromkeys(row["source_accrual_ids"]))
@@ -319,6 +339,11 @@ def normalize_accruals(
         sku_allocation_complete = row.pop("_sku_allocation_complete", True)
         row.pop("_unallocated_product_fields", None)
         quality = daily_quality.get((day, currency), {})
+        product_return_activity = product_return_activity or quality.get("unscoped_return_activity", False)
+        if product_return_activity:
+            row["returned_quantity"] = None
+            row["net_quantity"] = None
+            row["cogs"] = None
         unknown_sku_posting = quality.get("unknown_sku_posting", False)
         classification_complete = classification_complete and quality.get("accrual_classification_complete", False)
         sku_allocation_complete = sku_allocation_complete and quality.get("sku_allocation_complete", False)
@@ -644,6 +669,62 @@ def _add_component(
         _sum(product, field, metric_amount)
 
 
+def _mark_return_activity(
+    *,
+    daily: dict[str, Any],
+    products: dict[tuple[str, str, str], dict[str, Any]],
+    sku: str | None,
+    day: str,
+    currency: str,
+    accrual_id: str,
+) -> None:
+    daily["_return_activity"] = True
+    if sku is None:
+        # A return-like fee without a SKU may affect any product's COGS.
+        daily["_unscoped_return_activity"] = True
+        daily["_quantity_sku_complete"] = False
+        return
+    product = _product(
+        products,
+        day=day,
+        sku=sku,
+        currency=currency,
+        accrual_id=accrual_id,
+    )
+    if product is not None:
+        product["_return_activity"] = True
+
+
+def _mark_return_fee_type(
+    *,
+    type_id: Any,
+    type_names: dict[str, dict[str, str | None]],
+    daily: dict[str, Any],
+    products: dict[tuple[str, str, str], dict[str, Any]],
+    sku: str | None,
+    day: str,
+    currency: str,
+    accrual_id: str,
+    warnings: list[str],
+) -> None:
+    key = (str(type_id) if type_id is not None else "unknown")[:64]
+    name = type_names.get(key, {}).get("name") or "без названия"
+    if (key, name) not in _RETURN_RELATED_TYPE_ID_NAMES:
+        return
+    _mark_return_activity(
+        daily=daily,
+        products=products,
+        sku=sku,
+        day=day,
+        currency=currency,
+        accrual_id=accrual_id,
+    )
+    warnings.append(
+        f"{day}: начисление содержит тип логистики возврата ({name}); "
+        "количество, себестоимость возврата и прибыль не подтверждены"
+    )
+
+
 def _fee_details(
     *,
     type_id: Any,
@@ -726,6 +807,36 @@ def _fee_details(
     return source_amount
 
 
+def _mark_return_delivery_service(
+    *,
+    service: dict[str, Any],
+    type_names: dict[str, dict[str, str | None]],
+    daily: dict[str, Any],
+    products: dict[tuple[str, str, str], dict[str, Any]],
+    sku: str | None,
+    day: str,
+    currency: str,
+    accrual_id: str,
+    warnings: list[str],
+) -> None:
+    type_id = str(service.get("type_id"))[:64] if service.get("type_id") is not None else "unknown"
+    name = type_names.get(type_id, {}).get("name") or "без названия"
+    if (type_id, name) not in _RETURN_RELATED_TYPE_ID_NAMES:
+        return
+    _mark_return_activity(
+        daily=daily,
+        products=products,
+        sku=sku,
+        day=day,
+        currency=currency,
+        accrual_id=accrual_id,
+    )
+    warnings.append(
+        f"{day}: начисление содержит услугу логистики возврата ({name}); "
+        "количество, себестоимость возврата и прибыль не подтверждены"
+    )
+
+
 def _normalize_accrual(
     *,
     accrual: dict[str, Any],
@@ -786,6 +897,19 @@ def _normalize_accrual(
 
     def parse_fee(value: Any, type_id: Any, sku: str | None, source: str) -> None:
         nonlocal complete, raw_total
+        # Record a return signal before parsing its amount: a missing or bad
+        # amount must not let a return silently keep normal sale COGS.
+        _mark_return_fee_type(
+            type_id=type_id,
+            type_names=type_names,
+            daily=daily,
+            products=products,
+            sku=sku,
+            day=day,
+            currency=currency,
+            accrual_id=accrual_id,
+            warnings=warnings,
+        )
         try:
             amount, component_currency = _parse_money(value, source)
         except OzonContractError:
@@ -927,6 +1051,22 @@ def _normalize_accrual(
                 continue
             delivery_total = delivery.get("total_accrued")
             services = delivery.get("services")
+            if isinstance(services, list):
+                # Scan all service identities before parsing any amounts. A
+                # malformed earlier service must not hide a later return.
+                for service in services:
+                    if isinstance(service, dict):
+                        _mark_return_delivery_service(
+                            service=service,
+                            type_names=type_names,
+                            daily=daily,
+                            products=products,
+                            sku=sku,
+                            day=day,
+                            currency=currency,
+                            accrual_id=accrual_id,
+                            warnings=warnings,
+                        )
             if delivery_total is not None:
                 amount = parse_component(delivery_total, "logistics", sku, "delivery.total_accrued")
                 if amount is not None and isinstance(services, list):

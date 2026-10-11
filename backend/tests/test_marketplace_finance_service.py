@@ -216,6 +216,11 @@ def test_ozon_settings_drive_only_ozon_tax_and_expenses(real_db_session, monkeyp
     assert ozon["daily"][0]["tax"] == 12.0
     assert ozon["daily"][0]["operation_expenses"] == 5.0
     assert ozon["daily"][0]["margin"] == 113.0
+    assert ozon["accounting_basis"]["margin"] == "current_cost_estimate"
+    assert ozon["accounting_basis"]["costs"] == "current_sku_cost_restates_all_dates"
+    assert all_markets["accounting_basis"]["wb_fully_reconciled"] is False
+    assert all_markets["accounting_basis"]["margin"] == "preliminary_wb_and_ozon"
+    assert any("старый импорт WB" in warning for warning in all_markets["warnings"])
     assert ozon["products"][0]["daily"][0]["tax"] == 12.0
     assert ozon["products"][0]["daily"][0]["margin"] == 153.0
     assert ozon["products"][0]["daily"][0]["operation_expenses"] is None

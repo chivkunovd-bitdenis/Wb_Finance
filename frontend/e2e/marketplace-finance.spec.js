@@ -92,6 +92,12 @@ function makeOverview(marketplace, options = {}) {
   return {
     marketplace,
     currency: 'RUB',
+    accounting_basis: {
+      margin: marketplace === 'all' ? 'preliminary_wb_and_ozon' : 'current_cost_estimate',
+      costs: 'current_sku_cost_restates_all_dates',
+      tax: 'estimated_revenue_times_wb_rate',
+      wb_fully_reconciled: marketplace === 'all' ? false : null,
+    },
     daily,
     products,
     warnings: Array.isArray(options.warnings) ? options.warnings : (options.warning ? [options.warning] : []),
@@ -174,8 +180,10 @@ test.describe('Marketplace finance', () => {
   test('switches Ozon and all views while keeping equal SKUs separate', async ({ page }) => {
     await mockApplication(page, { overview: { opexConfirmed: true } });
     await expect(page.getByText('Детализация по дням').first()).toBeVisible();
+    await expect(page.getByTestId('wb-profit-basis-note')).toContainText('Маржа WB — предварительная оценка');
 
     await page.getByTestId('marketplace-selector').selectOption('ozon');
+    await expect(page.getByTestId('wb-profit-basis-note')).toHaveCount(0);
     await expect(page.getByTestId('marketplace-summary-kpis')).toBeVisible();
     await expect(page.getByTestId('marketplace-summary-kpis').getByText('100,00 ₽')).toBeVisible();
     await expect(page.getByTestId('marketplace-metric-acquiring').getByText('2,00 ₽')).toBeVisible();
@@ -183,10 +191,18 @@ test.describe('Marketplace finance', () => {
     await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(3)).toHaveText('0');
     await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(4)).toHaveText('5');
     await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(1)).toContainText('2,00 ₽');
-    await expect(page.getByTestId('marketplace-proof-note')).toContainText('Проверено на одном кабинете: данные за один период сверены с бухгалтерскими итогами.');
+    await expect(page.getByTestId('marketplace-summary-kpis').getByText('Расчётная прибыль')).toBeVisible();
+    await expect(page.getByTestId('marketplace-metric-margin').locator('td').first()).toHaveText('Расчётная прибыль');
+    await expect(page.getByTestId('marketplace-proof-note')).toContainText('данные Ozon за один период сверены с бухгалтерскими итогами');
     await expect(page.getByTestId('marketplace-proof-note')).toContainText('сопоставление возвратов на живых данных ещё не проверено');
+    await expect(page.getByTestId('marketplace-profit-basis-note')).toContainText('текущая себестоимость товара применяется ко всем датам');
+    await expect(page.getByTestId('marketplace-profit-basis-note')).toContainText('налог оценён от выручки по ставке из настроек WB');
+    await expect(page.getByTestId('marketplace-profit-basis-note')).toContainText('не бухгалтерская сверка или налоговая декларация');
 
     await page.getByTestId('marketplace-selector').selectOption('all');
+    await expect(page.getByTestId('marketplace-summary-kpis').getByText('Предварительная прибыль')).toBeVisible();
+    await expect(page.getByTestId('marketplace-metric-margin').locator('td').first()).toHaveText('Предварительная прибыль');
+    await expect(page.getByTestId('marketplace-profit-basis-note')).toContainText('финансовые данные WB в общем отчёте сверены не полностью');
     await expect(page.getByTestId('marketplace-product-wb:42')).toBeVisible();
     await expect(page.getByTestId('marketplace-product-ozon:42')).toBeVisible();
     await expect(page.getByText('WB Cable')).toBeVisible();
@@ -200,6 +216,7 @@ test.describe('Marketplace finance', () => {
     await expect(wbProduct.locator('td').nth(7)).toContainText('108,00 ₽');
     await expect(ozonProduct.locator('td').nth(6)).toContainText('20,00 ₽');
     await expect(ozonProduct.locator('td').nth(7)).toContainText('59,00 ₽');
+    await expect(page.getByTestId('marketplace-products-table').getByText('Предварительная прибыль до общих расходов')).toBeVisible();
     await expect(page.getByTestId('marketplace-metric-cogs').locator('td').nth(1)).toContainText('60,00 ₽');
     await expect(page.getByTestId('marketplace-metric-margin').locator('td').nth(1)).toContainText('167,00 ₽');
     await expect(page.getByText('Общее количество по площадкам не суммируется; в товарных строках показаны данные своей площадки.')).toBeVisible();
@@ -211,6 +228,11 @@ test.describe('Marketplace finance', () => {
     await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(1).locator('span')).toHaveAttribute('title', /Wildberries включает её в комиссию/);
     await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(2).locator('span')).toHaveAttribute('title', /нельзя сопоставить/);
     await page.screenshot({ path: 'test-results/marketplace-finance-desktop.png', fullPage: true });
+
+    await page.getByTestId('marketplace-product-toggle-wb:42').click();
+    await expect(page.locator('.marketplace-product-days').first().locator('thead th').nth(15)).toHaveText('Предварительная прибыль до общих расходов');
+    await page.getByTestId('marketplace-product-toggle-ozon:42').click();
+    await expect(page.locator('.marketplace-product-days').nth(1).locator('thead th').nth(15)).toHaveText('Расчётная прибыль до общих расходов');
   });
 
   test('Ozon finance remains readable on a narrow screen', async ({ page }) => {
@@ -388,6 +410,7 @@ test.describe('Marketplace finance', () => {
     await mockApplication(page, { costWrites });
     await page.getByTestId('marketplace-selector').selectOption('ozon');
     await page.getByRole('link', { name: 'Себестоимость' }).click();
+    await expect(page.getByTestId('marketplace-cost-history-warning')).toContainText('расчётная прибыль пересчитается за всю историю');
     const input = page.getByTestId('marketplace-cost-input-ozon:42');
     await expect(input).toBeVisible();
     await input.fill('0');

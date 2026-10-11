@@ -540,6 +540,11 @@ export default function Layout() {
                   Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
                 </div>
               )}
+              {marketplace === 'wb' && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
+                <div className="marketplace-notice marketplace-notice-warning" data-testid="wb-profit-basis-note">
+                  <strong>Маржа WB — предварительная оценка.</strong> В сохранённых данных нет полной детализации удержаний и оснований доплат, поэтому итог не сверён со всеми статьями финансового отчёта. Текущая себестоимость применяется к прошлым продажам; незаполненная себестоимость в прежнем расчёте считается нулевой.
+                </div>
+              )}
               <Routes>
                 {billingStatus?.is_access_blocked ? (
                   <>

@@ -92,6 +92,26 @@ function marketplaceName(value) {
   return value === 'ozon' ? 'Ozon' : value === 'wb' ? 'Wildberries' : String(value || 'Маркетплейс');
 }
 
+function profitLabel(marketplace, suffix = '') {
+  const label = marketplace === 'all' || marketplace === 'wb' ? 'Предварительная прибыль' : 'Расчётная прибыль';
+  return suffix ? `${label} ${suffix}` : label;
+}
+
+function profitBasisNotice(marketplace, accountingBasis) {
+  const notes = [];
+  if (accountingBasis?.costs === 'current_sku_cost_restates_all_dates') {
+    notes.push('текущая себестоимость товара применяется ко всем датам');
+  }
+  if (accountingBasis?.tax === 'estimated_revenue_times_wb_rate') {
+    notes.push('налог оценён от выручки по ставке из настроек WB');
+  }
+  if (marketplace === 'all' && accountingBasis?.wb_fully_reconciled === false) {
+    notes.push('финансовые данные WB в общем отчёте сверены не полностью');
+  }
+  const basis = notes.length ? `${notes.join('; ')}.` : 'часть исходных данных может быть неполной.';
+  return `${marketplace === 'all' ? 'Предварительная прибыль' : 'Расчётная прибыль'}: ${basis} Это управленческая оценка, а не бухгалтерская сверка или налоговая декларация.`;
+}
+
 function warningText(warning) {
   if (typeof warning === 'string') return warning;
   if (warning && typeof warning === 'object') {
@@ -230,7 +250,9 @@ function MetricSummary({ totals, currency, incomplete, warnings, marketplace }) 
             const share = !(marketplace === 'all' && key === 'acquiring') && isAmount(value) && isAmount(revenue) && Number(revenue) !== 0
               ? Number(value) / Number(revenue) * 100
               : null;
-            const displayLabel = marketplace === 'all' && key === 'acquiring' ? 'Эквайринг (не сопоставляется)' : label;
+            const displayLabel = key === 'margin'
+              ? profitLabel(marketplace)
+              : marketplace === 'all' && key === 'acquiring' ? 'Эквайринг (не сопоставляется)' : label;
             return (
               <tr key={key} data-testid={`marketplace-metric-${key}`}>
                 <td className="left">{displayLabel}</td>
@@ -252,7 +274,7 @@ function DailyTable({ rows, currency, incomplete, warnings, marketplace }) {
   return (
     <DataTable title="Динамика по дням" tag={`${rows.length} дн.`}>
       <table className="marketplace-wide-table" data-testid="marketplace-daily-table">
-        <thead><tr><th className="left">День</th><th>Эквайринг</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th>{DAILY_COLUMNS.filter(([key]) => key !== 'acquiring').map(([key, label]) => <th key={key}>{label}</th>)}</tr></thead>
+        <thead><tr><th className="left">День</th><th>Эквайринг</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th>{DAILY_COLUMNS.filter(([key]) => key !== 'acquiring').map(([key, label]) => <th key={key}>{key === 'margin' ? profitLabel(marketplace) : label}</th>)}</tr></thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.date} data-testid={`marketplace-day-${row.date}`}>
@@ -400,7 +422,7 @@ function ProductDailyDetails({ product, currency, incomplete, warnings }) {
       <div className="marketplace-product-detail-title">Дневные начисления · {marketplaceName(product.marketplace)}</div>
       <div className="table-wrap marketplace-product-day-wrap">
         <table className="marketplace-product-days">
-          <thead><tr><th className="left">День</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Комиссия</th><th>Эквайринг</th><th>Логистика</th><th>Штрафы</th><th>Хранение</th><th>Реклама</th><th>Прочие</th><th>Компенсации</th><th>Себестоимость</th><th>Налог</th><th>Прибыль до общих расходов</th><th>Итого начислено</th></tr></thead>
+          <thead><tr><th className="left">День</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Комиссия</th><th>Эквайринг</th><th>Логистика</th><th>Штрафы</th><th>Хранение</th><th>Реклама</th><th>Прочие</th><th>Компенсации</th><th>Себестоимость</th><th>Налог</th><th>{profitLabel(product.marketplace, 'до общих расходов')}</th><th>Итого начислено</th></tr></thead>
           <tbody>{daily.map((row) => (
             <tr key={row.date}>
               <td className="left">{formatDate(row.date)}</td>
@@ -490,7 +512,7 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
         <thead>
           <tr>
             <th className="left">Товар</th><th className="left">SKU / артикул</th>
-            <th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Себестоимость</th><th>Прибыль до общих расходов</th><th>Итого начислено</th>
+            <th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Себестоимость</th><th>{profitLabel(marketplace, 'до общих расходов')}</th><th>Итого начислено</th>
             {showCosts && <th>Цена себестоимости</th>}
             <th aria-label="Детализация" />
           </tr>
@@ -705,20 +727,23 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
         marketplace={marketplace}
       />
       <div className="marketplace-proof-note" data-testid="marketplace-proof-note">
-        Проверено на одном кабинете: данные за один период сверены с бухгалтерскими итогами. Неизвестные начисления и неполные данные отмечаются отдельно. Прибыль зависит от заполненных себестоимости, налога и собственных расходов; сопоставление возвратов на живых данных ещё не проверено.
+        Проверено на одном кабинете: данные Ozon за один период сверены с бухгалтерскими итогами. Неизвестные начисления и неполные данные отмечаются отдельно; сопоставление возвратов на живых данных ещё не проверено.
+      </div>
+      <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-profit-basis-note">
+        {profitBasisNotice(marketplace, data?.accounting_basis)}
       </div>
 
       {view === 'dashboard' && (
         <>
           {incomplete && <div className="marketplace-kpi-grid" data-testid="marketplace-summary-kpis">
             <KpiCard label="Выручка за весь период" value="—" delta="Есть пропущенные дни" />
-            <KpiCard label="Прибыль за весь период" value="—" delta="Есть пропущенные дни" valueClassName="neg" />
+            <KpiCard label={`${profitLabel(marketplace)} за весь период`} value="—" delta="Есть пропущенные дни" valueClassName="neg" />
             <KpiCard label="Итого начислено за весь период" value="—" delta="Есть пропущенные дни" />
           </div>}
           {!incomplete && (
             <div className="marketplace-kpi-grid" data-testid="marketplace-summary-kpis">
               <KpiCard label="Выручка" value={formatMoney(totals.revenue, currency)} delta="Сумма по выбранным датам" />
-              <KpiCard label="Прибыль" value={formatMoney(totals.margin, currency)} delta="После учтённых расходов" valueClassName={isAmount(totals.margin) && totals.margin < 0 ? 'neg' : 'pos'} />
+              <KpiCard label={profitLabel(marketplace)} value={formatMoney(totals.margin, currency)} delta="После учтённых расходов" valueClassName={isAmount(totals.margin) && totals.margin < 0 ? 'neg' : 'pos'} />
               <KpiCard label="Итого начислено маркетплейсом" value={formatMoney(totals.marketplace_net, currency)} delta="Сверяется отдельно с прибылью" />
             </div>
           )}
@@ -734,6 +759,7 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
         <>
           {!canManage && <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-viewer-readonly">Себестоимость доступна для просмотра. Изменять её может владелец магазина.</div>}
           {marketplace === 'all' && <div className="marketplace-notice marketplace-notice-info">В общем режиме себестоимость показана для просмотра. Чтобы изменить цену товара Ozon, выберите Ozon отдельно.</div>}
+          {marketplace === 'ozon' && <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-history-warning">Сохранённая себестоимость применяется ко всем датам. Если изменить цену товара, расчётная прибыль пересчитается за всю историю, а не только за выбранный период.</div>}
           <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} showCosts editableCosts={editableCosts} marketplace={marketplace} />
         </>
       )}

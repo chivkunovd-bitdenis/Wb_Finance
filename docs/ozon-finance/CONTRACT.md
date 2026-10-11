@@ -49,6 +49,8 @@ POST /v1/finance/cash-flow-statement/list: half-month balance report; cannot rep
 Deprecated /v3/finance/transaction/list and totals: official docs scheduled cutoff 2026-09-08, explicitly warn cabinet mismatch. Excluded from new production path.
 
 ## UX/UI contract
+Release audit amendment (2026-10-12): existing WB figures remain unchanged, but WB and combined margins are explicitly preliminary because the legacy import lacks full financial operation detail. Ozon COGS uses the currently entered SKU cost for all saved dates; expose this restatement basis and label profit as a calculation, not verified historical net profit. Tax is a management estimate using the user's WB rate, not a tax return. Recognized return-related charges, including nested delivery services, preserve all money and reconciliation but block quantity/COGS/profit claims until return accounting is verified. Unknown return direction must never be inferred from a logistics fee. Regression scenarios cover sales with later return fees, nested subtotal/service shapes, and unchanged legacy WB values.
+
 Entry: existing Topbar select, default WB. Existing dates/store controls remain. Ozon/all financial screen has connection status, explicit refresh action, loading/error/empty/partial banners, financial table and per-product drilldown. Connection form in Settings; API key password field, clear after save, no persistence in browser storage. Dirty edits cancel/reset; save disabled while pending; field validation and recoverable errors. Shared-store viewer gets read-only view. Unsupported WB-only tools stay WB-only and labeled rather than showing WB data as Ozon. No automatic live sync on opening page.
 
 ## Acceptance / failure cases
