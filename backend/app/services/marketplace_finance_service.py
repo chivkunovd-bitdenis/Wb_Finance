@@ -16,6 +16,8 @@ from app.models.article import Article
 from app.models.ozon import (
     OzonAccrualSnapshot,
     OzonConnection,
+    OzonFinanceSettings,
+    OzonOperationalExpense,
     OzonProduct,
     OzonProductCost,
     OzonSyncDay,
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 DAILY_AMOUNT_FIELDS = (
     "revenue",
     "commission",
+    "acquiring",
     "logistics",
     "penalties",
     "storage",
@@ -43,6 +46,13 @@ DAILY_AMOUNT_FIELDS = (
     "marketplace_net",
     "unallocated_amount",
     "reconciliation_difference",
+)
+OZON_QUANTITY_FIELDS = ("sold_quantity", "returned_quantity", "net_quantity")
+DAILY_SOURCE_QUALITY_FIELDS = (
+    "accrual_classification_complete",
+    "sku_allocation_complete",
+    "profitability_complete",
+    *OZON_QUANTITY_FIELDS,
 )
 ZERO_DAY_FIELDS = DAILY_AMOUNT_FIELDS
 MAX_SYNC_DAYS = 31
@@ -157,6 +167,7 @@ def _serialize_daily(row: dict[str, Any], day: date) -> dict[str, Any]:
     return {
         "date": day.isoformat(),
         **{key: _json_safe(row.get(key)) for key in DAILY_AMOUNT_FIELDS},
+        **{key: _json_safe(row.get(key)) for key in DAILY_SOURCE_QUALITY_FIELDS},
     }
 
 
@@ -388,6 +399,81 @@ def set_product_cost(*, db: Session, user_id: str, sku: str, cost_price: Decimal
     return get_product_cost(db=db, user_id=user_id, sku=clean_sku)
 
 
+def get_marketplace_settings(*, db: Session, user_id: str) -> dict[str, Any]:
+    row = (
+        db.query(OzonFinanceSettings)
+        .filter(OzonFinanceSettings.user_id == user_id)
+        .first()
+    )
+    owner = db.query(User).filter(User.id == user_id).first()
+    return {
+        "tax_rate": float(owner.tax_rate) if owner is not None and owner.tax_rate is not None else None,
+        "tax_rate_source": "wb",
+        "operation_expenses_confirmed": bool(row.operation_expenses_confirmed) if row is not None else False,
+    }
+
+
+def update_marketplace_settings(
+    *,
+    db: Session,
+    user_id: str,
+    operation_expenses_confirmed: bool,
+) -> dict[str, Any]:
+    statement = insert(OzonFinanceSettings).values(
+        user_id=user_id,
+        operation_expenses_confirmed=bool(operation_expenses_confirmed),
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[OzonFinanceSettings.user_id],
+        set_={
+            "operation_expenses_confirmed": statement.excluded.operation_expenses_confirmed,
+            "updated_at": datetime.now(UTC),
+        },
+    )
+    db.execute(statement)
+    db.commit()
+    return get_marketplace_settings(db=db, user_id=user_id)
+
+
+def set_ozon_operational_expense(
+    *, db: Session, user_id: str, expense_date: date, amount: Decimal
+) -> Decimal:
+    try:
+        parsed = Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise MarketplaceFinanceError("Операционный расход должен быть конечной неотрицательной суммой.") from exc
+    if not parsed.is_finite() or parsed < 0 or parsed > Decimal("999999999999.99"):
+        raise MarketplaceFinanceError("Операционный расход должен быть от 0 до 999999999999.99 руб.")
+
+    statement = insert(OzonOperationalExpense).values(
+        user_id=user_id,
+        date=expense_date,
+        amount=parsed,
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[OzonOperationalExpense.user_id, OzonOperationalExpense.date],
+        set_={"amount": statement.excluded.amount, "updated_at": datetime.now(UTC)},
+    )
+    db.execute(statement)
+    db.commit()
+    return parsed
+
+
+def _ozon_expenses_by_date(
+    *, db: Session, user_id: str, date_from: date, date_to: date
+) -> dict[date, Decimal]:
+    return {
+        cast(date, row.date): Decimal(row.amount)
+        for row in db.query(OzonOperationalExpense)
+        .filter(
+            OzonOperationalExpense.user_id == user_id,
+            OzonOperationalExpense.date >= date_from,
+            OzonOperationalExpense.date <= date_to,
+        )
+        .all()
+    }
+
+
 def recompute_saved_ozon_costs(*, db: Session, user_id: str) -> int:
     """Reapply edited SKU costs to retained days using only saved accruals and type metadata."""
     states = (
@@ -593,6 +679,12 @@ def _replace_complete_day(
     if not accruals and not daily:
         daily = {key: Decimal("0") for key in ZERO_DAY_FIELDS}
         daily["date"] = day.isoformat()
+        daily["sold_quantity"] = Decimal("0")
+        daily["returned_quantity"] = Decimal("0")
+        daily["net_quantity"] = Decimal("0")
+        daily["accrual_classification_complete"] = True
+        daily["sku_allocation_complete"] = True
+        daily["profitability_complete"] = True
         # The finance feed has no coverage for advertising, tax, or general
         # expenses; an empty accrual ledger cannot turn those unknowns into zero.
         daily["ads_spend"] = None
@@ -842,7 +934,10 @@ def run_sync_run(*, db: Session, run_id: str) -> dict[str, Any]:
 
 
 def _day_numbers(row: dict[str, Any]) -> dict[str, float | None]:
-    return {field: _money(row.get(field)) for field in DAILY_AMOUNT_FIELDS}
+    return {
+        **{field: _money(row.get(field)) for field in DAILY_AMOUNT_FIELDS},
+        **{field: _money(row.get(field)) for field in OZON_QUANTITY_FIELDS},
+    }
 
 
 def _warning_list(state: OzonSyncDay | None) -> list[str]:
@@ -885,6 +980,7 @@ def _build_ozon_products(
     *,
     user_id: str,
     day_states: list[OzonSyncDay],
+    tax_rate: float | None,
 ) -> list[dict[str, Any]]:
     products: dict[str, dict[str, Any]] = {}
     catalogue = {
@@ -915,10 +1011,36 @@ def _build_ozon_products(
                     "daily": [],
                 },
             )
-            product_daily = {
+            product_daily: dict[str, Any] = {
                 "date": state.day.isoformat(),
                 **{field: _money(row.get(field)) for field in DAILY_AMOUNT_FIELDS},
+                **{field: _money(row.get(field)) for field in OZON_QUANTITY_FIELDS},
             }
+            product_tax = _derive_ozon_tax(row.get("revenue"), tax_rate)
+            product_daily["tax"] = _money(product_tax)
+            state_daily = state.daily_data if isinstance(state.daily_data, dict) else {}
+            profitability_complete = row.get("profitability_complete") is True
+            classification_complete = row.get("accrual_classification_complete") is True
+            product_allocation_complete = row.get("sku_allocation_complete") is True
+            sku_allocation_complete = state_daily.get("sku_allocation_complete") is True
+            daily_difference = _decimal(state_daily.get("reconciliation_difference"))
+            product_net = _decimal(row.get("marketplace_net"))
+            product_cogs = _decimal(row.get("cogs"))
+            product_daily["margin"] = (
+                _money(product_net - product_cogs - product_tax)
+                if (
+                    profitability_complete
+                    and classification_complete
+                    and product_allocation_complete
+                    and sku_allocation_complete
+                    and daily_difference == Decimal("0")
+                    and product_net is not None
+                    and product_cogs is not None
+                    and product_tax is not None
+                )
+                else None
+            )
+            product_daily["operation_expenses"] = None
             product["daily"].append(product_daily)
     for sku, product in products.items():
         row = catalogue.get(sku)
@@ -965,6 +1087,7 @@ def _build_wb_products(
                 "date": row.date.isoformat(),
                 "revenue": _money(row.revenue),
                 "commission": _money(row.commission),
+                "acquiring": None,
                 "logistics": _money(row.logistics),
                 "penalties": _money(row.penalties),
                 "storage": _money(row.storage),
@@ -997,6 +1120,7 @@ def _wb_daily(row: PnlDaily) -> dict[str, Any]:
         "date": row.date.isoformat(),
         "revenue": row.revenue,
         "commission": row.commission,
+        "acquiring": None,
         "logistics": row.logistics,
         "penalties": row.penalties,
         "storage": row.storage,
@@ -1020,6 +1144,39 @@ def _sum_known_sources(sources: list[dict[str, Any]], field: str) -> float | Non
     return _money_sum([source.get(field) for source in sources])
 
 
+def _derive_ozon_tax(revenue: Any, tax_rate: Any) -> Decimal | None:
+    amount = _decimal(revenue)
+    rate = _decimal(tax_rate)
+    if amount is None or rate is None:
+        return None
+    return max(amount, Decimal("0")) * rate
+
+
+def _derive_ozon_margin(
+    *,
+    row: dict[str, Any],
+    tax: Decimal | None,
+    operation_expenses: Decimal | None,
+    operation_expenses_confirmed: bool,
+    profitability_complete: bool,
+    reconciliation_difference: Any,
+) -> Decimal | None:
+    marketplace_net = _decimal(row.get("marketplace_net"))
+    cogs = _decimal(row.get("cogs"))
+    difference = _decimal(reconciliation_difference)
+    if (
+        not operation_expenses_confirmed
+        or not profitability_complete
+        or difference != Decimal("0")
+        or marketplace_net is None
+        or cogs is None
+        or tax is None
+        or operation_expenses is None
+    ):
+        return None
+    return marketplace_net - cogs - tax - operation_expenses
+
+
 def build_overview(
     *,
     db: Session,
@@ -1034,6 +1191,12 @@ def build_overview(
         raise MarketplaceFinanceError("date_to must be on or after date_from")
     user_id = str(store_owner.id)
     connection = connection_status(db=db, user_id=user_id)
+    finance_settings = get_marketplace_settings(db=db, user_id=user_id)
+    tax_rate = finance_settings["tax_rate"]
+    expenses_by_date = _ozon_expenses_by_date(
+        db=db, user_id=user_id, date_from=date_from, date_to=date_to
+    )
+    expenses_confirmed = finance_settings["operation_expenses_confirmed"]
     wb_enabled = bool((store_owner.wb_api_key or "").strip())
     ozon_enabled = bool(connection["configured"])
     # `all` is a comparison of both source ledgers. Missing connection or coverage stays visible.
@@ -1053,8 +1216,14 @@ def build_overview(
         warnings.append("Ключ Wildberries не настроен; используются только сохранённые данные Wildberries")
     if marketplace == "all" and not ozon_enabled:
         warnings.append("Ozon не подключён; общий отчёт будет неполным, пока Ozon не подключён и не синхронизирован")
+    if marketplace == "all":
+        warnings.append("Эквайринг Wildberries отдельно не выделяется из комиссии; количества в сводной строке не объединяются")
     if marketplace == "ozon" and not ozon_enabled:
         warnings.append("Ozon не подключён")
+    if require_ozon and tax_rate is None:
+        warnings.append("Ставка налога Ozon не задана; налог и прибыль Ozon неизвестны")
+    if require_ozon and not expenses_confirmed:
+        warnings.append("Полнота операционных расходов Ozon не подтверждена; прибыль Ozon неизвестна")
 
     daily: list[dict[str, Any]] = []
     missing_dates: list[str] = []
@@ -1077,7 +1246,13 @@ def build_overview(
         warnings.extend(_warning_list(state))
         if not complete:
             missing_dates.append(day.isoformat())
-            daily.append({"date": day.isoformat(), **{field: None for field in DAILY_AMOUNT_FIELDS}})
+            daily.append(
+                {
+                    "date": day.isoformat(),
+                    **{field: None for field in DAILY_AMOUNT_FIELDS},
+                    **{field: None for field in OZON_QUANTITY_FIELDS},
+                }
+            )
             if marketplace == "all" and require_wb and not wb_covered:
                 warnings.append(f"Нет данных Wildberries за {day.isoformat()}")
             if require_ozon and not ozon_covered:
@@ -1086,11 +1261,38 @@ def build_overview(
             continue
 
         ozon_daily = state.daily_data if state and isinstance(state.daily_data, dict) else None
+        ozon_result: dict[str, Any] | None = None
+        if require_ozon:
+            ozon_result = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
+            ozon_result["date"] = day.isoformat()
+            tax = _derive_ozon_tax(ozon_result.get("revenue"), tax_rate)
+            expense = expenses_by_date.get(day)
+            if expense is None and expenses_confirmed:
+                expense = Decimal("0")
+            ozon_result["tax"] = tax
+            ozon_result["operation_expenses"] = expense
+            profitability_complete = (
+                state is not None
+                and (
+                    state.status == "empty"
+                    or (
+                        isinstance(ozon_daily, dict)
+                        and ozon_daily.get("profitability_complete") is True
+                        and ozon_daily.get("accrual_classification_complete") is True
+                    )
+                )
+            )
+            ozon_result["margin"] = _derive_ozon_margin(
+                row=ozon_result,
+                tax=tax,
+                operation_expenses=expense,
+                operation_expenses_confirmed=expenses_confirmed,
+                profitability_complete=profitability_complete,
+                reconciliation_difference=ozon_result.get("reconciliation_difference"),
+            )
+
         if marketplace == "ozon":
-            result: dict[str, Any] = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
-            # OperationalExpense belongs to the existing WB store calculation; do not copy it into Ozon.
-            result["operation_expenses"] = None
-            result["date"] = day.isoformat()
+            result = ozon_result or {field: None for field in DAILY_AMOUNT_FIELDS}
             daily.append({"date": day.isoformat(), **_day_numbers(result)})
             day += timedelta(days=1)
             continue
@@ -1098,12 +1300,17 @@ def build_overview(
         sources: list[dict[str, Any]] = []
         if require_wb:
             sources.append(_wb_daily(wb_rows[day]))
-        if require_ozon:
-            sources.append(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
+        if require_ozon and ozon_result is not None:
+            sources.append(ozon_result)
         result = {"date": day.isoformat()}
         for field in DAILY_AMOUNT_FIELDS:
             if field == "operation_expenses":
-                result[field] = _money(wb_rows[day].operation_expenses) if require_wb else None
+                if not expenses_confirmed:
+                    result[field] = None
+                else:
+                    ozon_expense = expenses_by_date.get(day, Decimal("0")) if require_ozon else Decimal("0")
+                    wb_expense = _decimal(wb_rows[day].operation_expenses) if require_wb else Decimal("0")
+                    result[field] = _money(wb_expense + ozon_expense) if wb_expense is not None else None
             elif field == "unallocated_amount" and require_wb:
                 # WB's legacy ledger has no unallocated-fee field, so the combined total is unknown.
                 result[field] = None
@@ -1114,10 +1321,10 @@ def build_overview(
 
     products: list[dict[str, Any]] = []
     if marketplace == "ozon":
-        products = _build_ozon_products(db, user_id=user_id, day_states=day_states)
+        products = _build_ozon_products(db, user_id=user_id, day_states=day_states, tax_rate=tax_rate)
     elif marketplace == "all":
         products.extend(_build_wb_products(db, user_id=user_id, date_from=date_from, date_to=date_to))
-        products.extend(_build_ozon_products(db, user_id=user_id, day_states=day_states))
+        products.extend(_build_ozon_products(db, user_id=user_id, day_states=day_states, tax_rate=tax_rate))
 
     warnings = list(dict.fromkeys(warnings))
     return {

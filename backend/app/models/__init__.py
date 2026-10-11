@@ -36,6 +36,8 @@ from app.models.product_generation_job import ProductGenerationJob
 from app.models.ozon import (
     OzonAccrualSnapshot,
     OzonConnection,
+    OzonFinanceSettings,
+    OzonOperationalExpense,
     OzonProduct,
     OzonProductCost,
     OzonSyncDay,
@@ -80,6 +82,8 @@ __all__ = [
     "ProductGenerationJob",
     "OzonConnection",
     "OzonAccrualSnapshot",
+    "OzonFinanceSettings",
+    "OzonOperationalExpense",
     "OzonSyncDay",
     "OzonProduct",
     "OzonProductCost",

@@ -1137,7 +1137,8 @@ tbody td.left {
 
 .marketplace-selector select:focus-visible,
 .marketplace-connection-form input:focus-visible,
-.marketplace-cost-editor input:focus-visible {
+.marketplace-cost-editor input:focus-visible,
+.marketplace-expense-editor input:focus-visible {
   border-color: var(--accent-mid);
   outline: 2px solid var(--accent-light);
 }
@@ -1353,6 +1354,7 @@ tbody td.left {
 }
 
 .marketplace-cost-editor input,
+.marketplace-expense-editor input,
 .marketplace-connection-form input {
   min-width: 0;
   padding: 7px 9px;
@@ -1366,6 +1368,33 @@ tbody td.left {
 .marketplace-cost-editor input {
   width: 110px;
   text-align: right;
+}
+
+.marketplace-expense-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 230px;
+}
+
+.marketplace-expense-editor input {
+  width: 110px;
+  text-align: right;
+}
+
+.marketplace-confirmation-label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 8px !important;
+}
+
+.marketplace-confirmation-label input {
+  width: auto;
+  min-height: 0;
+  margin: 1px 0 0;
+  accent-color: var(--accent-mid);
 }
 
 .marketplace-cost-error,

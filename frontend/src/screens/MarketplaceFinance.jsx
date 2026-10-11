@@ -8,6 +8,7 @@ import { useStore } from '../StoreContext';
 const MONEY_FIELDS = [
   ['revenue', 'Выручка'],
   ['commission', 'Комиссия'],
+  ['acquiring', 'Эквайринг'],
   ['logistics', 'Логистика'],
   ['penalties', 'Штрафы'],
   ['storage', 'Хранение'],
@@ -26,6 +27,7 @@ const MONEY_FIELDS = [
 const DAILY_COLUMNS = [
   ['revenue', 'Выручка'],
   ['commission', 'Комиссия'],
+  ['acquiring', 'Эквайринг'],
   ['logistics', 'Логистика'],
   ['penalties', 'Штрафы'],
   ['storage', 'Хранение'],
@@ -45,14 +47,18 @@ function isAmount(value) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 }
 
-function aggregateRows(rows, incomplete, emptyAsZero = true) {
+function aggregateRows(rows, incomplete, emptyAsZero = true, sourceMarketplace = '') {
   const list = Array.isArray(rows) ? rows : [];
   const totals = {};
   for (const [key] of MONEY_FIELDS) {
-    if (incomplete || (!list.length && !emptyAsZero) || list.some((row) => !isAmount(row?.[key]))) {
+    const known = (row) => {
+      if (key === 'margin' && sourceMarketplace !== 'wb' && row?.profitability_complete === false) return null;
+      return row?.[key];
+    };
+    if (incomplete || (!list.length && !emptyAsZero) || list.some((row) => !isAmount(known(row)))) {
       totals[key] = null;
     } else {
-      totals[key] = list.reduce((sum, row) => sum + Number(row[key]), 0);
+      totals[key] = list.reduce((sum, row) => sum + Number(known(row)), 0);
     }
   }
   return totals;
@@ -94,12 +100,52 @@ function warningText(warning) {
   return String(warning ?? 'Есть предупреждение по данным');
 }
 
-function unknownReason(key, { incomplete = false, warnings = [] } = {}) {
+function unknownReason(key, { incomplete = false, warnings = [], marketplace = 'ozon' } = {}) {
   if (incomplete) return 'Период загружен не полностью.';
-  if (key === 'cogs' || key === 'margin') return 'Нет подтверждённого количества проданных единиц для расчёта себестоимости и прибыли.';
+  if (key === 'acquiring' && marketplace === 'all') return 'В общем режиме отдельная сумма эквайринга неизвестна: Wildberries включает её в комиссию.';
+  if (key === 'acquiring' && marketplace === 'wb') return 'Отдельная сумма эквайринга не выделяется в сохранённой витрине Wildberries.';
+  if (['sold_quantity', 'returned_quantity', 'net_quantity'].includes(key) && marketplace === 'all') return 'Количество для двух маркетплейсов нельзя сопоставить в общем режиме.';
+  if (['sold_quantity', 'returned_quantity', 'net_quantity'].includes(key) && marketplace === 'wb') return 'Количество не выделяется в сохранённой финансовой витрине Wildberries.';
+  if (['sold_quantity', 'returned_quantity', 'net_quantity'].includes(key)) return 'Количество не подтверждено источником за этот день.';
+  if (key === 'cogs' || key === 'margin') return 'Для расчёта нужны подтверждённые проданные количества и себестоимость.';
+  if (key === 'operation_expenses') return 'Сумма за день не внесена, а полнота общих расходов не подтверждена в настройках Ozon.';
   if (key === 'other_expenses' || key === 'unallocated_amount') return 'Некоторые начисления Ozon пока не сопоставлены со справочником видов начислений.';
   if (warnings.length) return warningText(warnings[0]);
   return 'Источник данных не предоставил это значение.';
+}
+
+function formatQuantity(value) {
+  if (!isAmount(value)) return '—';
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 }).format(Number(value));
+}
+
+function quantityReason(row, field, marketplace = 'ozon') {
+  if (row?.[field] !== null && row?.[field] !== undefined) return '';
+  if (marketplace === 'wb') return 'Количество не выделяется в сохранённой финансовой витрине Wildberries.';
+  if (row?.profitability_complete === false || row?.sku_allocation_complete === false) {
+    return 'Не все начисления и товарные количества позволяют подтвердить этот итог.';
+  }
+  return 'Количество не подтверждено источником за этот день.';
+}
+
+function amountForRow(row, key, sourceMarketplace = '') {
+  if (key === 'margin' && sourceMarketplace !== 'wb' && row?.profitability_complete === false) return null;
+  return row?.[key];
+}
+
+function qualityWarnings(data) {
+  const rows = [
+    ...(Array.isArray(data?.daily) ? data.daily : []),
+    ...(Array.isArray(data?.products) ? data.products.flatMap((product) => Array.isArray(product.daily) ? product.daily : []) : []),
+  ];
+  const warnings = [];
+  if (rows.some((row) => row.accrual_classification_complete === false)) {
+    warnings.push('Есть начисления, вид которых пока нельзя подтвердить по справочнику.');
+  }
+  if (rows.some((row) => row.sku_allocation_complete === false)) {
+    warnings.push('Часть сумм не распределена по товарам, поэтому товарная прибыль неполная.');
+  }
+  return warnings;
 }
 
 function showPartialReason(data) {
@@ -172,7 +218,7 @@ function MoneyValue({ value, currency, className = '', reason = '' }) {
   return <span className={`${className} ${Number(value) < 0 ? 'neg' : ''}`.trim()}>{formatMoney(value, currency)}</span>;
 }
 
-function MetricSummary({ totals, currency, incomplete, warnings }) {
+function MetricSummary({ totals, currency, incomplete, warnings, marketplace }) {
   const revenue = totals.revenue;
   return (
     <DataTable title="Итоги за период" tag="Доли рассчитаны от общей выручки">
@@ -181,13 +227,14 @@ function MetricSummary({ totals, currency, incomplete, warnings }) {
         <tbody>
           {MONEY_FIELDS.map(([key, label]) => {
             const value = totals[key];
-            const share = isAmount(value) && isAmount(revenue) && Number(revenue) !== 0
+            const share = !(marketplace === 'all' && key === 'acquiring') && isAmount(value) && isAmount(revenue) && Number(revenue) !== 0
               ? Number(value) / Number(revenue) * 100
               : null;
+            const displayLabel = marketplace === 'all' && key === 'acquiring' ? 'Эквайринг (не сопоставляется)' : label;
             return (
               <tr key={key} data-testid={`marketplace-metric-${key}`}>
-                <td className="left">{label}</td>
-                <td><MoneyValue value={value} currency={currency} reason={unknownReason(key, { incomplete, warnings })} /></td>
+                <td className="left">{displayLabel}</td>
+                <td><MoneyValue value={value} currency={currency} reason={unknownReason(key, { incomplete, warnings, marketplace })} /></td>
                 <td>{formatPercent(share)}</td>
               </tr>
             );
@@ -198,24 +245,150 @@ function MetricSummary({ totals, currency, incomplete, warnings }) {
   );
 }
 
-function DailyTable({ rows, currency, incomplete, warnings }) {
+function DailyTable({ rows, currency, incomplete, warnings, marketplace }) {
   if (!rows.length) {
     return <div className="marketplace-empty" data-testid="marketplace-daily-empty">Нет дневных строк за выбранный период.</div>;
   }
   return (
     <DataTable title="Динамика по дням" tag={`${rows.length} дн.`}>
       <table className="marketplace-wide-table" data-testid="marketplace-daily-table">
-        <thead><tr><th className="left">День</th>{DAILY_COLUMNS.map(([key, label]) => <th key={key}>{label}</th>)}</tr></thead>
+        <thead><tr><th className="left">День</th><th>Эквайринг</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th>{DAILY_COLUMNS.filter(([key]) => key !== 'acquiring').map(([key, label]) => <th key={key}>{label}</th>)}</tr></thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.date} data-testid={`marketplace-day-${row.date}`}>
               <td className="left">{formatDate(row.date)}</td>
-              {DAILY_COLUMNS.map(([key]) => <td key={key}><MoneyValue value={row[key]} currency={currency} reason={unknownReason(key, { incomplete, warnings })} /></td>)}
+              <td><MoneyValue value={row.acquiring} currency={currency} reason={unknownReason('acquiring', { incomplete, warnings, marketplace })} /></td>
+              {['sold_quantity', 'returned_quantity', 'net_quantity'].map((key) => <td key={key}><span title={isAmount(row[key]) ? undefined : unknownReason(key, { incomplete, warnings, marketplace })}>{formatQuantity(row[key])}</span></td>)}
+              {DAILY_COLUMNS.filter(([key]) => key !== 'acquiring').map(([key]) => <td key={key}><MoneyValue value={amountForRow(row, key, marketplace)} currency={currency} reason={unknownReason(key, { incomplete, warnings, marketplace })} /></td>)}
             </tr>
           ))}
         </tbody>
       </table>
+      {marketplace === 'all' && <div className="marketplace-settings-note">В общем режиме отдельная сумма эквайринга неизвестна, потому что Wildberries включает её в комиссию. Количества продаж разных площадок нельзя сопоставить в одной строке.</div>}
     </DataTable>
+  );
+}
+
+function datesBetween(dateFrom, dateTo) {
+  if (!dateFrom || !dateTo) return [];
+  const current = new Date(`${dateFrom}T00:00:00Z`);
+  const end = new Date(`${dateTo}T00:00:00Z`);
+  if (!Number.isFinite(current.getTime()) || !Number.isFinite(end.getTime()) || end < current) return [];
+  const dates = [];
+  while (current <= end) {
+    dates.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function MarketplaceOperatingExpenses({ rows, dateFrom, dateTo, currency, marketplace, canManage, onSave }) {
+  const [drafts, setDrafts] = useState({});
+  const [errors, setErrors] = useState({});
+  const [messages, setMessages] = useState({});
+  const [savingDate, setSavingDate] = useState('');
+  const rowsByDate = useMemo(() => new Map(rows.map((row) => [row.date, row])), [rows]);
+  const dates = useMemo(() => datesBetween(dateFrom, dateTo), [dateFrom, dateTo]);
+  const canEdit = marketplace === 'ozon' && canManage;
+
+  useEffect(() => {
+    setDrafts({});
+    setErrors({});
+    setMessages({});
+  }, [rows, dateFrom, dateTo, marketplace]);
+
+  const saveDate = async (date, amountText) => {
+    if (!canEdit || savingDate) return;
+    const normalized = String(amountText ?? '').trim().replace(',', '.');
+    const amount = Number(normalized);
+    if (!normalized || !Number.isFinite(amount) || amount < 0) {
+      setErrors((current) => ({ ...current, [date]: 'Введите сумму от 0 ₽. Ноль означает, что за день расходов не было.' }));
+      return;
+    }
+
+    setSavingDate(date);
+    setErrors((current) => ({ ...current, [date]: '' }));
+    setMessages((current) => ({ ...current, [date]: '' }));
+    try {
+      await onSave(date, amount);
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[date];
+        return next;
+      });
+      setMessages((current) => ({ ...current, [date]: 'Сумма сохранена.' }));
+    } catch (error) {
+      setErrors((current) => ({ ...current, [date]: error?.message || 'Не удалось сохранить сумму.' }));
+    } finally {
+      setSavingDate('');
+    }
+  };
+
+  return (
+    <>
+      {marketplace === 'all' ? (
+        <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-expenses-all-readonly">
+          Здесь показаны общие расходы из обоих маркетплейсов. Для изменения расходов Ozon переключитесь на Ozon отдельно.
+        </div>
+      ) : canManage ? (
+        <div className="marketplace-notice marketplace-notice-info">
+          Внесите расходы по дням. Явный ввод 0 ₽ означает нулевые расходы за день. Дни без суммы остаются неизвестными, пока владелец не подтвердит полноту расходов в настройках Ozon.
+        </div>
+      ) : (
+        <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-expenses-viewer-readonly">
+          Расходы доступны только для просмотра; изменять суммы может владелец магазина.
+        </div>
+      )}
+      <DataTable title={marketplace === 'all' ? 'Общие расходы по дням' : 'Расходы Ozon по дням'} tag={`${dates.length} дн.`}>
+        <div className="table-wrap marketplace-expense-table-wrap">
+          <table className="marketplace-expense-table" data-testid="marketplace-expenses-table">
+            <thead><tr><th className="left">День</th><th>Общие расходы</th>{canEdit && <th>Внести или изменить</th>}</tr></thead>
+            <tbody>
+              {dates.map((date) => {
+                const existingAmount = rowsByDate.get(date)?.operation_expenses;
+                const existingText = isAmount(existingAmount) ? String(existingAmount) : '';
+                const amountText = drafts[date] === undefined ? existingText : drafts[date];
+                const normalizedText = amountText.trim().replace(',', '.');
+                const parsedAmount = normalizedText === '' ? null : Number(normalizedText);
+                const changed = parsedAmount !== null && Number.isFinite(parsedAmount)
+                  && (!isAmount(existingAmount) || Number(existingAmount) !== parsedAmount);
+                return (
+                  <tr key={date} data-testid={`marketplace-expense-day-${date}`}>
+                    <td className="left">{formatDate(date)}</td>
+                    <td><MoneyValue value={existingAmount} currency={currency} reason={unknownReason('operation_expenses')} /></td>
+                    {canEdit && (
+                      <td>
+                        <div className="marketplace-expense-editor">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            aria-label={`Общие расходы Ozon за ${formatDate(date)}`}
+                            value={amountText}
+                            placeholder="Не внесены"
+                            onChange={(event) => {
+                              setDrafts((current) => ({ ...current, [date]: event.target.value }));
+                              setErrors((current) => ({ ...current, [date]: '' }));
+                              setMessages((current) => ({ ...current, [date]: '' }));
+                            }}
+                            disabled={savingDate !== '' && savingDate !== date}
+                            data-testid={`marketplace-expense-input-${date}`}
+                          />
+                          <button className="btn-outline" onClick={() => saveDate(date, amountText)} disabled={savingDate === date || !changed}>
+                            {savingDate === date ? 'Сохраняем…' : 'Сохранить'}
+                          </button>
+                          {errors[date] && <span className="marketplace-cost-error" role="alert">{errors[date]}</span>}
+                          {messages[date] && <span className="marketplace-cost-success" role="status">{messages[date]}</span>}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </DataTable>
+    </>
   );
 }
 
@@ -227,12 +400,13 @@ function ProductDailyDetails({ product, currency, incomplete, warnings }) {
       <div className="marketplace-product-detail-title">Дневные начисления · {marketplaceName(product.marketplace)}</div>
       <div className="table-wrap marketplace-product-day-wrap">
         <table className="marketplace-product-days">
-          <thead><tr><th className="left">День</th><th>Выручка</th><th>Комиссия</th><th>Логистика</th><th>Штрафы</th><th>Хранение</th><th>Реклама</th><th>Прочие</th><th>Компенсации</th><th>Себестоимость</th><th>Налог</th><th>Прибыль</th><th>Итого начислено</th></tr></thead>
+          <thead><tr><th className="left">День</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Комиссия</th><th>Эквайринг</th><th>Логистика</th><th>Штрафы</th><th>Хранение</th><th>Реклама</th><th>Прочие</th><th>Компенсации</th><th>Себестоимость</th><th>Налог</th><th>Прибыль до общих расходов</th><th>Итого начислено</th></tr></thead>
           <tbody>{daily.map((row) => (
             <tr key={row.date}>
               <td className="left">{formatDate(row.date)}</td>
-              {['revenue', 'commission', 'logistics', 'penalties', 'storage', 'ads_spend', 'other_expenses', 'compensation', 'cogs', 'tax', 'margin', 'marketplace_net'].map((key) => (
-                <td key={key}><MoneyValue value={row[key]} currency={currency} reason={unknownReason(key, { incomplete, warnings })} /></td>
+              {['sold_quantity', 'returned_quantity', 'net_quantity'].map((key) => <td key={key}><span title={isAmount(row[key]) ? undefined : quantityReason(row, key, product.marketplace)}>{formatQuantity(row[key])}</span></td>)}
+              {['revenue', 'commission', 'acquiring', 'logistics', 'penalties', 'storage', 'ads_spend', 'other_expenses', 'compensation', 'cogs', 'tax', 'margin', 'marketplace_net'].map((key) => (
+                <td key={key}><MoneyValue value={amountForRow(row, key, product.marketplace)} currency={currency} reason={unknownReason(key, { incomplete, warnings, marketplace: product.marketplace })} /></td>
               ))}
             </tr>
           ))}</tbody>
@@ -242,7 +416,7 @@ function ProductDailyDetails({ product, currency, incomplete, warnings }) {
   );
 }
 
-function ProductsTable({ products, currency, incomplete, warnings = [], showCosts = false, editableCosts = false }) {
+function ProductsTable({ products, currency, incomplete, warnings = [], showCosts = false, editableCosts = false, marketplace = 'ozon' }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [drafts, setDrafts] = useState({});
   const [savingKey, setSavingKey] = useState('');
@@ -251,7 +425,13 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
   const productsWithTotals = useMemo(() => (Array.isArray(products) ? products : []).map((product) => ({
     ...product,
     identity: `${String(product.marketplace || 'unknown')}:${String(product.sku)}`,
-    totals: aggregateRows(product.daily, incomplete, false),
+    totals: aggregateRows(product.daily, incomplete, false, product.marketplace),
+    quantities: Object.fromEntries(['sold_quantity', 'returned_quantity', 'net_quantity'].map((key) => [
+      key,
+      Array.isArray(product.daily) && product.daily.length > 0 && product.daily.every((row) => isAmount(row?.[key]))
+        ? product.daily.reduce((sum, row) => sum + Number(row[key]), 0)
+        : null,
+    ])),
   })), [products, incomplete]);
 
   useEffect(() => {
@@ -303,12 +483,14 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
   }
 
   return (
+    <>
+    {marketplace === 'all' && <div className="marketplace-notice marketplace-notice-info">Общее количество по площадкам не суммируется; в товарных строках показаны данные своей площадки.</div>}
     <DataTable title="Товары и начисления" tag={`${productsWithTotals.length} товаров`}>
       <table className="marketplace-products-table" data-testid="marketplace-products-table">
         <thead>
           <tr>
             <th className="left">Товар</th><th className="left">SKU / артикул</th>
-            <th>Выручка</th><th>Себестоимость</th><th>Прибыль</th><th>Итого начислено</th>
+            <th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th><th>Выручка</th><th>Себестоимость</th><th>Прибыль до общих расходов</th><th>Итого начислено</th>
             {showCosts && <th>Цена себестоимости</th>}
             <th aria-label="Детализация" />
           </tr>
@@ -336,6 +518,7 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
         </tbody>
       </table>
     </DataTable>
+    </>
   );
 }
 
@@ -343,7 +526,7 @@ function ProductRow({ product, currency, showCosts, editableCosts, expanded, onT
   const value = (draft === undefined) ? (product.cost_price == null ? '' : String(product.cost_price)) : draft;
   const current = product.cost_price == null ? '' : String(product.cost_price);
   const dirty = value !== current;
-  const colspan = showCosts ? 8 : 7;
+  const colspan = showCosts ? 11 : 10;
   return (
     <>
       <tr data-testid={`marketplace-product-${product.identity}`}>
@@ -353,6 +536,7 @@ function ProductRow({ product, currency, showCosts, editableCosts, expanded, onT
           {product.offer_id && <div className="marketplace-offer-id">Offer ID: {product.offer_id}</div>}
         </td>
         <td className="left">{String(product.sku)}</td>
+        {['sold_quantity', 'returned_quantity', 'net_quantity'].map((key) => <td key={key}><span title={isAmount(product.quantities[key]) ? undefined : quantityReason(product.daily?.at(-1), key, product.marketplace)}>{formatQuantity(product.quantities[key])}</span></td>)}
         <td><MoneyValue value={product.totals.revenue} currency={currency} reason={unknownReason('revenue', { incomplete, warnings })} /></td>
         <td><MoneyValue value={product.totals.cogs} currency={currency} reason={unknownReason('cogs', { incomplete, warnings })} /></td>
         <td><MoneyValue value={product.totals.margin} currency={currency} reason={unknownReason('margin', { incomplete, warnings })} /></td>
@@ -403,9 +587,10 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
 
   const requestKey = `${activeStoreOwnerId}|${marketplace}|${range?.dateFrom}|${range?.dateTo}`;
   const incomplete = showPartialReason(data);
-  const totals = useMemo(() => aggregateRows(data?.daily, incomplete), [data?.daily, incomplete]);
+  const totals = useMemo(() => aggregateRows(data?.daily, incomplete, true, marketplace), [data?.daily, incomplete, marketplace]);
   const daily = Array.isArray(data?.daily) ? data.daily : [];
   const products = Array.isArray(data?.products) ? data.products : [];
+  const warnings = useMemo(() => [...(Array.isArray(data?.warnings) ? data.warnings : []), ...qualityWarnings(data)], [data]);
   const refresh = useCallback(() => setReloadVersion((current) => current + 1), []);
 
   useEffect(() => {
@@ -467,10 +652,15 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
   };
 
   const currency = data?.currency || 'RUB';
-  const viewLabel = view === 'articles' ? 'Артикулы' : view === 'costs' ? 'Себестоимость' : 'Финансы';
+  const viewLabel = view === 'articles' ? 'Артикулы' : view === 'costs' ? 'Себестоимость' : view === 'expenses' ? 'Общие расходы' : 'Финансы';
   const title = marketplace === 'all' ? `Все маркетплейсы · ${viewLabel}` : `Ozon · ${viewLabel}`;
   const showCostField = view === 'costs';
   const editableCosts = showCostField && marketplace === 'ozon' && canManage;
+
+  const saveOperatingExpense = async (date, amount) => {
+    await api.saveMarketplaceDailyExpense(date, amount);
+    refresh();
+  };
 
   if (loading) {
     return <div className="loader-center" data-testid="marketplace-loading"><div className="loader-spinner" /><p>Загрузка данных {marketplace === 'all' ? 'маркетплейсов' : 'Ozon'}…</p></div>;
@@ -508,14 +698,14 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
       <MarketplaceState
         connection={data?.connection}
         coverage={data?.coverage}
-        warnings={data?.warnings}
+        warnings={warnings}
         sync={data?.sync}
         onRefresh={refresh}
         refreshing={loading}
         marketplace={marketplace}
       />
       <div className="marketplace-proof-note" data-testid="marketplace-proof-note">
-        Данные Ozon пока не сверены с закрытым отчётом продавца. Некоторые начисления могут оставаться без уточнённой категории; без подтверждённого количества себестоимость и прибыль неизвестны.
+        Проверено на одном кабинете: данные за один период сверены с бухгалтерскими итогами. Неизвестные начисления и неполные данные отмечаются отдельно. Прибыль зависит от заполненных себестоимости, налога и собственных расходов; сопоставление возвратов на живых данных ещё не проверено.
       </div>
 
       {view === 'dashboard' && (
@@ -532,20 +722,31 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
               <KpiCard label="Итого начислено маркетплейсом" value={formatMoney(totals.marketplace_net, currency)} delta="Сверяется отдельно с прибылью" />
             </div>
           )}
-          {daily.length > 0 || data?.coverage?.complete ? <MetricSummary totals={totals} currency={currency} incomplete={incomplete} warnings={data?.warnings || []} /> : null}
-          <DailyTable rows={daily} currency={currency} incomplete={incomplete} warnings={data?.warnings || []} />
-          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={data?.warnings || []} />
+          {daily.length > 0 || data?.coverage?.complete ? <MetricSummary totals={totals} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} /> : null}
+          <DailyTable rows={daily} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />
+          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />
         </>
       )}
 
-      {view === 'articles' && <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={data?.warnings || []} />}
+      {view === 'articles' && <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />}
 
       {view === 'costs' && (
         <>
           {!canManage && <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-viewer-readonly">Себестоимость доступна для просмотра. Изменять её может владелец магазина.</div>}
           {marketplace === 'all' && <div className="marketplace-notice marketplace-notice-info">В общем режиме себестоимость показана для просмотра. Чтобы изменить цену товара Ozon, выберите Ozon отдельно.</div>}
-          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={data?.warnings || []} showCosts editableCosts={editableCosts} />
+          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} showCosts editableCosts={editableCosts} marketplace={marketplace} />
         </>
+      )}
+      {view === 'expenses' && (
+        <MarketplaceOperatingExpenses
+          rows={daily}
+          dateFrom={range.dateFrom}
+          dateTo={range.dateTo}
+          currency={currency}
+          marketplace={marketplace}
+          canManage={canManage}
+          onSave={saveOperatingExpense}
+        />
       )}
       {syncMessage && <div className="marketplace-hint" role="status">{syncMessage}</div>}
     </div>

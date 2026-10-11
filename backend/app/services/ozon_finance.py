@@ -19,6 +19,7 @@ _AMOUNT_FIELDS = (
     "revenue",
     "commission",
     "logistics",
+    "acquiring",
     "penalties",
     "storage",
     "ads_spend",
@@ -35,6 +36,7 @@ _AMOUNT_FIELDS = (
 _POSSIBLE_FEE_FIELDS = (
     "commission",
     "logistics",
+    "acquiring",
     "penalties",
     "storage",
     "ads_spend",
@@ -43,6 +45,7 @@ _POSSIBLE_FEE_FIELDS = (
 _SOURCE_EXPENSE_FIELDS = {
     "commission",
     "logistics",
+    "acquiring",
     "penalties",
     "storage",
     "ads_spend",
@@ -50,6 +53,91 @@ _SOURCE_EXPENSE_FIELDS = {
     "operation_expenses",
 }
 _ISO_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# This map is deliberately keyed by both the numeric ID and the exact official
+# dictionary name. A changed or mismatched provider dictionary remains
+# unclassified instead of being routed by a fuzzy translated-name match.
+_TYPE_CATEGORY_BY_ID_NAME: dict[tuple[str, str], str] = {}
+
+
+def _register_type_names(category: str, entries: str) -> None:
+    for entry in entries.split(","):
+        type_id, name = entry.strip().split(" ", 1)
+        _TYPE_CATEGORY_BY_ID_NAME[(type_id, name)] = category
+
+
+_register_type_names("acquiring", "1 Acquiring")
+_register_type_names("commission", "63 RfbsDomesticAgentFee, 66 RfbsGlobalAgentFee, 69 SaleCommission")
+_register_type_names(
+    "logistics",
+    "2 BackwardShipment, 6 Cancellation, 9 ClientReturn, 12 CrossDock, "
+    "13 CrossDockPickUpCourierDelivery, 16 Drop-Off, 17 Drop-Off Agent, "
+    "21 Fulfillment, 28 LastMile, 29 LastMileCourier, 30 LastMilePickUpPoint, "
+    "32 Logistic, 38 PackageCost, 39 PackingFee, 40 PartialReturn, 42 Pick-Up, "
+    "43 PickUpCourierArrangement, 44 PickUpCourierDelivery, 45 PickUpPointReturnAcceptance, "
+    "53 PreparingToReturn, 56 QuantProcessingDrop, 58 Replenishment, 59 ReturnFlowLogistic, "
+    "64 RfbsDomesticDelivery, 65 RfbsEasyReturn, "
+    "67 RfbsGlobalDelivery, 71 SellerReturns, 73 Shipment, 77 SupplyInbound, "
+    "82 VolumeWeightCharacteristicsProcessing, 84 ItemPacking, 85 ItemSealing, "
+    "86 PackmanCisPacking, 88 ClickAndCollect, 97 PackageUnitProcessing, "
+    "98 DeliveryToHandoverPlaceByOzon, 99 InternationalLogisticDelta, "
+    "100 OzonGlobalLogisticsDelivery, 101 OversizedExtraHandling, 103 B2CDisposal, "
+    "106 B2C Drop-Off, 107 B2C Drop-Off Agent, 108 B2CContainerPacking, "
+    "109 B2CContainerPackage, 110 B2CCourierClientReinvoice, "
+    "111 B2CDeliveryToHandoverPlaceByOzon, 112 B2CPickUpPointClientReinvoice, "
+    "113 B2CPickUpPointReturnAcceptance, 114 B2CLogistics, 115 B2CBackwardLogistics, "
+    "120 CourierPickUpByOzon, 121 CourierPickUpReinvoice, 122 RfbsGlobalIntermediaryService, "
+    "131 MicroFulfillmentSupply, 132 MicroFulfillmentPicking, 133 CrossDockHandlingAtDropOff, "
+    "134 CrossDockDeliveryToAcceptancePoint, 135 CrossDockPartnerHandling",
+)
+_register_type_names(
+    "storage",
+    "46 Placements, 60 ReturnStorageInTheWarehouse, 78 TemporaryPlacement, "
+    "79 TemporaryPlacementsAgent, 102 B2CTemporaryPlacement",
+)
+_register_type_names(
+    "penalties",
+    "89 DefectFineModeration, 90 DefectFineProhibitedGoods, 91 DefectFineCounterfeitGoods, "
+    "92 DefectFineComplaint, 93 DefectFineErrors, 94 DefectFineShipmentDelayRate",
+)
+_register_type_names(
+    "ads_spend",
+    "3 BrandCommission, 4 BrandPromotion, 5 BrandShelf, 19 ExternalPromotion, "
+    "23 InternetSiteAdvertising, 33 Marketing, 36 OrdersBooking, 41 PayPerClick, "
+    "47 PointsForReviews, 49 PremiumCashbackPromotion, 54 Promotion, 55 PushCampaign, "
+    "61 ReviewsPin, 70 SaleReview, 74 StarsMembership, 75 Stencil, "
+    "87 SocialMediaAdvertising, 96 AcceleratedReviewCollection, 116 FirstCustomerReview, "
+    "118 LabelBrandVerified, 119 CustomerChatPoints, 130 DisplayAdvertisingPlacement",
+)
+_register_type_names("compensation", "10 Compensation, 25 ItemCompensation, 81 VolumeObligationReward, 104 B2CInsuranceCompensation")
+_register_type_names(
+    "other_expenses",
+    "7 Charity, 14 DefectRate, 15 Disposal, 24 ItemCloning, 27 LabelOriginal, "
+    "31 LeadGeneration, 34 Marking, 35 Moderation, 37 OzonData, 51 PremiumMembership, "
+    "52 PremiumSubscription, 68 RfbsServiceFee, 76 StockInsurance, 80 VideoCover, "
+    "95 CustomerReviews, 105 B2CInsuranceShipping, 117 IncreaseAssortmentLimit, "
+    "123 RfbsGlobalPlatformConnectionService, 125 AnalyticsLite, 126 AnalyticsPremium, "
+    "127 AnalyticsPlus, 128 AnalyticsPro, 129 AnalyticsCorrection",
+)
+
+# These dictionary entries are real, but their meaning is a payout adjustment,
+# settlement, correction, seller bonus, or security amount rather than a proven
+# P&L category. Keep their signed values in unallocated_amount.
+_AMBIGUOUS_TYPE_NAMES = {
+    ("8", "ClaimCommission"),
+    ("11", "CorrectionCommission"),
+    ("18", "EarlyPayment"),
+    ("20", "FlexiblePayments"),
+    ("22", "Installment"),
+    ("26", "KazakhstanBuyerInstallment"),
+    ("48", "PremiumCashbackIndividualPoints"),
+    ("50", "PremiumMailingCommission"),
+    ("57", "RealizationReportCorrection"),
+    ("62", "RfbsClientDeliveryCharge"),
+    ("72", "SetOff"),
+    ("83", "BrandDeposit"),
+    ("124", "RfbsBuyerDelivery"),
+}
 
 
 def normalize_accruals(
@@ -59,11 +147,9 @@ def normalize_accruals(
 ) -> dict[str, Any]:
     """Return daily values, SKU values grouped by day, and data-quality warnings.
 
-    ``costs`` is accepted for caller compatibility, but the documented accrual
-    fields do not supply a verified sold quantity. The normalizer will not
-    multiply costs by a quantity inferred from money or another field.
+    Quantity is used only when the source carries it directly on a POSTING
+    product. Fee quantities and monetary ratios are never treated as sales.
     """
-    del costs
     if not isinstance(accruals, list):
         raise OzonContractError("Список начислений Ozon имеет неверный формат")
     if not isinstance(accrual_types, list):
@@ -119,51 +205,162 @@ def normalize_accruals(
         raise OzonContractError("Начисления Ozon в разных валютах нельзя объединить")
 
     daily_rows: list[dict[str, Any]] = []
+    daily_quality: dict[tuple[str, str], dict[str, bool]] = {}
+    product_day_unknown_fields: dict[tuple[str, str], set[str]] = {}
     for key in sorted(daily_by_key):
         row = daily_by_key[key]
         day = row["date"]
         if row.pop("_reconciliation_incomplete", False):
             row["reconciliation_difference"] = None
             warnings.append(f"{day}: сверка недоступна, так как детали начислений неполные")
-        if row.pop("_has_sale_activity", False) or row.get("revenue") is None:
+        sale_activity = row.pop("_has_sale_activity", False)
+        quantity_complete = row.pop("_quantity_complete", True)
+        quantity_sku_complete = row.pop("_quantity_sku_complete", True)
+        return_activity = row.pop("_return_activity", False)
+        missing_sku_cost = False
+        cogs = Decimal("0")
+        for product_key, product in products_by_key.items():
+            if product_key[0] != key[0] or product_key[2] != key[1]:
+                continue
+            product.pop("_has_sale_activity", None)
+            product_quantity_complete = product.pop("_quantity_complete", True)
+            product_return = product.pop("_return_activity", False)
+            sold_quantity = product.get("sold_quantity")
+            product["returned_quantity"] = None if product_return or not product_quantity_complete else Decimal("0")
+            product["net_quantity"] = (
+                sold_quantity
+                if product_quantity_complete and not product_return and sold_quantity is not None
+                else None
+            )
+            if product_return or not product_quantity_complete:
+                product["cogs"] = None
+            elif sold_quantity is None:
+                product["cogs"] = None
+            elif sold_quantity == 0:
+                product["cogs"] = Decimal("0")
+            else:
+                cost = _valid_cost((costs or {}).get(product_key[1]))
+                if cost is None:
+                    product["cogs"] = None
+                    missing_sku_cost = True
+                else:
+                    product["cogs"] = cost * sold_quantity
+                    cogs += product["cogs"]
+
+        sold_quantity = row.get("sold_quantity")
+        row["returned_quantity"] = None if return_activity or not quantity_complete else Decimal("0")
+        row["net_quantity"] = (
+            sold_quantity if quantity_complete and not return_activity and sold_quantity is not None else None
+        )
+        if not sale_activity and quantity_complete:
+            row["cogs"] = Decimal("0")
+        elif (
+            quantity_complete
+            and quantity_sku_complete
+            and not return_activity
+            and sold_quantity is not None
+            and not missing_sku_cost
+        ):
+            row["cogs"] = cogs
+        else:
             row["cogs"] = None
-            warnings.append(f"{day}: себестоимость и прибыль неизвестны без подтверждённого количества продаж")
-        # No verified fee-type mapping or ads endpoint is part of this feed, so
-        # the named ad-spend category remains unknown instead of displaying 0.
-        # Taxes and general operating expenses are also outside this feed.
-        row["ads_spend"] = None
-        # Bonus and co-investment are present as commission diagnostics, but
-        # they are not additive lines and have no verified standalone mapping.
-        row["compensation"] = None
+            warnings.append(f"{day}: себестоимость неизвестна из-за неполного количества, возврата или отсутствующей себестоимости")
+        # Tax and general operating expenses are handled by the aggregation
+        # service; this ledger does not contain those values.
         row["tax"] = None
         row["operation_expenses"] = None
         row["margin"] = None
-        uncertain_fields = row.pop("_uncertain_fields", set())
+        product_day_unknown_fields[key] = set(row.get("_unallocated_product_fields", set()))
+        product_day_unknown_fields[key].update(row.get("_unscoped_uncertain_fields", set()))
+        row.pop("_uncertain_fields", None)
+        classification_complete = row.pop("_classification_complete", True)
+        sku_allocation_complete = row.pop("_sku_allocation_complete", True)
+        row.pop("_unallocated_product_fields", None)
+        row.pop("_unscoped_uncertain_fields", None)
+        reconciliation_complete = row.get("reconciliation_difference") is not None
+        reconciliation_matches = reconciliation_complete and row.get("reconciliation_difference") == 0
+        row["accrual_classification_complete"] = bool(classification_complete)
+        row["sku_allocation_complete"] = bool(sku_allocation_complete)
+        row["profitability_complete"] = bool(
+            classification_complete
+            and reconciliation_matches
+            and quantity_complete
+            and quantity_sku_complete
+            and not return_activity
+            and row.get("cogs") is not None
+            and row.get("compensation") == 0
+        )
+        if row.get("compensation") not in (None, Decimal("0")):
+            row["profitability_complete"] = False
+            warnings.append(f"{day}: налоговая база для компенсаций не подтверждена; прибыль не рассчитана")
+        daily_quality[key] = {
+            "accrual_classification_complete": bool(classification_complete),
+            "sku_allocation_complete": bool(sku_allocation_complete),
+            "reconciliation_matches": bool(reconciliation_matches),
+            "profitability_complete": bool(row["profitability_complete"]),
+            "unknown_sku_posting": bool(row.pop("_unknown_sku_posting", False)),
+        }
         row["source_categories"] = list(dict.fromkeys(row["source_categories"]))
         row["source_accrual_ids"] = list(dict.fromkeys(row["source_accrual_ids"]))
-        for product_key, product in products_by_key.items():
-            if product_key[0] == key[0] and product_key[2] == key[1]:
-                product["_day_uncertain_fields"] = set(uncertain_fields)
         daily_rows.append(row)
 
     products_grouped: dict[str, dict[str, Any]] = {}
     for (day, sku, currency), row in sorted(products_by_key.items()):
-        sale_activity = row.pop("_has_sale_activity", False)
-        row["cogs"] = None if sale_activity or row.get("revenue") is None else Decimal("0")
+        product_quantity_complete = row.pop("_quantity_complete", True)
+        product_return_activity = row.pop("_return_activity", False)
+        row.pop("_has_sale_activity", None)
         row["tax"] = None
         row["operation_expenses"] = None
-        row["ads_spend"] = None
-        row["compensation"] = None
         row["margin"] = None
-        row["marketplace_net"] = None
-        row["unallocated_amount"] = None
         row["reconciliation_difference"] = None
         uncertain = set(row.pop("_uncertain_fields", set()))
-        uncertain.update(row.pop("_day_uncertain_fields", set()))
+        uncertain.update(product_day_unknown_fields.get((day, currency), set()))
+        classification_complete = row.pop("_classification_complete", True)
+        sku_allocation_complete = row.pop("_sku_allocation_complete", True)
+        row.pop("_unallocated_product_fields", None)
+        quality = daily_quality.get((day, currency), {})
+        unknown_sku_posting = quality.get("unknown_sku_posting", False)
+        classification_complete = classification_complete and quality.get("accrual_classification_complete", False)
+        sku_allocation_complete = sku_allocation_complete and quality.get("sku_allocation_complete", False)
+        if unknown_sku_posting:
+            row["sold_quantity"] = None
+            row["returned_quantity"] = None
+            row["net_quantity"] = None
+            row["cogs"] = None
+        row["marketplace_net"] = (
+            row["revenue"]
+            - row["commission"]
+            - row["logistics"]
+            - row["acquiring"]
+            - row["penalties"]
+            - row["storage"]
+            - row["ads_spend"]
+            - row["other_expenses"]
+            + row["compensation"]
+            if (
+                sku_allocation_complete
+                and classification_complete
+                and quality.get("reconciliation_matches", False)
+                and not uncertain
+            )
+            else None
+        )
         for field in uncertain:
             if field in row:
                 row[field] = None
-        row.pop("_day_uncertain_fields", None)
+        row["accrual_classification_complete"] = bool(classification_complete)
+        row["sku_allocation_complete"] = bool(sku_allocation_complete)
+        row["profitability_complete"] = bool(
+            classification_complete
+            and sku_allocation_complete
+            and quality.get("reconciliation_matches", False)
+            and product_quantity_complete
+            and not product_return_activity
+            and not unknown_sku_posting
+            and row.get("marketplace_net") is not None
+            and row.get("cogs") is not None
+            and row.get("compensation") == 0
+        )
         row["source_accrual_ids"] = list(dict.fromkeys(row["source_accrual_ids"]))
         grouped = products_grouped.setdefault(sku, {"sku": sku, "daily": []})
         grouped["daily"].append(row)
@@ -247,11 +444,22 @@ def _empty_daily(day: str, currency: str) -> dict[str, Any]:
     result: dict[str, Any] = {field: Decimal("0") for field in _AMOUNT_FIELDS}
     result.update(
         {
+            "sold_quantity": Decimal("0"),
+            "returned_quantity": Decimal("0"),
+            "net_quantity": Decimal("0"),
             "date": day,
             "currency": currency,
             "source_accrual_ids": [],
             "source_categories": [],
             "_uncertain_fields": set(),
+            "_quantity_complete": True,
+            "_quantity_sku_complete": True,
+            "_unknown_sku_posting": False,
+            "_return_activity": False,
+            "_classification_complete": True,
+            "_sku_allocation_complete": True,
+            "_unallocated_product_fields": set(),
+            "_unscoped_uncertain_fields": set(),
         }
     )
     return result
@@ -261,12 +469,19 @@ def _empty_product(day: str, sku: str, currency: str) -> dict[str, Any]:
     result: dict[str, Any] = {field: Decimal("0") for field in _AMOUNT_FIELDS}
     result.update(
         {
+            "sold_quantity": Decimal("0"),
+            "returned_quantity": Decimal("0"),
+            "net_quantity": Decimal("0"),
             "date": day,
             "sku": sku,
             "currency": currency,
             "source_accrual_ids": [],
             "_uncertain_fields": set(),
             "_has_sale_activity": False,
+            "_quantity_complete": True,
+            "_return_activity": False,
+            "_classification_complete": True,
+            "_sku_allocation_complete": True,
         }
     )
     return result
@@ -302,6 +517,9 @@ def _mark_unknown(
     currency: str,
     accrual_id: str,
 ) -> None:
+    daily["_classification_complete"] = False
+    if sku is None:
+        daily["_sku_allocation_complete"] = False
     daily[field] = None
     daily["_uncertain_fields"].add(field)
     if sku is not None:
@@ -313,11 +531,14 @@ def _mark_unknown(
             accrual_id=accrual_id,
         )
         assert product is not None
+        product["_classification_complete"] = False
         product[field] = None
         product["_uncertain_fields"].add(field)
     else:
+        daily["_unscoped_uncertain_fields"].add(field)
         for key, product in products.items():
             if key[0] == day and key[2] == currency:
+                product["_classification_complete"] = False
                 product[field] = None
                 product["_uncertain_fields"].add(field)
 
@@ -326,6 +547,66 @@ def _metric_amount(field: str, source_amount: Decimal) -> Decimal:
     # WB Finance reports expense columns as positive numbers; a source reversal
     # therefore appears as a negative expense after this sign-preserving flip.
     return -source_amount if field in _SOURCE_EXPENSE_FIELDS else source_amount
+
+
+def _valid_cost(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        cost = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not cost.is_finite() or cost < 0:
+        return None
+    return cost
+
+
+def _parse_quantity(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        quantity = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not quantity.is_finite() or quantity <= 0:
+        return None
+    return quantity
+
+
+def _mark_quantity_unknown(
+    daily: dict[str, Any],
+    products: dict[tuple[str, str, str], dict[str, Any]],
+    sku: str | None,
+    *,
+    day: str,
+    currency: str,
+    accrual_id: str,
+) -> None:
+    daily["_quantity_complete"] = False
+    daily["_quantity_sku_complete"] = False
+    daily["sold_quantity"] = None
+    daily["returned_quantity"] = None
+    daily["net_quantity"] = None
+    if sku is None:
+        for key, product in products.items():
+            if key[0] == day and key[2] == currency:
+                product["_quantity_complete"] = False
+                product["sold_quantity"] = None
+                product["returned_quantity"] = None
+                product["net_quantity"] = None
+        return
+    product = _product(
+        products,
+        day=day,
+        sku=sku,
+        currency=currency,
+        accrual_id=accrual_id,
+    )
+    assert product is not None
+    product["_quantity_complete"] = False
+    product["sold_quantity"] = None
+    product["returned_quantity"] = None
+    product["net_quantity"] = None
 
 
 def _add_component(
@@ -339,6 +620,13 @@ def _add_component(
     currency: str,
     accrual_id: str,
 ) -> None:
+    if sku is None:
+        daily["_sku_allocation_complete"] = False
+        daily["_unallocated_product_fields"].add(field)
+        for key, existing in products.items():
+            if key[0] == day and key[2] == currency:
+                existing[field] = None
+                existing["_uncertain_fields"].add(field)
     metric_amount = _metric_amount(field, source_amount)
     _sum(daily, field, metric_amount)
     product = _product(
@@ -369,9 +657,48 @@ def _fee_details(
     accrual_id: str,
     warnings: list[str],
 ) -> Decimal:
-    # Ozon's live type dictionary has not yet been validated against a closed
-    # seller statement, so no display category is inferred from translated or
-    # machine-generated names. Keep every signed amount visible as other expense.
+    key = (str(type_id) if type_id is not None else "unknown")[:64]
+    type_info = type_names.get(key, {})
+    name = type_info.get("name") or "без названия"
+    description = type_info.get("description") or "без описания"
+    exact_key = (key, name)
+    category = _TYPE_CATEGORY_BY_ID_NAME.get(exact_key)
+    if category is not None:
+        _add_component(
+            field=category,
+            source_amount=source_amount,
+            sku=sku,
+            daily=daily,
+            products=products,
+            day=day,
+            currency=currency,
+            accrual_id=accrual_id,
+        )
+        return source_amount
+
+    daily["_classification_complete"] = False
+    product = _product(
+        products,
+        day=day,
+        sku=sku,
+        currency=currency,
+        accrual_id=accrual_id,
+    )
+    if exact_key in _AMBIGUOUS_TYPE_NAMES:
+        if sku is None:
+            daily["_sku_allocation_complete"] = False
+        _sum(daily, "unallocated_amount", source_amount)
+        if product is not None:
+            _sum(product, "unallocated_amount", source_amount)
+        warnings.append(
+            f"{day}: неоднозначный тип начисления {key} ({name}; {description}); "
+            "исходная сумма сохранена без отнесения к доходам или расходам"
+        )
+        return source_amount
+
+    # Unknown dictionary entries remain visible as signed "other" items, but
+    # their actual expense type is not guessed. Possible affected categories are
+    # set to unknown and the quality marker prevents a profit claim.
     _add_component(
         field="other_expenses",
         source_amount=source_amount,
@@ -392,13 +719,9 @@ def _fee_details(
             currency=currency,
             accrual_id=accrual_id,
         )
-    key = (str(type_id) if type_id is not None else "unknown")[:64]
-    type_info = type_names.get(key, {})
-    name = type_info.get("name") or "без названия"
-    description = type_info.get("description") or "без описания"
     warnings.append(
         f"{day}: неизвестный тип начисления {key} ({name}; {description}); "
-        "сумма сохранена в прочих расходах, разложение по статьям не подтверждено"
+        "сумма видна в прочих расходах, но разложение по статьям и прибыль не подтверждены"
     )
     return source_amount
 
@@ -509,6 +832,7 @@ def _normalize_accrual(
         if not isinstance(posting_products, list):
             for field in ("revenue", "commission", "logistics", "cogs"):
                 _mark_unknown(daily, products, field, None, day=day, currency=currency, accrual_id=accrual_id)
+            _mark_quantity_unknown(daily, products, None, day=day, currency=currency, accrual_id=accrual_id)
             warnings.append(f"{day}: в начислении {accrual_id} отсутствуют товары posting")
             return raw_total, False
 
@@ -518,13 +842,19 @@ def _normalize_accrual(
                 warnings.append(f"{day}: начисление {accrual_id} содержит повреждённую строку товара")
                 for field in ("revenue", "commission", "logistics", "cogs"):
                     _mark_unknown(daily, products, field, None, day=day, currency=currency, accrual_id=accrual_id)
+                _mark_quantity_unknown(daily, products, None, day=day, currency=currency, accrual_id=accrual_id)
                 continue
             sku = _clean_sku(detail.get("sku"))
+            if sku is None:
+                # A posting without product identity may be any of the known
+                # SKU rows. Keep store quantities, but invalidate SKU quantities.
+                daily["_unknown_sku_posting"] = True
             commission = detail.get("commission")
             if not isinstance(commission, dict):
                 complete = False
                 for field in ("revenue", "commission", "cogs"):
                     _mark_unknown(daily, products, field, sku, day=day, currency=currency, accrual_id=accrual_id)
+                _mark_quantity_unknown(daily, products, sku, day=day, currency=currency, accrual_id=accrual_id)
                 warnings.append(f"{day}: в начислении {accrual_id} отсутствует блок commission товара")
             else:
                 sale = parse_component(commission.get("sale_amount"), "revenue", sku, "sale_amount")
@@ -539,11 +869,47 @@ def _normalize_accrual(
                     )
                     if product is not None:
                         product["_has_sale_activity"] = True
+                    quantity = _parse_quantity(detail.get("quantity"))
+                    if sale > 0 and quantity is not None:
+                        _sum(daily, "sold_quantity", quantity)
+                        if sku is None:
+                            daily["_quantity_sku_complete"] = False
+                            daily["_sku_allocation_complete"] = False
+                        elif product is not None:
+                            _sum(product, "sold_quantity", quantity)
+                    elif sale <= 0 and quantity is not None:
+                        daily["_return_activity"] = True
+                        if product is not None:
+                            product["_return_activity"] = True
+                        warnings.append(
+                            f"{day}: начисление {accrual_id} содержит sale_amount <= 0; "
+                            "направление количества и себестоимость не подтверждены"
+                        )
+                    else:
+                        _mark_quantity_unknown(
+                            daily,
+                            products,
+                            sku,
+                            day=day,
+                            currency=currency,
+                            accrual_id=accrual_id,
+                        )
+                        warnings.append(
+                            f"{day}: в начислении {accrual_id} нет подтверждённого количества товара"
+                        )
                 else:
                     _mark_unknown(
                         daily,
                         products,
                         "cogs",
+                        sku,
+                        day=day,
+                        currency=currency,
+                        accrual_id=accrual_id,
+                    )
+                    _mark_quantity_unknown(
+                        daily,
+                        products,
                         sku,
                         day=day,
                         currency=currency,

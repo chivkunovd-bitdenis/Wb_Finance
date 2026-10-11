@@ -44,6 +44,7 @@ export default function Settings() {
       <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 12 }}>Настройки</div>
 
       <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
+      <OzonFinancialSettings key={`finance:${activeStoreOwnerId || 'self'}`} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
 
       <div
         style={{
@@ -154,6 +155,136 @@ function getOzonConnectionStatus(connection, { loading = false, saving = false, 
     return { label: 'Данные сохранены', className: 'tag-gray' };
   }
   return { label: 'Не подключён', className: 'tag-gray' };
+}
+
+function formatTaxRatePercent(rate) {
+  if (rate === null || rate === undefined || !Number.isFinite(Number(rate))) return 'не задана';
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(Number(rate) * 100)}%`;
+}
+
+function OzonFinancialSettings({ activeStoreOwnerId, canManage }) {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [expensesConfirmedDraft, setExpensesConfirmedDraft] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const requestGeneration = useRef(0);
+  const originalTaxRate = settings?.tax_rate == null ? null : Number(settings.tax_rate);
+  const originalExpensesConfirmed = settings?.operation_expenses_confirmed === true;
+  const isDirty = settings !== null && expensesConfirmedDraft !== originalExpensesConfirmed;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const generation = ++requestGeneration.current;
+    setLoading(true);
+    setSettings(null);
+    setExpensesConfirmedDraft(false);
+    setError('');
+    setSaved(false);
+
+    api.getMarketplaceSettings({ signal: controller.signal })
+      .then((result) => {
+        if (generation !== requestGeneration.current) return;
+        setSettings(result);
+        setExpensesConfirmedDraft(result?.operation_expenses_confirmed === true);
+      })
+      .catch((loadError) => {
+        if (generation !== requestGeneration.current || controller.signal.aborted) return;
+        setError(loadError?.message || 'Не удалось загрузить налоговые и расходные настройки Ozon.');
+      })
+      .finally(() => {
+        if (generation === requestGeneration.current && !controller.signal.aborted) setLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+      if (generation === requestGeneration.current) requestGeneration.current += 1;
+    };
+  }, [activeStoreOwnerId]);
+
+  const reset = () => {
+    setExpensesConfirmedDraft(originalExpensesConfirmed);
+    setError('');
+    setSaved(false);
+  };
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!canManage || saving) return;
+    const payload = {
+      operation_expenses_confirmed: expensesConfirmedDraft,
+    };
+    setSaving(true);
+    setError('');
+    setSaved(false);
+    try {
+      const result = await api.saveMarketplaceSettings(payload);
+      const next = {
+        tax_rate: result?.tax_rate === undefined ? originalTaxRate : result.tax_rate,
+        tax_rate_source: result?.tax_rate_source === undefined ? settings?.tax_rate_source : result.tax_rate_source,
+        operation_expenses_confirmed: result?.operation_expenses_confirmed === undefined
+          ? payload.operation_expenses_confirmed
+          : result.operation_expenses_confirmed,
+      };
+      setSettings(next);
+      setExpensesConfirmedDraft(next.operation_expenses_confirmed === true);
+      setSaved(true);
+    } catch (saveError) {
+      setError(saveError?.message || 'Не удалось сохранить настройки Ozon.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const expensesConfirmedLabel = originalExpensesConfirmed ? 'Подтверждены' : 'Не подтверждены';
+
+  return (
+    <section className="marketplace-settings-card" data-testid="ozon-financial-settings">
+      <div className="marketplace-settings-heading">
+        <div>
+          <h3>Налог и общие расходы Ozon</h3>
+          <p>Ставка налога берётся из настроек Wildberries; отдельно здесь настраивается только полнота собственных расходов Ozon.</p>
+        </div>
+        <span className="tag tag-gray" data-testid="ozon-financial-settings-status">
+          {loading || saving ? 'Проверяем' : error ? 'Ошибка' : 'Настроено'}
+        </span>
+      </div>
+
+      {error && <div className="marketplace-notice marketplace-notice-error" role="alert" data-testid="ozon-financial-settings-error">{error}</div>}
+      {loading ? (
+        <div className="marketplace-settings-note">Загружаем настройки магазина…</div>
+      ) : canManage ? (
+        <form className="marketplace-connection-form" onSubmit={save}>
+          <div className="marketplace-settings-note" data-testid="ozon-tax-rate-readonly">
+            Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Измените её в общих настройках учёта Wildberries.
+          </div>
+          <label className="marketplace-confirmation-label">
+            <input
+              type="checkbox"
+              checked={expensesConfirmedDraft}
+              onChange={(event) => { setExpensesConfirmedDraft(event.target.checked); setSaved(false); }}
+              disabled={saving}
+              data-testid="ozon-opex-confirm"
+            />
+            <span>Подтверждаю, что все общие операционные расходы Ozon внесены.</span>
+          </label>
+          <div className="marketplace-settings-note">Если подтверждение включено, день без отдельной суммы считается днём с расходами 0 ₽. Пока оно выключено, незаполненная сумма остаётся неизвестной.</div>
+          <div className="marketplace-connection-actions">
+            <button className="btn-primary" type="submit" disabled={saving || !isDirty} data-testid="ozon-financial-settings-save">
+              {saving ? 'Сохраняем…' : 'Сохранить настройки'}
+            </button>
+            <button className="btn-outline" type="button" disabled={saving || !isDirty} onClick={reset}>Сбросить</button>
+          </div>
+        </form>
+      ) : (
+        <div className="marketplace-settings-readonly" data-testid="ozon-financial-settings-viewer-readonly">
+          Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Общие расходы: {expensesConfirmedLabel.toLowerCase()}.
+        </div>
+      )}
+      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-financial-settings-saved">Настройки сохранены.</div>}
+    </section>
+  );
 }
 
 function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -129,6 +130,50 @@ class OzonProductCost(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "sku", name="uq_ozon_product_cost_user_sku"),
         CheckConstraint("cost_price >= 0", name="ck_ozon_product_cost_nonnegative"),
+    )
+
+
+class OzonFinanceSettings(Base):
+    """Owner attestation about completeness of Ozon operating expenses."""
+
+    __tablename__ = "ozon_finance_settings"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uuid_gen)
+    user_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    # True records the owner's attestation that all Ozon operating expenses are entered.
+    operation_expenses_confirmed = Column(
+        Boolean, nullable=False, server_default="false"
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+class OzonOperationalExpense(Base):
+    """Owner-entered daily Ozon-only operating expense, isolated from WB."""
+
+    __tablename__ = "ozon_operational_expenses"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=uuid_gen)
+    user_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    date = Column(Date, nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_ozon_operational_expense_user_date"),
+        CheckConstraint("amount >= 0", name="ck_ozon_operational_expense_nonnegative"),
+        Index("ix_ozon_operational_expense_user_date", "user_id", "date"),
     )
 
 

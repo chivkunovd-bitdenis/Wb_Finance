@@ -10,7 +10,15 @@ from sqlalchemy import text
 
 from app.core.crypto import encrypt_text
 from app.models.article import Article
-from app.models.ozon import OzonAccrualSnapshot, OzonConnection, OzonProductCost, OzonSyncDay, OzonSyncRun
+from app.models.ozon import (
+    OzonAccrualSnapshot,
+    OzonConnection,
+    OzonFinanceSettings,
+    OzonOperationalExpense,
+    OzonProductCost,
+    OzonSyncDay,
+    OzonSyncRun,
+)
 from app.models.pnl_daily import PnlDaily
 from app.models.sku_daily import SkuDaily
 from app.models.user import User
@@ -20,8 +28,11 @@ from app.services.marketplace_finance_service import (
     _lock_key,
     build_overview,
     enqueue_sync,
+    get_marketplace_settings,
     run_sync_run,
+    set_ozon_operational_expense,
     set_product_cost,
+    update_marketplace_settings,
 )
 
 
@@ -106,6 +117,194 @@ def test_ozon_overview_reads_only_saved_day_and_keeps_unknowns(real_db_session, 
     assert result["products"][0]["cost_price"] == 0.0
 
 
+def test_ozon_settings_drive_only_ozon_tax_and_expenses(real_db_session, monkeypatch):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-ozon-settings-economics@example.com", wb_api_key="present")
+    owner_id = str(owner.id)
+    day = date(2026, 9, 15)
+    real_db_session.add(owner)
+    real_db_session.commit()
+    assert get_marketplace_settings(db=real_db_session, user_id=owner_id) == {
+        "tax_rate": 0.06,
+        "tax_rate_source": "wb",
+        "operation_expenses_confirmed": False,
+    }
+    update_marketplace_settings(
+        db=real_db_session,
+        user_id=owner_id,
+        operation_expenses_confirmed=True,
+    )
+    set_ozon_operational_expense(
+        db=real_db_session,
+        user_id=owner_id,
+        expense_date=day,
+        amount=Decimal("5.00"),
+    )
+    set_ozon_operational_expense(
+        db=real_db_session,
+        user_id=owner_id,
+        expense_date=day,
+        amount=Decimal("5.00"),
+    )
+    assert real_db_session.query(OzonOperationalExpense).filter_by(user_id=owner_id).count() == 1
+    real_db_session.add_all(
+        [
+            _connection(owner_id),
+            OzonSyncDay(
+                user_id=owner_id,
+                day=day,
+                status="complete",
+                daily_data=_day_values(
+                    revenue="200.00",
+                    cogs="20.00",
+                    tax=None,
+                    operation_expenses=None,
+                    margin=None,
+                    marketplace_net="150.00",
+                    reconciliation_difference="0.00",
+                    accrual_classification_complete=True,
+                    sku_allocation_complete=True,
+                    profitability_complete=True,
+                ),
+                products_data=[
+                    {
+                        "sku": "oz-7",
+                        "revenue": "200.00",
+                        "cogs": "20.00",
+                        "tax": None,
+                        "operation_expenses": None,
+                        "marketplace_net": "185.00",
+                        "accrual_classification_complete": True,
+                        "sku_allocation_complete": True,
+                        "profitability_complete": True,
+                    }
+                ],
+                warnings=[],
+            ),
+            PnlDaily(
+                user_id=owner_id,
+                date=day,
+                revenue=Decimal("250.00"),
+                commission=Decimal("25.00"),
+                logistics=Decimal("5.00"),
+                penalties=0,
+                storage=0,
+                ads_spend=0,
+                cogs=Decimal("100.00"),
+                tax=Decimal("15.00"),
+                operation_expenses=Decimal("3.00"),
+                margin=Decimal("102.00"),
+            ),
+        ]
+    )
+    real_db_session.commit()
+
+    ozon = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    all_markets = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="all",
+        date_from=day,
+        date_to=day,
+    )
+    assert ozon["daily"][0]["tax"] == 12.0
+    assert ozon["daily"][0]["operation_expenses"] == 5.0
+    assert ozon["daily"][0]["margin"] == 113.0
+    assert ozon["products"][0]["daily"][0]["tax"] == 12.0
+    assert ozon["products"][0]["daily"][0]["margin"] == 153.0
+    assert ozon["products"][0]["daily"][0]["operation_expenses"] is None
+    assert all_markets["daily"][0]["tax"] == 27.0
+    assert all_markets["daily"][0]["operation_expenses"] == 8.0
+    assert all_markets["daily"][0]["margin"] == 215.0
+
+    # Ozon tax follows the owner’s existing WB setting on the next GET.
+    owner.tax_rate = Decimal("0.08")
+    real_db_session.commit()
+    changed_rate = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert changed_rate["daily"][0]["tax"] == 16.0
+    assert changed_rate["daily"][0]["margin"] == 109.0
+    assert changed_rate["products"][0]["daily"][0]["tax"] == 16.0
+    assert get_marketplace_settings(db=real_db_session, user_id=owner_id)["tax_rate"] == 0.08
+    assert real_db_session.query(PnlDaily).filter_by(user_id=owner_id, date=day).one().tax == Decimal("15.00")
+
+
+def test_ozon_margin_stays_unknown_until_operating_costs_are_confirmed(real_db_session, monkeypatch):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-ozon-profit-unknown@example.com")
+    day = date(2026, 9, 16)
+    real_db_session.add(owner)
+    real_db_session.commit()
+    real_db_session.add_all(
+        [
+            _connection(str(owner.id)),
+            OzonSyncDay(
+                user_id=str(owner.id),
+                day=day,
+                status="complete",
+                daily_data=_day_values(
+                    cogs="20.00",
+                    marketplace_net="70.00",
+                    reconciliation_difference="0.00",
+                    accrual_classification_complete=True,
+                    sku_allocation_complete=True,
+                    profitability_complete=True,
+                ),
+                products_data=[],
+                warnings=[],
+            ),
+            OzonFinanceSettings(
+                user_id=str(owner.id),
+                operation_expenses_confirmed=False,
+            ),
+            OzonOperationalExpense(
+                user_id=str(owner.id),
+                date=day,
+                amount=Decimal("5.00"),
+            ),
+        ]
+    )
+    real_db_session.commit()
+
+    result = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert result["daily"][0]["tax"] == 6.0
+    assert result["daily"][0]["operation_expenses"] == 5.0
+    assert result["daily"][0]["margin"] is None
+
+    update_marketplace_settings(
+        db=real_db_session,
+        user_id=str(owner.id),
+        operation_expenses_confirmed=True,
+    )
+    result = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert result["daily"][0]["tax"] == 6.0
+    assert result["daily"][0]["operation_expenses"] == 5.0
+    assert result["daily"][0]["margin"] == 39.0
+
+
 def test_all_overview_marks_unconfigured_ozon_incomplete_but_retains_wb_snapshot(real_db_session):
     owner = _user("marketplace-all-partial@example.com", wb_api_key=None)
     day = date(2026, 10, 10)
@@ -176,11 +375,44 @@ def test_all_overview_combines_both_sources_once_and_keeps_products_separate(rea
                 day=day,
                 status="complete",
                 last_attempt_status="succeeded",
-                daily_data=_day_values(revenue="100.00", commission="10.00", logistics="4.00", cogs="30.00", tax="6.00", margin="50.00"),
-                products_data=[{"sku": "7001", "revenue": "100.00", "cogs": "30.00"}],
+                daily_data=_day_values(
+                    revenue="100.00",
+                    commission="10.00",
+                    logistics="4.00",
+                    cogs="30.00",
+                    tax=None,
+                    margin=None,
+                    marketplace_net="85.00",
+                    acquiring="2.00",
+                    sold_quantity="3",
+                    returned_quantity="1",
+                    net_quantity="2",
+                    accrual_classification_complete=True,
+                    sku_allocation_complete=True,
+                    profitability_complete=True,
+                ),
+                products_data=[
+                    {
+                        "sku": "7001",
+                        "revenue": "100.00",
+                        "acquiring": "2.00",
+                        "cogs": "30.00",
+                        "marketplace_net": "85.00",
+                        "sold_quantity": "3",
+                        "returned_quantity": "1",
+                        "net_quantity": "2",
+                        "accrual_classification_complete": True,
+                        "sku_allocation_complete": True,
+                        "profitability_complete": True,
+                    }
+                ],
                 warnings=[],
             ),
             OzonProductCost(user_id=owner_id, sku="7001", cost_price=30),
+            OzonFinanceSettings(
+                user_id=owner_id,
+                operation_expenses_confirmed=True,
+            ),
         ]
     )
     real_db_session.commit()
@@ -192,12 +424,26 @@ def test_all_overview_combines_both_sources_once_and_keeps_products_separate(rea
         date_from=day,
         date_to=day,
     )
+    ozon_only = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
 
     assert result["coverage"]["complete"] is True
     assert result["daily"][0]["revenue"] == 350.0
     assert result["daily"][0]["commission"] == 35.0
     assert result["daily"][0]["operation_expenses"] == 3.0
-    assert result["daily"][0]["margin"] == 152.0
+    assert result["daily"][0]["tax"] == 21.0
+    assert result["daily"][0]["margin"] == 151.0
+    assert result["daily"][0]["acquiring"] is None
+    assert result["daily"][0]["sold_quantity"] is None
+    assert ozon_only["daily"][0]["acquiring"] == 2.0
+    assert ozon_only["daily"][0]["sold_quantity"] == 3.0
+    assert ozon_only["daily"][0]["returned_quantity"] == 1.0
+    assert ozon_only["daily"][0]["net_quantity"] == 2.0
     assert {product["marketplace"] for product in result["products"]} == {"wb", "ozon"}
     assert {product["sku"] for product in result["products"]} == {"7001"}
 

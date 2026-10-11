@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
@@ -10,13 +11,20 @@ from app.core.crypto import encrypt_text
 from app.core.security import create_access_token
 from app.db import get_db
 from app.main import app
-from app.models.ozon import OzonConnection, OzonProductCost, OzonSyncDay, OzonSyncRun
+from app.models.ozon import (
+    OzonConnection,
+    OzonFinanceSettings,
+    OzonOperationalExpense,
+    OzonProductCost,
+    OzonSyncDay,
+    OzonSyncRun,
+)
 from app.models.store_access_grant import StoreAccessGrant
 from app.models.user import User
 
 
-def _user(email: str) -> User:
-    return User(id=str(uuid4()), email=email, password_hash="hash", is_active=True)
+def _user(email: str, *, tax_rate: Decimal = Decimal("0.06")) -> User:
+    return User(id=str(uuid4()), email=email, password_hash="hash", is_active=True, tax_rate=tax_rate)
 
 
 def _token(user_id: str) -> str:
@@ -54,6 +62,15 @@ def test_connection_is_encrypted_owner_writable_and_viewer_read_only(real_db_ses
                 "Authorization": f"Bearer {_token(str(viewer.id))}",
                 "X-Store-Owner-Id": str(owner.id),
             }
+
+            oversized_dummy_key = "DUMMY-OZON-KEY-MARKER-" + ("x" * 4097)
+            rejected_secret = client.put(
+                "/dashboard/marketplace/connection",
+                headers=owner_headers,
+                json={"client_id": "ozon-client-123", "api_key": oversized_dummy_key},
+            )
+            assert rejected_secret.status_code == 422
+            assert "DUMMY-OZON-KEY-MARKER" not in rejected_secret.text
 
             saved = client.put(
                 "/dashboard/marketplace/connection",
@@ -132,6 +149,91 @@ def test_read_endpoints_do_not_make_ozon_provider_calls(real_db_session, monkeyp
             assert connection.json()["configured"] is False
             assert overview.status_code == 200
             assert overview.json()["coverage"]["complete"] is False
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_ozon_finance_settings_and_expenses_are_owner_scoped(real_db_session):
+    owner = _user("ozon-finance-settings-owner@example.com", tax_rate=Decimal("0.06"))
+    viewer = _user("ozon-finance-settings-viewer@example.com", tax_rate=Decimal("0.18"))
+    other_owner = _user("ozon-finance-settings-other-owner@example.com", tax_rate=Decimal("0.12"))
+    real_db_session.add_all([owner, viewer, other_owner])
+    real_db_session.commit()
+    real_db_session.add(
+        StoreAccessGrant(
+            store_owner_user_id=str(owner.id),
+            viewer_user_id=str(viewer.id),
+            status="active",
+            revoked_at=None,
+        )
+    )
+    real_db_session.commit()
+    _install_db_override(real_db_session)
+
+    try:
+        with TestClient(app) as client:
+            owner_headers = {"Authorization": f"Bearer {_token(str(owner.id))}"}
+            viewer_headers = {
+                "Authorization": f"Bearer {_token(str(viewer.id))}",
+                "X-Store-Owner-Id": str(owner.id),
+            }
+            other_owner_headers = {"Authorization": f"Bearer {_token(str(other_owner.id))}"}
+
+            default = client.get("/dashboard/marketplace/settings", headers=viewer_headers)
+            assert default.status_code == 200
+            assert default.json() == {
+                "tax_rate": 0.06,
+                "tax_rate_source": "wb",
+                "operation_expenses_confirmed": False,
+            }
+            other_owner_settings = client.get("/dashboard/marketplace/settings", headers=other_owner_headers)
+            assert other_owner_settings.status_code == 200
+            assert other_owner_settings.json()["tax_rate"] == 0.12
+
+            saved = client.put(
+                "/dashboard/marketplace/settings",
+                headers=owner_headers,
+                json={"operation_expenses_confirmed": True},
+            )
+            assert saved.status_code == 200
+            assert saved.json() == {
+                "tax_rate": 0.06,
+                "tax_rate_source": "wb",
+                "operation_expenses_confirmed": True,
+            }
+            setting = real_db_session.query(OzonFinanceSettings).filter_by(user_id=str(owner.id)).one()
+            assert setting.operation_expenses_confirmed is True
+            assert float(real_db_session.query(User).filter_by(id=str(owner.id)).one().tax_rate) == 0.06
+
+            rejected_tax_override = client.put(
+                "/dashboard/marketplace/settings",
+                headers=owner_headers,
+                json={"tax_rate": 0.18, "operation_expenses_confirmed": True},
+            )
+            assert rejected_tax_override.status_code == 422
+            assert float(real_db_session.query(User).filter_by(id=str(owner.id)).one().tax_rate) == 0.06
+
+            viewer_write = client.put(
+                "/dashboard/marketplace/settings",
+                headers=viewer_headers,
+                json={"operation_expenses_confirmed": True},
+            )
+            assert viewer_write.status_code == 403
+
+            expense_url = "/dashboard/marketplace/expenses/2026-10-10"
+            expense = client.put(expense_url, headers=owner_headers, json={"amount": 12.5})
+            assert expense.status_code == 200
+            assert expense.json() == {"date": "2026-10-10", "amount": 12.5}
+            zeroed = client.put(expense_url, headers=owner_headers, json={"amount": 0})
+            assert zeroed.status_code == 200
+            rows = real_db_session.query(OzonOperationalExpense).filter_by(user_id=str(owner.id)).all()
+            assert len(rows) == 1
+            assert rows[0].amount == 0
+
+            negative = client.put(expense_url, headers=owner_headers, json={"amount": -1})
+            assert negative.status_code == 422
+            viewer_expense = client.put(expense_url, headers=viewer_headers, json={"amount": 5})
+            assert viewer_expense.status_code == 403
     finally:
         app.dependency_overrides.pop(get_db, None)
 

@@ -591,7 +591,7 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  ) : <WbOnlyNotice feature="Операционные расходы WB" />}
+                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="expenses" marketplace={marketplace} range={range} refreshTrigger={0} />}
                 />
                 <Route
                   path="/billing"

@@ -1055,6 +1055,24 @@ export async function getMarketplaceConnection({ signal } = {}) {
   return marketplaceRequest('/dashboard/marketplace/connection', { signal });
 }
 
+export async function getMarketplaceSettings({ signal } = {}) {
+  return marketplaceRequest('/dashboard/marketplace/settings', { signal });
+}
+
+export async function saveMarketplaceSettings(settings) {
+  return marketplaceRequest('/dashboard/marketplace/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function saveMarketplaceDailyExpense(date, amount) {
+  return marketplaceRequest(`/dashboard/marketplace/expenses/${encodeURIComponent(String(date))}`, {
+    method: 'PUT',
+    body: JSON.stringify({ amount }),
+  });
+}
+
 export async function saveMarketplaceConnection(clientId, apiKey) {
   return marketplaceRequest('/dashboard/marketplace/connection', {
     method: 'PUT',

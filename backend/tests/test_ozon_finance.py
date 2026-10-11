@@ -26,6 +26,7 @@ def posting_accrual(
     sku: str = "sku-1",
     day: str = DAY,
     currency: str = RUB,
+    quantity: int | str | None = 1,
 ) -> dict:
     return {
         "accrual_id": accrual_id,
@@ -37,6 +38,7 @@ def posting_accrual(
             "products": [
                 {
                     "sku": sku,
+                    "quantity": quantity,
                     "commission": {
                         "sale_amount": money(sale, currency),
                         "commission": money(commission, currency),
@@ -84,14 +86,24 @@ def test_normalizes_real_shaped_posting_with_product_delivery_and_positive_expen
     assert daily["logistics"] == Decimal("4.00")
     assert daily["marketplace_net"] == Decimal("81.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
-    assert daily["cogs"] is None
+    assert daily["sold_quantity"] == Decimal("1")
+    assert daily["returned_quantity"] == Decimal("0")
+    assert daily["net_quantity"] == Decimal("1")
+    assert daily["cogs"] == Decimal("20.00")
     assert daily["tax"] is None
-    assert daily["ads_spend"] is None
+    assert daily["ads_spend"] == Decimal("0")
     assert daily["margin"] is None
+    assert daily["accrual_classification_complete"] is True
+    assert daily["sku_allocation_complete"] is True
+    assert daily["profitability_complete"] is True
     assert product["revenue"] == Decimal("100.00")
     assert product["commission"] == Decimal("15.00")
     assert product["logistics"] == Decimal("4.00")
-    assert product["cogs"] is None
+    assert product["sold_quantity"] == Decimal("1")
+    assert product["returned_quantity"] == Decimal("0")
+    assert product["net_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("20.00")
+    assert product["marketplace_net"] == Decimal("81.00")
     assert product["source_accrual_ids"] == ["101"]
     # sale_commission, bonus, and coinvestment are never added a second time.
     assert "дубли" not in " ".join(normalized["warnings"])
@@ -123,7 +135,259 @@ def test_returns_preserve_signed_income_and_expense_reversals_and_net_zero_still
     assert daily["marketplace_net"] == Decimal("0.00")
     assert daily["cogs"] is None
     assert product["cogs"] is None
+    assert daily["sold_quantity"] == Decimal("1")
+    assert daily["returned_quantity"] is None
+    assert daily["net_quantity"] is None
     assert daily["reconciliation_difference"] == Decimal("0.00")
+
+
+@pytest.mark.parametrize("quantity", [None, 0, -1, "NaN"])
+def test_missing_or_invalid_posting_quantity_never_infers_cogs(quantity):
+    source = posting_accrual(
+        211,
+        total="81.00",
+        sale="100.00",
+        commission="-15.00",
+        delivery="-4.00",
+        quantity=quantity,
+    )
+
+    normalized = normalize_accruals([source], [], costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["sold_quantity"] is None
+    assert daily["returned_quantity"] is None
+    assert daily["net_quantity"] is None
+    assert daily["cogs"] is None
+    assert daily["profitability_complete"] is False
+    assert product["net_quantity"] is None
+    assert product["cogs"] is None
+
+
+def test_sale_quantity_multiplies_known_cost_and_item_fee_quantity_is_not_sold_quantity():
+    posting = posting_accrual(
+        212,
+        total="166.00",
+        sale="200.00",
+        commission="-30.00",
+        delivery="-4.00",
+        quantity=2,
+    )
+    item_acquiring = {
+        "accrual_id": 213,
+        "date": DAY,
+        "accrued_category": "ITEM",
+        "total_amount": money("-7.00"),
+        "item_fees": {
+            "fees": [
+                {
+                    "sku": "sku-1",
+                    "quantity": 99,
+                    "fees": [{"type_id": 1, "accrued": money("-7.00")}],
+                }
+            ]
+        },
+    }
+    types = [{"id": 1, "name": "Acquiring", "description": "Эквайринг"}]
+
+    normalized = normalize_accruals(
+        [posting, item_acquiring],
+        types,
+        costs={"sku-1": Decimal("20.00")},
+    )
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["sold_quantity"] == Decimal("2")
+    assert daily["returned_quantity"] == Decimal("0")
+    assert daily["net_quantity"] == Decimal("2")
+    assert daily["cogs"] == Decimal("40.00")
+    assert daily["acquiring"] == Decimal("7.00")
+    assert product["sold_quantity"] == Decimal("2")
+    assert product["cogs"] == Decimal("40.00")
+    assert product["acquiring"] == Decimal("7.00")
+    assert daily["reconciliation_difference"] == Decimal("0.00")
+
+
+def test_cogs_stays_unknown_when_cost_is_not_configured():
+    source = posting_accrual(
+        2131,
+        total="81.00",
+        sale="100.00",
+        commission="-15.00",
+        delivery="-4.00",
+    )
+
+    normalized = normalize_accruals([source], [])
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["sold_quantity"] == Decimal("1")
+    assert daily["cogs"] is None
+    assert product["cogs"] is None
+    assert daily["profitability_complete"] is False
+
+
+def test_type_69_is_commission_and_positive_compensation_blocks_profitability():
+    source = {
+        "accrual_id": 2132,
+        "date": DAY,
+        "accrued_category": "NON_ITEM",
+        "total_amount": money("5.00"),
+        "non_item_fee": {"type_id": 81, "accrued": money("10.00")},
+    }
+    commission_reversal = {
+        "accrual_id": 2133,
+        "date": DAY,
+        "accrued_category": "NON_ITEM",
+        "total_amount": money("-3.00"),
+        "non_item_fee": {"type_id": 69, "accrued": money("-3.00")},
+    }
+    types = [
+        {"id": 69, "name": "SaleCommission", "description": "Вознаграждение за продажу"},
+        {"id": 81, "name": "VolumeObligationReward", "description": "Бонус за достижение цели продаж"},
+    ]
+
+    normalized = normalize_accruals([source, commission_reversal], types)
+    daily = daily_row(normalized)
+
+    assert daily["commission"] == Decimal("3.00")
+    assert daily["compensation"] == Decimal("10.00")
+    assert daily["marketplace_net"] == Decimal("2.00")
+    assert daily["accrual_classification_complete"] is True
+    assert daily["profitability_complete"] is False
+    assert any("налоговая база для компенсаций" in warning for warning in normalized["warnings"])
+
+
+def test_type_id_and_exact_name_control_fee_classification_and_ambiguous_types_stay_signed():
+    acquiring = {
+        "accrual_id": 214,
+        "date": DAY,
+        "accrued_category": "ITEM",
+        "total_amount": money("-5.00"),
+        "item_fees": {
+            "fees": [
+                {"sku": "sku-1", "fees": [{"type_id": 1, "accrued": money("-5.00")}]}
+            ]
+        },
+    }
+    ambiguous = {
+        "accrual_id": 215,
+        "date": DAY,
+        "accrued_category": "NON_ITEM",
+        "total_amount": money("3.00"),
+        "non_item_fee": {"type_id": 72, "accrued": money("3.00")},
+    }
+    types = [
+        {"id": 1, "name": "Acquiring", "description": "Эквайринг"},
+        {"id": 72, "name": "SetOff", "description": "Взаимозачет требований между Договорами"},
+    ]
+
+    normalized = normalize_accruals([acquiring, ambiguous], types)
+    daily = daily_row(normalized)
+
+    assert daily["acquiring"] == Decimal("5.00")
+    assert daily["unallocated_amount"] == Decimal("3.00")
+    assert daily["other_expenses"] == Decimal("0")
+    assert daily["marketplace_net"] == Decimal("-2.00")
+    assert daily["accrual_classification_complete"] is False
+    assert daily["profitability_complete"] is False
+    assert any("72 (SetOff;" in warning for warning in normalized["warnings"])
+
+
+def test_known_fee_id_with_mismatched_dictionary_name_is_not_fuzzily_classified():
+    source = {
+        "accrual_id": 216,
+        "date": DAY,
+        "accrued_category": "NON_ITEM",
+        "total_amount": money("-5.00"),
+        "non_item_fee": {"type_id": 1, "accrued": money("-5.00")},
+    }
+
+    normalized = normalize_accruals(
+        [source],
+        [{"id": 1, "name": "OtherName", "description": "not the known exact type"}],
+    )
+    daily = daily_row(normalized)
+
+    assert daily["acquiring"] is None
+    assert daily["other_expenses"] == Decimal("5.00")
+    assert daily["accrual_classification_complete"] is False
+
+
+def test_unscoped_unknown_fee_invalidates_affected_product_day_columns_even_when_seen_first():
+    unknown = {
+        "accrual_id": 217,
+        "date": DAY,
+        "accrued_category": "NON_ITEM",
+        "total_amount": money("-3.00"),
+        "non_item_fee": {"type_id": 999, "accrued": money("-3.00")},
+    }
+    posting = posting_accrual(
+        218,
+        total="88.00",
+        sale="100.00",
+        commission="-10.00",
+        delivery="-2.00",
+    )
+    types = [{"id": 999, "name": "UnknownFee", "description": "unknown unscoped amount"}]
+
+    normalized = normalize_accruals([unknown, posting], types, costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["penalties"] is None
+    assert daily["other_expenses"] == Decimal("3.00")
+    assert daily["profitability_complete"] is False
+    assert product["penalties"] is None
+    assert product["acquiring"] is None
+    assert product["commission"] is None
+    assert product["other_expenses"] is None
+    assert product["marketplace_net"] is None
+    assert product["profitability_complete"] is False
+
+
+@pytest.mark.parametrize("unassigned_first", [False, True])
+def test_posting_sale_without_sku_invalidates_known_sku_quantities_for_the_day(unassigned_first):
+    source = posting_accrual(
+        219,
+        total="88.00",
+        sale="100.00",
+        commission="-10.00",
+        delivery="-2.00",
+        sku="known-sku",
+    )
+    unassigned = dict(source["posting"]["products"][0])
+    unassigned["sku"] = None
+    unassigned["quantity"] = 1
+    unassigned["commission"] = {
+        **unassigned["commission"],
+        "sale_amount": money("200.00"),
+        "commission": money("-20.00"),
+    }
+    unassigned["delivery"] = {
+        "total_accrued": money("-4.00"),
+        "services": [{"type_id": 501, "accrued": money("-4.00")}],
+    }
+    source["total_amount"] = money("264.00")
+    source["posting"]["products"].append(unassigned)
+    if unassigned_first:
+        source["posting"]["products"].reverse()
+
+    normalized = normalize_accruals([source], [], costs={"known-sku": Decimal("20.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized, sku="known-sku")
+
+    assert daily["sold_quantity"] == Decimal("2")
+    assert daily["cogs"] is None
+    assert daily["sku_allocation_complete"] is False
+    assert product["sold_quantity"] is None
+    assert product["returned_quantity"] is None
+    assert product["net_quantity"] is None
+    assert product["cogs"] is None
+    assert product["marketplace_net"] is None
+    assert product["profitability_complete"] is False
 
 
 def test_per_accrual_reconciliation_warnings_do_not_cancel_each_other():

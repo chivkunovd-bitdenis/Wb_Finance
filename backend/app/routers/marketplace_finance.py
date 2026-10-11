@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, SecretStr
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.responses import JSONResponse, Response
 
 from app.db import get_db
 from app.dependencies import get_store_context
@@ -15,13 +18,46 @@ from app.services.marketplace_finance_service import (
     build_overview,
     connection_status,
     enqueue_sync,
+    get_marketplace_settings,
     save_connection,
     set_product_cost,
+    set_ozon_operational_expense,
+    update_marketplace_settings,
 )
 from app.services.store_access_service import StoreContext
 from celery_app.ozon_tasks import ozon_sync_run
 
+class SecretSafeConnectionRoute(APIRoute):
+    """Prevent FastAPI validation errors from reflecting submitted credentials."""
+
+    def get_route_handler(self):
+        original_handler = super().get_route_handler()
+
+        async def safe_handler(request: Request) -> Response:
+            try:
+                return await original_handler(request)
+            except RequestValidationError as exc:
+                safe_errors = []
+                for error in exc.errors():
+                    location = list(error.get("loc", ()))
+                    is_api_key = "api_key" in location
+                    safe_errors.append(
+                        {
+                            "loc": location,
+                            "msg": "API-ключ Ozon имеет некорректное значение." if is_api_key else str(error.get("msg", "Некорректный запрос.")),
+                            "type": str(error.get("type", "value_error")),
+                        }
+                    )
+                return JSONResponse(status_code=422, content={"detail": safe_errors})
+
+        return safe_handler
+
+
 router = APIRouter(prefix="/dashboard/marketplace", tags=["marketplace-finance"])
+connection_write_router = APIRouter(
+    tags=["marketplace-finance"],
+    route_class=SecretSafeConnectionRoute,
+)
 
 
 class OzonConnectionRequest(BaseModel):
@@ -31,6 +67,18 @@ class OzonConnectionRequest(BaseModel):
 
 class ProductCostRequest(BaseModel):
     cost_price: Decimal | None
+
+
+class MarketplaceSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_expenses_confirmed: bool
+
+
+class OperationalExpenseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount: Decimal
 
 
 class OzonSyncRequest(BaseModel):
@@ -105,7 +153,52 @@ def get_ozon_connection(
     return connection_status(db=db, user_id=str(store.store_owner.id))
 
 
-@router.put("/connection")
+@router.get("/settings")
+def get_ozon_finance_settings(
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_marketplace_settings(db=db, user_id=str(store.store_owner.id))
+
+
+@router.put("/settings")
+def put_ozon_finance_settings(
+    body: MarketplaceSettingsRequest,
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    user_id = _require_owner(store)
+    try:
+        return update_marketplace_settings(
+            db=db,
+            user_id=user_id,
+            operation_expenses_confirmed=body.operation_expenses_confirmed,
+        )
+    except MarketplaceFinanceError as exc:
+        raise _translate_service_error(exc) from exc
+
+
+@router.put("/expenses/{expense_date}")
+def put_ozon_operational_expense(
+    expense_date: date,
+    body: OperationalExpenseRequest,
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    user_id = _require_owner(store)
+    try:
+        amount = set_ozon_operational_expense(
+            db=db,
+            user_id=user_id,
+            expense_date=expense_date,
+            amount=body.amount,
+        )
+    except MarketplaceFinanceError as exc:
+        raise _translate_service_error(exc) from exc
+    return {"date": expense_date.isoformat(), "amount": float(amount)}
+
+
+@connection_write_router.put("/connection")
 def put_ozon_connection(
     body: OzonConnectionRequest,
     store: StoreContext = Depends(get_store_context),
@@ -180,3 +273,6 @@ def put_ozon_product_cost(
             else "Себестоимость сохранена. Прибыль пересчитается, когда появится подтверждённое количество продаж."
         ),
     }
+
+
+router.include_router(connection_write_router)

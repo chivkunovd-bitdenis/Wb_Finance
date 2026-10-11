@@ -8,6 +8,7 @@ function emptyDaily(date = '2026-10-10', overrides = {}) {
     date,
     revenue: 0,
     commission: 0,
+    acquiring: 0,
     logistics: 0,
     penalties: 0,
     storage: 0,
@@ -21,31 +22,45 @@ function emptyDaily(date = '2026-10-10', overrides = {}) {
     marketplace_net: 0,
     unallocated_amount: 0,
     reconciliation_difference: 0,
+    sold_quantity: null,
+    returned_quantity: null,
+    net_quantity: null,
+    accrual_classification_complete: true,
+    sku_allocation_complete: true,
+    profitability_complete: false,
     ...overrides,
   };
 }
 
 function makeOverview(marketplace, options = {}) {
+  const ozonOpex = options.expenseAmounts?.['2026-10-10'] ?? null;
   const ozonRow = emptyDaily('2026-10-10', {
     revenue: 100,
     commission: 10,
+    acquiring: 2,
+    sold_quantity: options.unknownQuantity ? null : 5,
+    returned_quantity: options.unknownQuantity ? null : 0,
+    net_quantity: options.unknownQuantity ? null : 5,
     logistics: 5,
     penalties: 2,
     storage: 1,
     ads_spend: 0,
     other_expenses: 0,
     compensation: 3,
-    cogs: options.unknownCogs ? null : 20,
+    cogs: options.unknownCogs || options.unknownQuantity ? null : 20,
     tax: 6,
-    operation_expenses: 0,
-    margin: options.unknownCogs ? null : 59,
+    operation_expenses: options.opexConfirmed ? (ozonOpex ?? 0) : ozonOpex,
+    margin: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? null : 59 - (ozonOpex ?? 0),
     marketplace_net: 85,
     unallocated_amount: 2,
     reconciliation_difference: 0,
+    profitability_complete: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? false : true,
   });
+  const ozonProductRow = { ...ozonRow, operation_expenses: null, margin: options.unknownCogs || options.unknownQuantity ? null : 59 };
   const wbRow = emptyDaily('2026-10-10', {
     revenue: 200,
     commission: 25,
+    acquiring: null,
     logistics: 8,
     penalties: 0,
     storage: 1,
@@ -60,14 +75,18 @@ function makeOverview(marketplace, options = {}) {
     unallocated_amount: 0,
     reconciliation_difference: 0,
   });
+  const wbProductRow = { ...wbRow };
+  for (const field of ['acquiring', 'sold_quantity', 'returned_quantity', 'net_quantity', 'accrual_classification_complete', 'sku_allocation_complete', 'profitability_complete']) {
+    delete wbProductRow[field];
+  }
   const products = marketplace === 'all'
     ? [
-      { marketplace: 'wb', sku: '42', offer_id: 'wb-42', name: 'WB Cable', cost_price: 40, daily: [wbRow] },
-      { marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: 20, daily: [ozonRow] },
+      { marketplace: 'wb', sku: '42', offer_id: 'wb-42', name: 'WB Cable', cost_price: 40, daily: [wbProductRow] },
+      { marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: 20, daily: [ozonProductRow] },
     ]
-    : [{ marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: options.unknownCogs ? null : 20, daily: [ozonRow] }];
+    : [{ marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: options.unknownCogs ? null : 20, daily: [ozonProductRow] }];
   const daily = marketplace === 'all'
-    ? [{ ...emptyDaily('2026-10-10', { revenue: 300, commission: 35, logistics: 13, penalties: 2, storage: 2, ads_spend: 4, other_expenses: 2, compensation: 3, cogs: options.unknownCogs ? null : 60, tax: 18, margin: options.unknownCogs ? null : 167, marketplace_net: 245, unallocated_amount: 2, reconciliation_difference: 0 }) }]
+    ? [{ ...emptyDaily('2026-10-10', { revenue: 300, commission: 35, acquiring: null, sold_quantity: null, returned_quantity: null, net_quantity: null, logistics: 13, penalties: 2, storage: 2, ads_spend: 4, other_expenses: 2, compensation: 3, cogs: options.unknownCogs || options.unknownQuantity ? null : 60, operation_expenses: ozonOpex ?? (options.opexConfirmed ? 0 : null), margin: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? null : 167 - (ozonOpex ?? 0), marketplace_net: 245, unallocated_amount: 2, reconciliation_difference: 0, profitability_complete: !options.unknownCogs && !options.unknownQuantity && (ozonOpex != null || options.opexConfirmed) }) }]
     : [ozonRow];
 
   return {
@@ -115,6 +134,24 @@ async function mockApplication(page, options = {}) {
       }
       return route.fulfill({ json: options.connection || { configured: true, client_id: 'client-1', status: 'configured' } });
     }
+    if (path === '/dashboard/marketplace/settings') {
+      if (method === 'PUT') {
+        const body = route.request().postDataJSON();
+        options.financialSettingsWrites?.push(body);
+        options.financialSettings = { ...(options.financialSettings || { tax_rate: 0.06, tax_rate_source: 'wb', operation_expenses_confirmed: false }), ...body };
+        return route.fulfill({ json: options.financialSettings });
+      }
+      return route.fulfill({ json: options.financialSettings || { tax_rate: 0.06, tax_rate_source: 'wb', operation_expenses_confirmed: false } });
+    }
+    if (path.startsWith('/dashboard/marketplace/expenses/') && method === 'PUT') {
+      const date = path.split('/').at(-1);
+      const body = route.request().postDataJSON();
+      options.expenseWrites?.push({ date, amount: body.amount });
+      options.overview ||= {};
+      options.overview.expenseAmounts ||= {};
+      options.overview.expenseAmounts[date] = body.amount;
+      return route.fulfill({ json: { date, amount: body.amount } });
+    }
     if (path === '/dashboard/marketplace/sync' && method === 'POST') {
       return route.fulfill({ status: 202, json: { status: 'queued' } });
     }
@@ -135,19 +172,44 @@ async function mockApplication(page, options = {}) {
 
 test.describe('Marketplace finance', () => {
   test('switches Ozon and all views while keeping equal SKUs separate', async ({ page }) => {
-    await mockApplication(page);
+    await mockApplication(page, { overview: { opexConfirmed: true } });
     await expect(page.getByText('Детализация по дням').first()).toBeVisible();
 
     await page.getByTestId('marketplace-selector').selectOption('ozon');
     await expect(page.getByTestId('marketplace-summary-kpis')).toBeVisible();
     await expect(page.getByTestId('marketplace-summary-kpis').getByText('100,00 ₽')).toBeVisible();
+    await expect(page.getByTestId('marketplace-metric-acquiring').getByText('2,00 ₽')).toBeVisible();
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(2)).toHaveText('5');
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(3)).toHaveText('0');
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(4)).toHaveText('5');
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(1)).toContainText('2,00 ₽');
+    await expect(page.getByTestId('marketplace-proof-note')).toContainText('Проверено на одном кабинете: данные за один период сверены с бухгалтерскими итогами.');
+    await expect(page.getByTestId('marketplace-proof-note')).toContainText('сопоставление возвратов на живых данных ещё не проверено');
 
     await page.getByTestId('marketplace-selector').selectOption('all');
     await expect(page.getByTestId('marketplace-product-wb:42')).toBeVisible();
     await expect(page.getByTestId('marketplace-product-ozon:42')).toBeVisible();
     await expect(page.getByText('WB Cable')).toBeVisible();
     await expect(page.getByText('Ozon Cable')).toBeVisible();
+    const wbProduct = page.getByTestId('marketplace-product-wb:42');
+    const ozonProduct = page.getByTestId('marketplace-product-ozon:42');
+    await expect(wbProduct.locator('td').nth(2)).toHaveText('—');
+    await expect(wbProduct.locator('td').nth(2).locator('span')).toHaveAttribute('title', /не выделяется в сохранённой финансовой витрине Wildberries/);
+    await expect(ozonProduct.locator('td').nth(2)).toHaveText('5');
+    await expect(wbProduct.locator('td').nth(6)).toContainText('40,00 ₽');
+    await expect(wbProduct.locator('td').nth(7)).toContainText('108,00 ₽');
+    await expect(ozonProduct.locator('td').nth(6)).toContainText('20,00 ₽');
+    await expect(ozonProduct.locator('td').nth(7)).toContainText('59,00 ₽');
+    await expect(page.getByTestId('marketplace-metric-cogs').locator('td').nth(1)).toContainText('60,00 ₽');
+    await expect(page.getByTestId('marketplace-metric-margin').locator('td').nth(1)).toContainText('167,00 ₽');
+    await expect(page.getByText('Общее количество по площадкам не суммируется; в товарных строках показаны данные своей площадки.')).toBeVisible();
     await expect(page.getByTestId('marketplace-metric-commission').getByText('35,00 ₽')).toBeVisible();
+    await expect(page.getByTestId('marketplace-metric-acquiring')).toContainText('Эквайринг (не сопоставляется)');
+    await expect(page.getByTestId('marketplace-metric-acquiring').locator('td').nth(1).getByText('—')).toBeVisible();
+    await expect(page.getByTestId('marketplace-metric-acquiring').locator('td').nth(1).locator('span')).toHaveAttribute('title', /Wildberries включает её в комиссию/);
+    await expect(page.getByTestId('marketplace-metric-acquiring').locator('td').nth(2)).toContainText('—');
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(1).locator('span')).toHaveAttribute('title', /Wildberries включает её в комиссию/);
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(2).locator('span')).toHaveAttribute('title', /нельзя сопоставить/);
     await page.screenshot({ path: 'test-results/marketplace-finance-desktop.png', fullPage: true });
   });
 
@@ -183,6 +245,7 @@ test.describe('Marketplace finance', () => {
       overview: {
         partial: true,
         unknownCogs: true,
+        unknownQuantity: true,
         warning: 'Нет подтверждённого количества проданных единиц.',
         connection: { configured: false, status: 'missing' },
       },
@@ -195,6 +258,18 @@ test.describe('Marketplace finance', () => {
     await expect(page.getByTestId('marketplace-summary-kpis').getByText('—').first()).toBeVisible();
     await expect(page.getByTestId('marketplace-metric-cogs').getByText('—').first()).toBeVisible();
     await expect(page.getByTestId('marketplace-day-2026-10-10').getByText('0,00 ₽').first()).toBeVisible();
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(2)).toHaveText('—');
+    await expect(page.getByTestId('marketplace-day-2026-10-10').locator('td').nth(2).locator('span')).toHaveAttribute('title', /Период загружен не полностью/);
+  });
+
+  test('keeps unconfirmed quantities and COGS unknown even when daily coverage is complete', async ({ page }) => {
+    await mockApplication(page, { overview: { unknownQuantity: true } });
+    await page.getByTestId('marketplace-selector').selectOption('ozon');
+    const day = page.getByTestId('marketplace-day-2026-10-10');
+    await expect(day.locator('td').nth(2)).toHaveText('—');
+    await expect(day.locator('td').nth(2).locator('span')).toHaveAttribute('title', /Количество не подтверждено/);
+    await expect(day.locator('td').filter({ hasText: '20,00 ₽' })).toHaveCount(0);
+    await expect(page.getByTestId('marketplace-metric-cogs').locator('td').nth(1).getByText('—')).toBeVisible();
   });
 
   test('shows warnings beyond the first five after explicit expansion', async ({ page }) => {
@@ -260,6 +335,27 @@ test.describe('Marketplace finance', () => {
     expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('secret-e2e-key-value');
   });
 
+  test('owner reads the WB tax rate and can confirm or revoke expense completeness', async ({ page }) => {
+    const financialSettingsWrites = [];
+    await mockApplication(page, { financialSettingsWrites });
+    await page.goto('/settings');
+
+    const confirmOpex = page.getByTestId('ozon-opex-confirm');
+    const save = page.getByTestId('ozon-financial-settings-save');
+    await expect(page.getByTestId('ozon-tax-rate-readonly')).toContainText('Ставка налога из настроек WB: 6%');
+    await expect(page.getByTestId('ozon-tax-rate')).toHaveCount(0);
+    await confirmOpex.check();
+    await save.click();
+    await expect(page.getByTestId('ozon-financial-settings-saved')).toBeVisible();
+    await expect.poll(() => financialSettingsWrites.length).toBe(1);
+    expect(financialSettingsWrites[0]).toEqual({ operation_expenses_confirmed: true });
+
+    await confirmOpex.uncheck();
+    await save.click();
+    await expect.poll(() => financialSettingsWrites.length).toBe(2);
+    expect(financialSettingsWrites[1]).toEqual({ operation_expenses_confirmed: false });
+  });
+
   test('connection status distinguishes saved, checking, ready, error and missing states', async ({ page }) => {
     const connection = { configured: true, client_id: 'client-1', status: 'configured' };
     await mockApplication(page, { connection });
@@ -306,12 +402,34 @@ test.describe('Marketplace finance', () => {
     expect(costWrites[1]).toBeNull();
   });
 
+  test('Ozon daily expenses keep missing values unknown, accept explicit zero, and remain readonly in all mode', async ({ page }) => {
+    const expenseWrites = [];
+    await mockApplication(page, { expenseWrites });
+    await page.getByTestId('marketplace-selector').selectOption('ozon');
+    await page.getByRole('link', { name: 'Опер. расходы' }).click();
+    const day = '2026-10-10';
+    const input = page.getByTestId(`marketplace-expense-input-${day}`);
+    await expect(page.getByTestId(`marketplace-expense-day-${day}`).locator('td').nth(1)).toContainText('—');
+    await input.fill('0');
+    await page.getByTestId(`marketplace-expense-day-${day}`).getByRole('button', { name: 'Сохранить' }).click();
+    await expect.poll(() => expenseWrites.length).toBe(1);
+    expect(expenseWrites[0]).toEqual({ date: day, amount: 0 });
+    await expect(page.getByTestId(`marketplace-expense-day-${day}`).locator('td').nth(1)).toContainText('0,00 ₽');
+
+    await page.getByTestId('marketplace-selector').selectOption('all');
+    await expect(page.getByTestId('marketplace-expenses-all-readonly')).toBeVisible();
+    await expect(page.getByTestId(`marketplace-expense-input-${day}`)).toHaveCount(0);
+  });
+
   test('viewer sees Ozon screens but cannot change connection, costs, or start sync', async ({ page }) => {
     await mockApplication(page, { viewer: true });
     await page.goto('/settings');
     await expect(page.getByTestId('ozon-connection-viewer-readonly')).toBeVisible();
     await expect(page.getByTestId('ozon-api-key')).toHaveCount(0);
     await expect(page.getByTestId('ozon-connection-save')).toHaveCount(0);
+    await expect(page.getByTestId('ozon-financial-settings-viewer-readonly')).toContainText('Ставка налога из настроек WB: 6%');
+    await expect(page.getByTestId('ozon-tax-rate')).toHaveCount(0);
+    await expect(page.getByTestId('ozon-financial-settings-save')).toHaveCount(0);
 
     await page.goto('/dashboard');
     await page.getByTestId('marketplace-selector').selectOption('ozon');
@@ -320,6 +438,9 @@ test.describe('Marketplace finance', () => {
     await page.getByRole('link', { name: 'Себестоимость' }).click();
     await expect(page.getByTestId('marketplace-cost-viewer-readonly')).toBeVisible();
     await expect(page.getByTestId('marketplace-cost-input-ozon:42')).toHaveCount(0);
+    await page.getByRole('link', { name: 'Опер. расходы' }).click();
+    await expect(page.getByTestId('marketplace-expenses-viewer-readonly')).toBeVisible();
+    await expect(page.getByTestId('marketplace-expense-input-2026-10-10')).toHaveCount(0);
   });
 
   test('a fast switch cannot show a late response from the previous marketplace', async ({ page }) => {
