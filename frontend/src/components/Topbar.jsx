@@ -7,6 +7,8 @@ export default function Topbar({
   setDateToDraft,
   onApply,
   onOpenBilling,
+  marketplace,
+  onMarketplaceChange,
 }) {
   return (
     <div className="topbar">
@@ -18,6 +20,19 @@ export default function Topbar({
           </span>
         )}
       </div>
+      <label className="marketplace-selector">
+        <span>Маркетплейс</span>
+        <select
+          aria-label="Маркетплейс"
+          data-testid="marketplace-selector"
+          value={marketplace || 'wb'}
+          onChange={(event) => onMarketplaceChange?.(event.target.value)}
+        >
+          <option value="wb">WB</option>
+          <option value="ozon">Ozon</option>
+          <option value="all">Все маркетплейсы</option>
+        </select>
+      </label>
       <div className="date-group">
         <input
           type="date"

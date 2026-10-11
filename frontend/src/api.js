@@ -17,11 +17,16 @@ const FETCH_TIMEOUT_MS = 60_000;
  */
 async function apiFetch(input, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const ctrl = new AbortController();
+  const externalSignal = init.signal;
   const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  const abortFromCaller = () => ctrl.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromCaller();
+  else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
     return await fetch(input, { ...init, signal: ctrl.signal });
   } finally {
     clearTimeout(tid);
+    externalSignal?.removeEventListener('abort', abortFromCaller);
   }
 }
 
@@ -1024,6 +1029,51 @@ export async function saveTaxRate(taxRate) {
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// ── Marketplace finance ─────────────────────────────────────────────────────
+
+async function marketplaceRequest(path, init = {}) {
+  const res = await apiFetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...headers(), ...(init.headers || {}) },
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function getMarketplaceFinance(marketplace, dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace, date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/overview?${query}`, { signal });
+}
+
+export async function getMarketplaceConnection({ signal } = {}) {
+  return marketplaceRequest('/dashboard/marketplace/connection', { signal });
+}
+
+export async function saveMarketplaceConnection(clientId, apiKey) {
+  return marketplaceRequest('/dashboard/marketplace/connection', {
+    method: 'PUT',
+    body: JSON.stringify({ client_id: clientId, api_key: apiKey }),
+  });
+}
+
+export async function syncMarketplaceFinance(dateFrom, dateTo) {
+  return marketplaceRequest('/dashboard/marketplace/sync', {
+    method: 'POST',
+    body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+  });
+}
+
+export async function saveMarketplaceProductCost(sku, costPrice) {
+  return marketplaceRequest(`/dashboard/marketplace/products/${encodeURIComponent(String(sku))}/cost`, {
+    method: 'PUT',
+    body: JSON.stringify({ cost_price: costPrice }),
+  });
 }
 
 // ── Stores (access + switching) ──────────────────────────────────────────────

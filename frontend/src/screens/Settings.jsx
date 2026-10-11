@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+/* eslint react-hooks/set-state-in-effect: off */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
 import { useStore } from '../StoreContext';
 
 export default function Settings() {
-  const { refreshStores } = useStore();
+  const { refreshStores, activeStore, activeStoreOwnerId, isOwnerStore } = useStore();
   const [email, setEmail] = useState('');
   const [lockedEmail, setLockedEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const isGranted = Boolean(lockedEmail);
+  const canManageOzon = Boolean(activeStore && isOwnerStore);
   const value = isGranted ? lockedEmail : email;
 
   const loadExisting = useCallback(async () => {
@@ -40,6 +42,8 @@ export default function Settings() {
   return (
     <div style={{ maxWidth: 720 }}>
       <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 12 }}>Настройки</div>
+
+      <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
 
       <div
         style={{
@@ -132,6 +136,153 @@ export default function Settings() {
         )}
       </div>
     </div>
+  );
+}
+
+function OzonConnectionSettings({ activeStore, activeStoreOwnerId, canManage }) {
+  const [connection, setConnection] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [clientId, setClientId] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [formError, setFormError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const requestGeneration = useRef(0);
+  const savedClientId = String(connection?.client_id || '');
+  const isDirty = clientId.trim() !== savedClientId || apiKey.length > 0;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const generation = ++requestGeneration.current;
+    setLoading(true);
+    setConnection(null);
+    setClientId('');
+    setApiKey('');
+    setLoadError('');
+    setFormError('');
+    setSaved(false);
+
+    api.getMarketplaceConnection({ signal: controller.signal })
+      .then((result) => {
+        if (generation !== requestGeneration.current) return;
+        setConnection(result);
+        setClientId(String(result?.client_id || ''));
+      })
+      .catch((error) => {
+        if (generation !== requestGeneration.current || controller.signal.aborted) return;
+        setLoadError(error?.message || 'Не удалось загрузить подключение Ozon.');
+      })
+      .finally(() => {
+        if (generation === requestGeneration.current && !controller.signal.aborted) setLoading(false);
+      });
+    return () => {
+      controller.abort();
+      if (generation === requestGeneration.current) requestGeneration.current += 1;
+    };
+  }, [activeStoreOwnerId]);
+
+  const resetForm = () => {
+    setClientId(savedClientId);
+    setApiKey('');
+    setFormError('');
+    setSaved(false);
+  };
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!canManage || saving) return;
+    const normalizedClientId = clientId.trim();
+    const normalizedKey = apiKey;
+    if (!normalizedClientId) {
+      setFormError('Укажите Client ID из кабинета продавца Ozon.');
+      return;
+    }
+    if (!normalizedKey.trim()) {
+      setFormError('Введите API-ключ. Он не отображается повторно после сохранения.');
+      return;
+    }
+
+    setSaving(true);
+    setFormError('');
+    setSaved(false);
+    try {
+      const result = await api.saveMarketplaceConnection(normalizedClientId, normalizedKey);
+      setConnection((current) => ({
+        ...current,
+        ...result,
+        configured: result?.configured ?? true,
+        client_id: result?.client_id ?? normalizedClientId,
+      }));
+      setClientId(String(result?.client_id ?? normalizedClientId));
+      setApiKey('');
+      setSaved(true);
+    } catch (error) {
+      setFormError(error?.message || 'Не удалось сохранить подключение. Проверьте Client ID и ключ, затем повторите.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="marketplace-settings-card" data-testid="ozon-connection-settings">
+      <div className="marketplace-settings-heading">
+        <div>
+          <h3>Подключение Ozon</h3>
+          <p>Ключ нужен только для чтения начислений, товаров и финансовых деталей.</p>
+        </div>
+        <span className={`tag ${connection?.configured ? 'tag-marketplace-connected' : 'tag-gray'}`} data-testid="ozon-connection-status">
+          {loading ? 'Проверяем…' : connection?.configured ? 'Подключён' : 'Не подключён'}
+        </span>
+      </div>
+
+      {loadError && <div className="marketplace-notice marketplace-notice-error" role="alert">{loadError}</div>}
+      {connection?.status === 'error' && connection?.error && (
+        <div className="marketplace-notice marketplace-notice-error" role="alert">Ошибка подключения: {connection.error}</div>
+      )}
+
+      {canManage ? (
+        <form className="marketplace-connection-form" onSubmit={save}>
+          <label>
+            <span>Client ID</span>
+            <input
+              autoComplete="off"
+              value={clientId}
+              onChange={(event) => { setClientId(event.target.value); setSaved(false); setFormError(''); }}
+              disabled={loading || saving}
+              placeholder="Client ID продавца"
+              data-testid="ozon-client-id"
+            />
+          </label>
+          <label>
+            <span>API-ключ</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={apiKey}
+              onChange={(event) => { setApiKey(event.target.value); setSaved(false); setFormError(''); }}
+              disabled={loading || saving}
+              placeholder={connection?.configured ? 'Введите новый ключ для замены' : 'Вставьте API-ключ'}
+              data-testid="ozon-api-key"
+            />
+          </label>
+          <div className="marketplace-connection-actions">
+            <button className="btn-primary" type="submit" disabled={loading || saving || !isDirty || !clientId.trim() || !apiKey.trim()} data-testid="ozon-connection-save">
+              {saving ? 'Сохраняем…' : 'Сохранить подключение'}
+            </button>
+            <button className="btn-outline" type="button" disabled={saving || !isDirty} onClick={resetForm}>Сбросить</button>
+          </div>
+          <div className="marketplace-settings-note">API-ключ не сохраняется в браузере и очищается из формы после отправки.</div>
+        </form>
+      ) : (
+        <div className="marketplace-settings-readonly" data-testid="ozon-connection-viewer-readonly">
+          {activeStore?.owner_email ? `Магазин ${activeStore.owner_email}.` : 'Подключением может управлять только владелец магазина.'}
+          {' '}Доступ для просмотра: {connection?.configured ? 'подключён' : 'не подключён'}.
+        </div>
+      )}
+      {formError && <div className="marketplace-notice marketplace-notice-error" role="alert" data-testid="ozon-connection-form-error">{formError}</div>}
+      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-connection-saved">Подключение сохранено. API-ключ очищен из формы.</div>}
+    </section>
   );
 }
 
