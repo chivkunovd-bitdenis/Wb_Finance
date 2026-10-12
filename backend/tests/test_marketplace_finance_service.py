@@ -6,10 +6,11 @@ from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.crypto import encrypt_text
+from app.models.base import Base
 from app.models.article import Article
 from app.models.ozon import (
     OzonAccrualSnapshot,
@@ -79,6 +80,42 @@ def _day_values(**overrides):
     }
     values.update(overrides)
     return values
+
+
+@pytest.fixture
+def committed_cost_db_session(real_db_session):
+    """Use a committed private schema so independent PostgreSQL lock sessions see its tables."""
+    source_engine = real_db_session.get_bind().engine
+    schema_name = f"ozon_cost_test_{uuid4().hex}"
+    setup_engine = create_engine(source_engine.url, pool_pre_ping=True)
+    isolated_engine = None
+    try:
+        with setup_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+            connection.execute(text(f'SET search_path TO "{schema_name}"'))
+            Base.metadata.create_all(bind=connection)
+
+        isolated_engine = create_engine(
+            source_engine.url,
+            connect_args={"options": f"-c search_path={schema_name}"},
+            pool_pre_ping=True,
+        )
+        with isolated_engine.connect() as connection:
+            assert connection.execute(text("SHOW search_path")).scalar() == schema_name
+            assert connection.execute(text("SELECT current_schema()")).scalar() == schema_name
+            assert connection.execute(text("SELECT to_regclass('users') IS NOT NULL")).scalar() is True
+        session = sessionmaker(autocommit=False, autoflush=False, bind=isolated_engine)()
+        try:
+            yield session
+        finally:
+            session.rollback()
+            session.close()
+    finally:
+        if isolated_engine is not None:
+            isolated_engine.dispose()
+        with setup_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+        setup_engine.dispose()
 
 
 def test_ozon_overview_reads_only_saved_day_and_keeps_unknowns(real_db_session, monkeypatch):
@@ -732,8 +769,8 @@ def test_real_posting_cost_entry_recomputes_margin_and_clear_restores_unknown_wi
     assert (other_wb_after.cogs, other_wb_after.tax, other_wb_after.operation_expenses, other_wb_after.margin) == other_wb_values
 
 
-def test_cost_and_saved_ledger_rollback_together_when_recalculation_fails(real_db_session, monkeypatch):
-    db = sessionmaker(bind=real_db_session.get_bind().engine, autoflush=False)()
+def test_cost_and_saved_ledger_rollback_together_when_recalculation_fails(committed_cost_db_session, monkeypatch):
+    db = committed_cost_db_session
     owner = _user("marketplace-cost-atomic-failure@example.com")
     owner_id = str(owner.id)
     day = date(2026, 10, 5)
@@ -822,13 +859,10 @@ def test_cost_and_saved_ledger_rollback_together_when_recalculation_fails(real_d
         assert snapshot.raw_payload == raw_payload
     finally:
         db.rollback()
-        db.query(User).filter(User.id == owner_id).delete(synchronize_session=False)
-        db.commit()
-        db.close()
 
 
-def test_cost_change_is_blocked_by_active_sync_or_held_owner_lock(real_db_session):
-    db = sessionmaker(bind=real_db_session.get_bind().engine, autoflush=False)()
+def test_cost_change_is_blocked_by_active_sync_or_held_owner_lock(committed_cost_db_session):
+    db = committed_cost_db_session
     owner = _user("marketplace-cost-sync-conflict@example.com")
     owner_id = str(owner.id)
     day = date(2026, 10, 4)
@@ -902,9 +936,6 @@ def test_cost_change_is_blocked_by_active_sync_or_held_owner_lock(real_db_sessio
         assert state.products_data == saved_products
     finally:
         db.rollback()
-        db.query(User).filter(User.id == owner_id).delete(synchronize_session=False)
-        db.commit()
-        db.close()
 
 
 def test_sync_persists_raw_accrual_types_normalized_day_and_catalogue(real_db_session, monkeypatch):
