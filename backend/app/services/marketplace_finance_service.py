@@ -374,29 +374,54 @@ def set_product_cost(*, db: Session, user_id: str, sku: str, cost_price: Decimal
     clean_sku = (sku or "").strip()
     if not clean_sku or len(clean_sku) > 64:
         raise MarketplaceFinanceError("sku must contain 1 to 64 characters")
-    row = (
-        db.query(OzonProductCost)
-        .filter(OzonProductCost.user_id == user_id, OzonProductCost.sku == clean_sku)
-        .first()
-    )
-    if cost_price is None:
-        if row is not None:
-            db.delete(row)
-    else:
-        try:
-            amount = Decimal(cost_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        except (InvalidOperation, ValueError, TypeError) as exc:
-            raise MarketplaceFinanceError("Себестоимость должна быть конечным числом") from exc
-        if not amount.is_finite() or amount < 0 or amount > Decimal("999999999999.99"):
-            raise MarketplaceFinanceError("Себестоимость должна быть от 0 до 999999999999.99 руб.")
-        if row is None:
-            row = OzonProductCost(user_id=user_id, sku=clean_sku, cost_price=amount)
+    lock = _acquire_owner_lock(db, user_id)
+    if lock is None:
+        raise MarketplaceFinanceError("Синхронизация уже ожидает запуска или выполняется; повторите после её завершения")
+    try:
+        canonical_amount: Decimal | None = None
+        active_run = (
+            db.query(OzonSyncRun)
+            .filter(OzonSyncRun.user_id == user_id, OzonSyncRun.status.in_(('queued', 'running')))
+            .first()
+        )
+        if active_run is not None:
+            raise MarketplaceFinanceError(
+                "Синхронизация уже ожидает запуска или выполняется; повторите после её завершения"
+            )
+
+        row = (
+            db.query(OzonProductCost)
+            .filter(OzonProductCost.user_id == user_id, OzonProductCost.sku == clean_sku)
+            .first()
+        )
+        if cost_price is None:
+            if row is not None:
+                db.delete(row)
         else:
-            row.cost_price = amount
-        db.add(row)
-    db.commit()
-    recompute_saved_ozon_costs(db=db, user_id=user_id)
-    return get_product_cost(db=db, user_id=user_id, sku=clean_sku)
+            try:
+                amount = Decimal(cost_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            except (InvalidOperation, ValueError, TypeError) as exc:
+                raise MarketplaceFinanceError("Себестоимость должна быть конечным числом") from exc
+            if not amount.is_finite() or amount < 0 or amount > Decimal("999999999999.99"):
+                raise MarketplaceFinanceError("Себестоимость должна быть от 0 до 999999999999.99 руб.")
+            canonical_amount = amount
+            if row is None:
+                row = OzonProductCost(user_id=user_id, sku=clean_sku, cost_price=amount)
+            else:
+                row.cost_price = amount
+            db.add(row)
+
+        # The ORM session disables autoflush. Persist the staged cost change to the
+        # transaction so the replay sees it, but keep it uncommitted with the snapshots.
+        db.flush()
+        recompute_saved_ozon_costs(db=db, user_id=user_id)
+        db.commit()
+        return canonical_amount
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        _release_owner_lock(lock, user_id)
 
 
 def get_marketplace_settings(*, db: Session, user_id: str) -> dict[str, Any]:
@@ -512,10 +537,14 @@ def recompute_saved_ozon_costs(*, db: Session, user_id: str) -> int:
             for product in _normalizer_products_for_day(normalized, state.day)
         ]
         existing_warnings = state.warnings if isinstance(state.warnings, list) else []
-        state.warnings = list(dict.fromkeys([*existing_warnings, *(normalized.get("warnings") or [])]))
+        stale_cost_warning = (
+            f"{state.day}: себестоимость неизвестна из-за неполного количества, возврата или отсутствующей себестоимости"
+        )
+        current_warnings = [warning for warning in existing_warnings if warning != stale_cost_warning]
+        state.warnings = list(dict.fromkeys([*current_warnings, *(normalized.get("warnings") or [])]))
         db.add(state)
         changed += 1
-    db.commit()
+    db.flush()
     return changed
 
 
