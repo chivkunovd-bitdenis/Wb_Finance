@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
 
 from app.core.crypto import encrypt_text
 from app.models.article import Article
@@ -26,14 +27,17 @@ from app.services.marketplace_finance_service import (
     MarketplaceFinanceError,
     _dedupe_accruals,
     _lock_key,
+    _replace_complete_day,
     build_overview,
     enqueue_sync,
+    get_product_cost,
     get_marketplace_settings,
     run_sync_run,
     set_ozon_operational_expense,
     set_product_cost,
     update_marketplace_settings,
 )
+from app.services.ozon_finance import normalize_accruals
 
 
 def _user(email: str, *, wb_api_key: str | None = None) -> User:
@@ -514,6 +518,393 @@ def test_cost_update_recomputes_saved_ledger_without_network(real_db_session, mo
     assert state.daily_data["cogs"] is None
     assert seen_costs == [{"7010": Decimal("12.34")}]
     assert state.accrual_types == [{"id": 1, "name": "sale"}]
+
+
+def test_real_posting_cost_entry_recomputes_margin_and_clear_restores_unknown_without_provider_calls(
+    real_db_session, monkeypatch
+):
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    owner = _user("marketplace-real-cost-recompute@example.com", wb_api_key="present")
+    other_owner = _user("marketplace-real-cost-other-owner@example.com")
+    owner_id = str(owner.id)
+    other_owner_id = str(other_owner.id)
+    day = date(2026, 10, 6)
+    real_db_session.add_all([owner, other_owner])
+    real_db_session.commit()
+
+    unrelated_warning = "Не удалось обновить каталог товаров; сохранены последние названия."
+    other_daily = _day_values(
+        revenue="55.00",
+        cogs="7.00",
+        margin="30.00",
+        marketplace_net="45.00",
+        reconciliation_difference="0.00",
+        accrual_classification_complete=True,
+        sku_allocation_complete=True,
+        profitability_complete=True,
+    )
+    other_products = [{"sku": "7010", "revenue": "55.00", "cogs": "7.00", "margin": "30.00"}]
+    real_db_session.add_all(
+        [
+            _connection(owner_id),
+            _connection(other_owner_id),
+            OzonFinanceSettings(user_id=owner_id, operation_expenses_confirmed=True),
+            OzonFinanceSettings(user_id=other_owner_id, operation_expenses_confirmed=True),
+            OzonOperationalExpense(user_id=owner_id, date=day, amount=Decimal("3.00")),
+            OzonOperationalExpense(user_id=other_owner_id, date=day, amount=Decimal("4.00")),
+            OzonProductCost(user_id=other_owner_id, sku="7010", cost_price=Decimal("7.00")),
+            OzonSyncDay(
+                user_id=owner_id,
+                day=day,
+                status="complete",
+                source_count=1,
+                daily_data=_day_values(),
+                products_data=[{"sku": "7010", "cogs": None}],
+                accrual_types=[],
+            ),
+            OzonSyncDay(
+                user_id=other_owner_id,
+                day=day,
+                status="complete",
+                source_count=0,
+                daily_data=other_daily,
+                products_data=other_products,
+                accrual_types=[],
+                warnings=["чужой снимок"],
+            ),
+            PnlDaily(
+                user_id=owner_id,
+                date=day,
+                revenue=Decimal("90.00"),
+                commission=Decimal("9.00"),
+                logistics=Decimal("2.00"),
+                penalties=0,
+                storage=0,
+                ads_spend=0,
+                cogs=Decimal("30.00"),
+                tax=Decimal("5.40"),
+                operation_expenses=Decimal("2.00"),
+                margin=Decimal("41.60"),
+            ),
+            PnlDaily(
+                user_id=other_owner_id,
+                date=day,
+                revenue=Decimal("70.00"),
+                commission=Decimal("7.00"),
+                logistics=Decimal("2.00"),
+                penalties=0,
+                storage=0,
+                ads_spend=0,
+                cogs=Decimal("20.00"),
+                tax=Decimal("4.20"),
+                operation_expenses=Decimal("1.00"),
+                margin=Decimal("35.80"),
+            ),
+        ]
+    )
+    real_db_session.commit()
+
+    raw = {
+        "accrual_id": "cost-recompute-posting-1",
+        "date": day.isoformat(),
+        "unit_number": "posting-cost-recompute-1",
+        "accrued_category": "POSTING",
+        "total_amount": {"amount": "81.00", "currency": "RUB"},
+        "posting": {
+            "products": [
+                {
+                    "sku": "7010",
+                    "quantity": 1,
+                    "commission": {
+                        "sale_amount": {"amount": "100.00", "currency": "RUB"},
+                        "commission": {"amount": "-15.00", "currency": "RUB"},
+                        "sale_commission": {"amount": "-17.00", "currency": "RUB"},
+                        "bonus": {"amount": "-2.00", "currency": "RUB"},
+                        "coinvestment": {"amount": "-3.00", "currency": "RUB"},
+                        "sale_price": {"amount": "120.00", "currency": "RUB"},
+                        "seller_price": {"amount": "100.00", "currency": "RUB"},
+                    },
+                    "delivery": {
+                        "total_accrued": {"amount": "-4.00", "currency": "RUB"},
+                        "services": [{"type_id": 501, "accrued": {"amount": "-4.00", "currency": "RUB"}}],
+                    },
+                }
+            ]
+        },
+    }
+    normalized = normalize_accruals([raw], [], costs={})
+    normalized["accrual_types"] = []
+    _replace_complete_day(
+        real_db_session,
+        user_id=owner_id,
+        day=day,
+        accruals=[raw],
+        normalized=normalized,
+        catalogue=[{"sku": "7010", "offer_id": "offer-7010", "name": "Test product"}],
+        warnings=[*normalized["warnings"], unrelated_warning],
+    )
+
+    state = real_db_session.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+    cost_warning = f"{day}: себестоимость неизвестна из-за неполного количества, возврата или отсутствующей себестоимости"
+    assert state.daily_data["cogs"] is None
+    assert cost_warning in state.warnings
+    other_state = real_db_session.query(OzonSyncDay).filter_by(user_id=other_owner_id, day=day).one()
+    other_snapshot_before = (dict(other_state.daily_data), list(other_state.products_data), list(other_state.warnings))
+    owner_wb_before = real_db_session.query(PnlDaily).filter_by(user_id=owner_id, date=day).one()
+    owner_wb_values = (owner_wb_before.cogs, owner_wb_before.tax, owner_wb_before.operation_expenses, owner_wb_before.margin)
+    other_wb_before = real_db_session.query(PnlDaily).filter_by(user_id=other_owner_id, date=day).one()
+    other_wb_values = (other_wb_before.cogs, other_wb_before.tax, other_wb_before.operation_expenses, other_wb_before.margin)
+
+    class UnexpectedProviderCall:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("Cost recomputation must not call the Ozon API")
+
+    monkeypatch.setattr("app.services.ozon_client.OzonClient", UnexpectedProviderCall)
+
+    initial = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert initial["daily"][0]["cogs"] is None
+    assert initial["daily"][0]["margin"] is None
+
+    with monkeypatch.context() as no_post_commit_read:
+        no_post_commit_read.setattr(
+            "app.services.marketplace_finance_service.get_product_cost",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("Cost response must not query after commit")),
+        )
+        saved_cost = set_product_cost(
+            db=real_db_session,
+            user_id=owner_id,
+            sku="7010",
+            cost_price=Decimal("20.00"),
+        )
+    assert saved_cost == Decimal("20.00")
+    real_db_session.expire_all()
+    state = real_db_session.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+    assert state.daily_data["cogs"] == "20.00"
+    assert cost_warning not in state.warnings
+    assert unrelated_warning in state.warnings
+
+    after_entry = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert after_entry["daily"][0]["cogs"] == 20.0
+    assert after_entry["daily"][0]["tax"] == 6.0
+    assert after_entry["daily"][0]["operation_expenses"] == 3.0
+    assert after_entry["daily"][0]["margin"] == 52.0
+    product = next(row for row in after_entry["products"] if row["sku"] == "7010")
+    assert product["daily"][0]["cogs"] == 20.0
+    assert product["daily"][0]["margin"] == 55.0
+
+    set_product_cost(db=real_db_session, user_id=owner_id, sku="7010", cost_price=None)
+    real_db_session.expire_all()
+    state = real_db_session.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+    assert state.daily_data["cogs"] is None
+    assert cost_warning in state.warnings
+    assert unrelated_warning in state.warnings
+    cleared = build_overview(
+        db=real_db_session,
+        store_owner=owner,
+        marketplace="ozon",
+        date_from=day,
+        date_to=day,
+    )
+    assert cleared["daily"][0]["margin"] is None
+    cleared_product = next(row for row in cleared["products"] if row["sku"] == "7010")
+    assert cleared_product["daily"][0]["cogs"] is None
+    assert cleared_product["daily"][0]["margin"] is None
+
+    real_db_session.expire_all()
+    other_state = real_db_session.query(OzonSyncDay).filter_by(user_id=other_owner_id, day=day).one()
+    assert (dict(other_state.daily_data), list(other_state.products_data), list(other_state.warnings)) == other_snapshot_before
+    assert get_product_cost(db=real_db_session, user_id=other_owner_id, sku="7010") == Decimal("7.00")
+    owner_wb_after = real_db_session.query(PnlDaily).filter_by(user_id=owner_id, date=day).one()
+    assert (owner_wb_after.cogs, owner_wb_after.tax, owner_wb_after.operation_expenses, owner_wb_after.margin) == owner_wb_values
+    other_wb_after = real_db_session.query(PnlDaily).filter_by(user_id=other_owner_id, date=day).one()
+    assert (other_wb_after.cogs, other_wb_after.tax, other_wb_after.operation_expenses, other_wb_after.margin) == other_wb_values
+
+
+def test_cost_and_saved_ledger_rollback_together_when_recalculation_fails(real_db_session, monkeypatch):
+    db = sessionmaker(bind=real_db_session.get_bind().engine, autoflush=False)()
+    owner = _user("marketplace-cost-atomic-failure@example.com")
+    owner_id = str(owner.id)
+    day = date(2026, 10, 5)
+    saved_daily = _day_values(
+        cogs="8.00",
+        margin="50.00",
+        accrual_classification_complete=True,
+        sku_allocation_complete=True,
+        profitability_complete=True,
+        sold_quantity="1",
+        returned_quantity="0",
+        net_quantity="1",
+    )
+    saved_products = [{"sku": "7010", "cogs": "8.00", "margin": "50.00"}]
+    saved_warnings = ["Сохранённое предупреждение"]
+    raw_payload = {
+        "accrual_id": "atomic-cost-source",
+        "date": day.isoformat(),
+        "accrued_category": "POSTING",
+        "total_amount": {"amount": "85.00", "currency": "RUB"},
+    }
+    db.add(owner)
+    db.commit()
+    db.add_all(
+        [
+            OzonProductCost(user_id=owner_id, sku="7010", cost_price=Decimal("8.00")),
+            OzonSyncDay(
+                user_id=owner_id,
+                day=day,
+                status="complete",
+                source_count=1,
+                daily_data=saved_daily,
+                products_data=saved_products,
+                accrual_types=[],
+                warnings=saved_warnings,
+            ),
+            OzonAccrualSnapshot(
+                user_id=owner_id,
+                accrual_id="atomic-cost-source",
+                accrual_date=day,
+                category="POSTING",
+                currency="RUB",
+                raw_payload=raw_payload,
+            ),
+        ]
+    )
+    db.commit()
+
+    def normalized_with_updated_daily(*args, **kwargs):
+        return {
+            "daily": [
+                {
+                    **_day_values(cogs="20.00", margin="38.00"),
+                    "date": day.isoformat(),
+                    "accrual_classification_complete": True,
+                    "sku_allocation_complete": True,
+                    "profitability_complete": True,
+                    "sold_quantity": Decimal("1"),
+                    "returned_quantity": Decimal("0"),
+                    "net_quantity": Decimal("1"),
+                }
+            ],
+            "products": [],
+            "warnings": [],
+        }
+
+    def fail_after_daily_is_staged(*args, **kwargs):
+        raise RuntimeError("simulated product serialization failure")
+
+    monkeypatch.setattr("app.services.ozon_finance.normalize_accruals", normalized_with_updated_daily)
+    monkeypatch.setattr(
+        "app.services.marketplace_finance_service._normalizer_products_for_day",
+        fail_after_daily_is_staged,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="simulated product serialization failure"):
+            set_product_cost(db=db, user_id=owner_id, sku="7010", cost_price=Decimal("20.00"))
+
+        db.expire_all()
+        state = db.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+        snapshot = db.query(OzonAccrualSnapshot).filter_by(user_id=owner_id, accrual_id="atomic-cost-source").one()
+        assert get_product_cost(db=db, user_id=owner_id, sku="7010") == Decimal("8.00")
+        assert state.daily_data == saved_daily
+        assert state.products_data == saved_products
+        assert state.warnings == saved_warnings
+        assert snapshot.raw_payload == raw_payload
+    finally:
+        db.rollback()
+        db.query(User).filter(User.id == owner_id).delete(synchronize_session=False)
+        db.commit()
+        db.close()
+
+
+def test_cost_change_is_blocked_by_active_sync_or_held_owner_lock(real_db_session):
+    db = sessionmaker(bind=real_db_session.get_bind().engine, autoflush=False)()
+    owner = _user("marketplace-cost-sync-conflict@example.com")
+    owner_id = str(owner.id)
+    day = date(2026, 10, 4)
+    saved_daily = _day_values(cogs="8.00", margin="50.00")
+    saved_products = [{"sku": "7010", "cogs": "8.00", "margin": "50.00"}]
+    raw_payload = {
+        "accrual_id": "sync-conflict-source",
+        "date": day.isoformat(),
+        "accrued_category": "POSTING",
+        "total_amount": {"amount": "85.00", "currency": "RUB"},
+    }
+    db.add(owner)
+    db.commit()
+    run = OzonSyncRun(user_id=owner_id, date_from=day, date_to=day, status="queued", progress=0)
+    db.add_all(
+        [
+            run,
+            OzonProductCost(user_id=owner_id, sku="7010", cost_price=Decimal("8.00")),
+            OzonSyncDay(
+                user_id=owner_id,
+                day=day,
+                status="complete",
+                source_count=1,
+                daily_data=saved_daily,
+                products_data=saved_products,
+                accrual_types=[],
+                warnings=["saved warning"],
+            ),
+            OzonAccrualSnapshot(
+                user_id=owner_id,
+                accrual_id="sync-conflict-source",
+                accrual_date=day,
+                category="POSTING",
+                currency="RUB",
+                raw_payload=raw_payload,
+            ),
+        ]
+    )
+    db.commit()
+
+    expected_conflict = "Синхронизация уже ожидает запуска или выполняется"
+    try:
+        with pytest.raises(MarketplaceFinanceError, match=expected_conflict):
+            set_product_cost(db=db, user_id=owner_id, sku="7010", cost_price=Decimal("20.00"))
+
+        db.expire_all()
+        assert get_product_cost(db=db, user_id=owner_id, sku="7010") == Decimal("8.00")
+        state = db.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+        assert state.daily_data == saved_daily
+        assert state.products_data == saved_products
+        snapshot = db.query(OzonAccrualSnapshot).filter_by(user_id=owner_id, accrual_id="sync-conflict-source").one()
+        assert snapshot.raw_payload == raw_payload
+
+        run.status = "complete"
+        db.commit()
+        lock_connection = db.get_bind().connect()
+        try:
+            lock_connection.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": _lock_key(owner_id)})
+            lock_connection.commit()
+            with pytest.raises(MarketplaceFinanceError, match=expected_conflict):
+                set_product_cost(db=db, user_id=owner_id, sku="7010", cost_price=Decimal("20.00"))
+        finally:
+            lock_connection.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": _lock_key(owner_id)})
+            lock_connection.commit()
+            lock_connection.close()
+
+        db.expire_all()
+        assert get_product_cost(db=db, user_id=owner_id, sku="7010") == Decimal("8.00")
+        state = db.query(OzonSyncDay).filter_by(user_id=owner_id, day=day).one()
+        assert state.daily_data == saved_daily
+        assert state.products_data == saved_products
+    finally:
+        db.rollback()
+        db.query(User).filter(User.id == owner_id).delete(synchronize_session=False)
+        db.commit()
+        db.close()
 
 
 def test_sync_persists_raw_accrual_types_normalized_day_and_catalogue(real_db_session, monkeypatch):

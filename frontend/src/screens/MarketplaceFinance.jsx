@@ -1,5 +1,5 @@
 /* eslint react-hooks/set-state-in-effect: off -- marketplace state resets when owner, selection, or returned products change. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 import KpiCard from '../components/KpiCard';
@@ -42,6 +42,8 @@ const DAILY_COLUMNS = [
   ['unallocated_amount', 'Без товара'],
   ['reconciliation_difference', 'Расхождение'],
 ];
+
+const activeMarketplaceFinanceContext = { current: null };
 
 function isAmount(value) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
@@ -438,12 +440,16 @@ function ProductDailyDetails({ product, currency, incomplete, warnings }) {
   );
 }
 
-function ProductsTable({ products, currency, incomplete, warnings = [], showCosts = false, editableCosts = false, marketplace = 'ozon' }) {
+function ProductsTable({ products, currency, incomplete, warnings = [], showCosts = false, editableCosts = false, marketplace = 'ozon', stateKey = '', onCostSaved }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [drafts, setDrafts] = useState({});
+  const [savedCostOverrides, setSavedCostOverrides] = useState({});
   const [savingKey, setSavingKey] = useState('');
+  const [recalculatingKey, setRecalculatingKey] = useState('');
   const [saveErrors, setSaveErrors] = useState({});
   const [saveMessages, setSaveMessages] = useState({});
+  const [refreshErrors, setRefreshErrors] = useState({});
+  const isCurrentContext = () => activeMarketplaceFinanceContext.current === stateKey;
   const productsWithTotals = useMemo(() => (Array.isArray(products) ? products : []).map((product) => ({
     ...product,
     identity: `${String(product.marketplace || 'unknown')}:${String(product.sku)}`,
@@ -459,9 +465,13 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
   useEffect(() => {
     setExpanded(new Set());
     setDrafts({});
+    setSavedCostOverrides({});
+    setSavingKey('');
+    setRecalculatingKey('');
     setSaveErrors({});
     setSaveMessages({});
-  }, [products]);
+    setRefreshErrors({});
+  }, [stateKey]);
 
   const toggle = (identity) => {
     setExpanded((prev) => {
@@ -474,7 +484,40 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
 
   const setDraft = (identity, value) => setDrafts((prev) => ({ ...prev, [identity]: value }));
 
+  const refreshSavedCost = async (product) => {
+    if (!isCurrentContext()) return false;
+    setRecalculatingKey(product.identity);
+    try {
+      const refreshed = await onCostSaved?.();
+      if (!isCurrentContext()) return false;
+      if (refreshed === false) {
+        setRefreshErrors((prev) => ({
+          ...prev,
+          [product.identity]: 'Себестоимость уже сохранена, но новые суммы пока не загрузились.',
+        }));
+        return false;
+      }
+      setSavedCostOverrides((prev) => {
+        const next = { ...prev };
+        delete next[product.identity];
+        return next;
+      });
+      setRefreshErrors((prev) => ({ ...prev, [product.identity]: '' }));
+      return true;
+    } catch {
+      if (!isCurrentContext()) return false;
+      setRefreshErrors((prev) => ({
+        ...prev,
+        [product.identity]: 'Себестоимость уже сохранена, но новые суммы пока не загрузились.',
+      }));
+      return false;
+    } finally {
+      if (isCurrentContext()) setRecalculatingKey('');
+    }
+  };
+
   const saveCost = async (product) => {
+    if (!isCurrentContext()) return;
     const valueText = String(drafts[product.identity] ?? (product.cost_price == null ? '' : product.cost_price)).trim();
     const parsed = valueText === '' ? null : Number(valueText.replace(',', '.'));
     if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) {
@@ -483,20 +526,27 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
     }
     setSavingKey(product.identity);
     setSaveErrors((prev) => ({ ...prev, [product.identity]: '' }));
+    setRefreshErrors((prev) => ({ ...prev, [product.identity]: '' }));
     try {
       const result = await api.saveMarketplaceProductCost(product.sku, parsed);
-      product.cost_price = parsed;
+      if (!isCurrentContext()) return;
+      const savedCostPrice = result && Object.prototype.hasOwnProperty.call(result, 'cost_price')
+        ? result.cost_price
+        : parsed;
+      setSavedCostOverrides((prev) => ({ ...prev, [product.identity]: savedCostPrice }));
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[product.identity];
         return next;
       });
       setSaveMessages((prev) => ({ ...prev, [product.identity]: result?.message || 'Себестоимость сохранена.' }));
+      await refreshSavedCost(product);
     } catch (error) {
+      if (!isCurrentContext()) return;
       setSaveErrors((prev) => ({ ...prev, [product.identity]: error?.message || 'Не удалось сохранить себестоимость.' }));
       setSaveMessages((prev) => ({ ...prev, [product.identity]: '' }));
     } finally {
-      setSavingKey('');
+      if (isCurrentContext()) setSavingKey('');
     }
   };
 
@@ -528,11 +578,16 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
               expanded={expanded.has(product.identity)}
               onToggle={() => toggle(product.identity)}
               draft={drafts[product.identity]}
+              savedCostPrice={savedCostOverrides[product.identity]}
               onDraft={(value) => setDraft(product.identity, value)}
               onSave={() => saveCost(product)}
+              onRetryRecalculation={() => refreshSavedCost(product)}
               saving={savingKey === product.identity}
+              anySaving={Boolean(savingKey)}
+              recalculating={recalculatingKey === product.identity}
               error={saveErrors[product.identity]}
               success={saveMessages[product.identity]}
+              refreshError={refreshErrors[product.identity]}
               incomplete={incomplete}
               warnings={warnings}
             />
@@ -544,9 +599,10 @@ function ProductsTable({ products, currency, incomplete, warnings = [], showCost
   );
 }
 
-function ProductRow({ product, currency, showCosts, editableCosts, expanded, onToggle, draft, onDraft, onSave, saving, error, success, incomplete, warnings }) {
-  const value = (draft === undefined) ? (product.cost_price == null ? '' : String(product.cost_price)) : draft;
-  const current = product.cost_price == null ? '' : String(product.cost_price);
+function ProductRow({ product, currency, showCosts, editableCosts, expanded, onToggle, draft, savedCostPrice, onDraft, onSave, onRetryRecalculation, saving, anySaving, recalculating, error, success, refreshError, incomplete, warnings }) {
+  const currentCostPrice = savedCostPrice === undefined ? product.cost_price : savedCostPrice;
+  const value = (draft === undefined) ? (currentCostPrice == null ? '' : String(currentCostPrice)) : draft;
+  const current = currentCostPrice == null ? '' : String(currentCostPrice);
   const dirty = value !== current;
   const colspan = showCosts ? 11 : 10;
   return (
@@ -573,14 +629,20 @@ function ProductRow({ product, currency, showCosts, editableCosts, expanded, onT
                   inputMode="decimal"
                   placeholder="Не задана"
                   value={value}
+                  disabled={saving}
                   onChange={(event) => onDraft(event.target.value)}
                   data-testid={`marketplace-cost-input-${product.identity}`}
                 />
-                <button className="btn-outline" disabled={saving || !dirty} onClick={onSave}>
+                <button className="btn-outline" disabled={anySaving || !dirty} onClick={onSave}>
                   {saving ? 'Сохраняем…' : 'Сохранить'}
                 </button>
                 {error && <span className="marketplace-cost-error" role="alert">{error}</span>}
                 {success && <span className="marketplace-cost-success" role="status">{success}</span>}
+                {refreshError && (
+                  <span className="marketplace-cost-error" role="alert">
+                    {refreshError} <button className="btn-outline" disabled={recalculating} onClick={onRetryRecalculation}>{recalculating ? 'Обновляем…' : 'Повторить обновление'}</button>
+                  </span>
+                )}
               </div>
             ) : <MoneyValue value={product.cost_price} currency={currency} />}
           </td>
@@ -607,13 +669,41 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
   const [syncMessage, setSyncMessage] = useState('');
   const requestGeneration = useRef(0);
 
+  const dateFrom = range?.dateFrom;
+  const dateTo = range?.dateTo;
   const requestKey = `${activeStoreOwnerId}|${marketplace}|${range?.dateFrom}|${range?.dateTo}`;
+  const stateKey = `${requestKey}|${view}`;
+  useLayoutEffect(() => {
+    activeMarketplaceFinanceContext.current = stateKey;
+    return () => {
+      if (activeMarketplaceFinanceContext.current === stateKey) activeMarketplaceFinanceContext.current = null;
+    };
+  }, [stateKey]);
   const incomplete = showPartialReason(data);
   const totals = useMemo(() => aggregateRows(data?.daily, incomplete, true, marketplace), [data?.daily, incomplete, marketplace]);
   const daily = Array.isArray(data?.daily) ? data.daily : [];
   const products = Array.isArray(data?.products) ? data.products : [];
   const warnings = useMemo(() => [...(Array.isArray(data?.warnings) ? data.warnings : []), ...qualityWarnings(data)], [data]);
   const refresh = useCallback(() => setReloadVersion((current) => current + 1), []);
+  const refreshAfterCostSave = useCallback(async () => {
+    if (!dateFrom || !dateTo || activeMarketplaceFinanceContext.current !== stateKey) return false;
+    const generation = ++requestGeneration.current;
+    const controller = new AbortController();
+    try {
+      const updated = await api.getMarketplaceFinance(marketplace, dateFrom, dateTo, { signal: controller.signal });
+      if (generation !== requestGeneration.current || activeMarketplaceFinanceContext.current !== stateKey) return false;
+      setData(updated);
+      setError('');
+      return true;
+    } catch {
+      if (generation !== requestGeneration.current || controller.signal.aborted || activeMarketplaceFinanceContext.current !== stateKey) return false;
+      return false;
+    } finally {
+      if (generation === requestGeneration.current && activeMarketplaceFinanceContext.current === stateKey) setLoading(false);
+    }
+  // Keep owner changes explicit here; stateKey is also owner-scoped but this callback refreshes owner data.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStoreOwnerId, marketplace, dateFrom, dateTo, stateKey]);
 
   useEffect(() => {
     if (!range?.dateFrom || !range?.dateTo) return undefined;
@@ -678,6 +768,7 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
   const title = marketplace === 'all' ? `Все маркетплейсы · ${viewLabel}` : `Ozon · ${viewLabel}`;
   const showCostField = view === 'costs';
   const editableCosts = showCostField && marketplace === 'ozon' && canManage;
+  const productsStateKey = stateKey;
 
   const saveOperatingExpense = async (date, amount) => {
     await api.saveMarketplaceDailyExpense(date, amount);
@@ -749,18 +840,18 @@ function MarketplaceFinance({ view, marketplace, range, refreshTrigger }) {
           )}
           {daily.length > 0 || data?.coverage?.complete ? <MetricSummary totals={totals} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} /> : null}
           <DailyTable rows={daily} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />
-          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />
+          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} stateKey={productsStateKey} />
         </>
       )}
 
-      {view === 'articles' && <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} />}
+      {view === 'articles' && <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} marketplace={marketplace} stateKey={productsStateKey} />}
 
       {view === 'costs' && (
         <>
           {!canManage && <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-viewer-readonly">Себестоимость доступна для просмотра. Изменять её может владелец магазина.</div>}
           {marketplace === 'all' && <div className="marketplace-notice marketplace-notice-info">В общем режиме себестоимость показана для просмотра. Чтобы изменить цену товара Ozon, выберите Ozon отдельно.</div>}
           {marketplace === 'ozon' && <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-history-warning">Сохранённая себестоимость применяется ко всем датам. Если изменить цену товара, расчётная прибыль пересчитается за всю историю, а не только за выбранный период.</div>}
-          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} showCosts editableCosts={editableCosts} marketplace={marketplace} />
+          <ProductsTable products={products} currency={currency} incomplete={incomplete} warnings={warnings} showCosts editableCosts={editableCosts} marketplace={marketplace} stateKey={productsStateKey} onCostSaved={refreshAfterCostSave} />
         </>
       )}
       {view === 'expenses' && (

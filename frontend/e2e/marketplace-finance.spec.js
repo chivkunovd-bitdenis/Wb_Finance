@@ -34,29 +34,35 @@ function emptyDaily(date = '2026-10-10', overrides = {}) {
 
 function makeOverview(marketplace, options = {}) {
   const ozonOpex = options.expenseAmounts?.['2026-10-10'] ?? null;
+  const costPrice = Object.hasOwn(options, 'costPrice') ? options.costPrice : 4;
+  const soldQuantity = options.soldQuantity ?? 5;
+  const ozonCogs = options.unknownCogs || options.unknownQuantity || costPrice == null ? null : Number(costPrice) * soldQuantity;
+  const ozonProductMargin = ozonCogs == null ? null : 85 - ozonCogs - 6;
+  const opexKnown = ozonOpex != null || options.opexConfirmed;
+  const ozonMargin = ozonProductMargin == null || !opexKnown ? null : ozonProductMargin - (ozonOpex ?? 0);
   const ozonRow = emptyDaily('2026-10-10', {
     revenue: 100,
     commission: 10,
     acquiring: 2,
-    sold_quantity: options.unknownQuantity ? null : 5,
+    sold_quantity: options.unknownQuantity ? null : soldQuantity,
     returned_quantity: options.unknownQuantity ? null : 0,
-    net_quantity: options.unknownQuantity ? null : 5,
+    net_quantity: options.unknownQuantity ? null : soldQuantity,
     logistics: 5,
     penalties: 2,
     storage: 1,
     ads_spend: 0,
     other_expenses: 0,
     compensation: 3,
-    cogs: options.unknownCogs || options.unknownQuantity ? null : 20,
+    cogs: ozonCogs,
     tax: 6,
     operation_expenses: options.opexConfirmed ? (ozonOpex ?? 0) : ozonOpex,
-    margin: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? null : 59 - (ozonOpex ?? 0),
+    margin: ozonMargin,
     marketplace_net: 85,
     unallocated_amount: 2,
     reconciliation_difference: 0,
-    profitability_complete: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? false : true,
+    profitability_complete: ozonMargin != null,
   });
-  const ozonProductRow = { ...ozonRow, operation_expenses: null, margin: options.unknownCogs || options.unknownQuantity ? null : 59 };
+  const ozonProductRow = { ...ozonRow, operation_expenses: null, margin: ozonProductMargin };
   const wbRow = emptyDaily('2026-10-10', {
     revenue: 200,
     commission: 25,
@@ -79,14 +85,23 @@ function makeOverview(marketplace, options = {}) {
   for (const field of ['acquiring', 'sold_quantity', 'returned_quantity', 'net_quantity', 'accrual_classification_complete', 'sku_allocation_complete', 'profitability_complete']) {
     delete wbProductRow[field];
   }
+  const ozonProducts = [
+    { marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: options.unknownCogs ? null : costPrice, daily: [ozonProductRow] },
+  ];
+  if (options.extraCostProduct) {
+    ozonProducts.push({
+      marketplace: 'ozon', sku: '43', offer_id: 'ozon-43', name: 'Ozon Charger', cost_price: 8,
+      daily: [emptyDaily('2026-10-10', { revenue: 50, commission: 5, acquiring: 1, sold_quantity: 1, returned_quantity: 0, net_quantity: 1, cogs: 8, tax: 3, margin: 33, marketplace_net: 44 })],
+    });
+  }
   const products = marketplace === 'all'
     ? [
       { marketplace: 'wb', sku: '42', offer_id: 'wb-42', name: 'WB Cable', cost_price: 40, daily: [wbProductRow] },
-      { marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: 20, daily: [ozonProductRow] },
+      ...ozonProducts,
     ]
-    : [{ marketplace: 'ozon', sku: '42', offer_id: 'ozon-42', name: 'Ozon Cable', cost_price: options.unknownCogs ? null : 20, daily: [ozonProductRow] }];
+    : ozonProducts;
   const daily = marketplace === 'all'
-    ? [{ ...emptyDaily('2026-10-10', { revenue: 300, commission: 35, acquiring: null, sold_quantity: null, returned_quantity: null, net_quantity: null, logistics: 13, penalties: 2, storage: 2, ads_spend: 4, other_expenses: 2, compensation: 3, cogs: options.unknownCogs || options.unknownQuantity ? null : 60, operation_expenses: ozonOpex ?? (options.opexConfirmed ? 0 : null), margin: options.unknownCogs || options.unknownQuantity || (ozonOpex == null && !options.opexConfirmed) ? null : 167 - (ozonOpex ?? 0), marketplace_net: 245, unallocated_amount: 2, reconciliation_difference: 0, profitability_complete: !options.unknownCogs && !options.unknownQuantity && (ozonOpex != null || options.opexConfirmed) }) }]
+    ? [{ ...emptyDaily('2026-10-10', { revenue: 300, commission: 35, acquiring: null, sold_quantity: null, returned_quantity: null, net_quantity: null, logistics: 13, penalties: 2, storage: 2, ads_spend: 4, other_expenses: 2, compensation: 3, cogs: ozonCogs == null ? null : 40 + ozonCogs, operation_expenses: ozonOpex ?? (options.opexConfirmed ? 0 : null), margin: ozonMargin == null ? null : 108 + ozonMargin, marketplace_net: 245, unallocated_amount: 2, reconciliation_difference: 0, profitability_complete: ozonMargin != null }) }]
     : [ozonRow];
 
   return {
@@ -128,8 +143,32 @@ async function mockApplication(page, options = {}) {
     }
     if (path === '/dashboard/marketplace/overview') {
       const marketplace = url.searchParams.get('marketplace') || 'ozon';
+      options.overviewRequests?.push({
+        marketplace,
+        date_from: url.searchParams.get('date_from'),
+        date_to: url.searchParams.get('date_to'),
+      });
+      if (options.overviewFailure?.remaining > 0) {
+        options.overviewFailure.remaining -= 1;
+        return route.fulfill({ status: 503, json: { detail: 'Temporary mocked overview error' } });
+      }
       if (typeof options.handleOverview === 'function') return options.handleOverview(route, marketplace);
       const body = makeOverview(marketplace, options.overview || {});
+      const dateFrom = url.searchParams.get('date_from');
+      const dateTo = url.searchParams.get('date_to');
+      const revenue = options.overviewRevenueByDateFrom?.[dateFrom];
+      if (revenue !== undefined) {
+        for (const row of body.daily || []) {
+          row.date = dateTo;
+          row.revenue = revenue;
+        }
+        for (const product of body.products || []) {
+          for (const row of product.daily || []) {
+            row.date = dateTo;
+            row.revenue = revenue;
+          }
+        }
+      }
       return route.fulfill({ json: body });
     }
     if (path === '/dashboard/marketplace/connection') {
@@ -164,7 +203,18 @@ async function mockApplication(page, options = {}) {
     if (path.startsWith('/dashboard/marketplace/products/') && method === 'PUT') {
       const body = route.request().postDataJSON();
       options.costWrites?.push(body.cost_price);
-      return route.fulfill({ json: { cost_price: body.cost_price, message: 'Прибыль останется неизвестной до подтверждения количества проданных товаров.' } });
+      options.overview ||= {};
+      const savedCostPrice = body.cost_price == null || !options.roundCostPrice
+        ? body.cost_price
+        : Math.round(Number(body.cost_price) * 100) / 100;
+      if (options.costPutGate) {
+        options.costPutGate.started = true;
+        await new Promise((resolve) => { options.costPutGate.release = resolve; });
+      }
+      options.overview.costPrice = savedCostPrice;
+      const response = await route.fulfill({ json: { cost_price: savedCostPrice, message: 'Себестоимость сохранена.' } });
+      if (options.costPutGate) options.costPutGate.completed = true;
+      return response;
     }
     if (path === '/dashboard/pnl' || path === '/dashboard/articles' || path === '/dashboard/funnel') {
       return route.fulfill({ json: [] });
@@ -407,22 +457,150 @@ test.describe('Marketplace finance', () => {
 
   test('cost editor preserves explicit zero and can clear a saved amount', async ({ page }) => {
     const costWrites = [];
-    await mockApplication(page, { costWrites });
+    const overviewFailure = { remaining: 0 };
+    await mockApplication(page, { costWrites, overviewFailure, roundCostPrice: true, overview: { opexConfirmed: true, extraCostProduct: true } });
     await page.getByTestId('marketplace-selector').selectOption('ozon');
     await page.getByRole('link', { name: 'Себестоимость' }).click();
     await expect(page.getByTestId('marketplace-cost-history-warning')).toContainText('расчётная прибыль пересчитается за всю историю');
+    const product = page.getByTestId('marketplace-product-ozon:42');
     const input = page.getByTestId('marketplace-cost-input-ozon:42');
+    const otherInput = page.getByTestId('marketplace-cost-input-ozon:43');
     await expect(input).toBeVisible();
+    await expect(product.locator('td').nth(6)).toContainText('20,00 ₽');
+    await expect(product.locator('td').nth(7)).toContainText('59,00 ₽');
+    await otherInput.fill('11');
+
     await input.fill('0');
-    await page.getByRole('button', { name: 'Сохранить' }).click();
-    await expect(page.getByText('Прибыль останется неизвестной')).toBeVisible();
+    await product.getByRole('button', { name: 'Сохранить' }).click();
+    await expect(product.locator('td').nth(6)).toContainText('0,00 ₽');
+    await expect(product.locator('td').nth(7)).toContainText('79,00 ₽');
+    await expect(otherInput).toHaveValue('11');
+    await expect(product.getByRole('status')).toHaveText('Себестоимость сохранена.');
     await expect.poll(() => costWrites.length).toBe(1);
     expect(costWrites[0]).toBe(0);
 
-    await input.fill('');
-    await page.getByRole('button', { name: 'Сохранить' }).click();
+    await input.fill('1.239');
+    await product.getByRole('button', { name: 'Сохранить' }).click();
+    await expect(input).toHaveValue('1.24');
+    await expect(product.locator('td').nth(6)).toContainText('6,20 ₽');
+    await expect(product.locator('td').nth(7)).toContainText('72,80 ₽');
+    await expect(otherInput).toHaveValue('11');
     await expect.poll(() => costWrites.length).toBe(2);
-    expect(costWrites[1]).toBeNull();
+    expect(costWrites[1]).toBe(1.239);
+
+    overviewFailure.remaining = 1;
+    await input.fill('');
+    await product.getByRole('button', { name: 'Сохранить' }).click();
+    await expect(product.getByRole('alert')).toContainText('Себестоимость уже сохранена, но новые суммы пока не загрузились.');
+    await expect(input).toHaveValue('');
+    await expect(product.locator('td').nth(6)).toContainText('6,20 ₽');
+    await expect(otherInput).toHaveValue('11');
+    await product.getByRole('button', { name: 'Повторить обновление' }).click();
+    await expect(product.locator('td').nth(6)).toHaveText('—');
+    await expect(product.locator('td').nth(7)).toHaveText('—');
+    await expect(otherInput).toHaveValue('11');
+    await expect(product.getByRole('alert')).toHaveCount(0);
+    await expect.poll(() => costWrites.length).toBe(3);
+    expect(costWrites[2]).toBeNull();
+  });
+
+  test('a pending cost save cannot refresh or overwrite a newly selected date range', async ({ page }) => {
+    const costPutGate = { started: false, completed: false, release: null };
+    const overviewRequests = [];
+    await mockApplication(page, {
+      costPutGate,
+      overviewRequests,
+      overviewRevenueByDateFrom: { '2026-09-01': 201 },
+      overview: { opexConfirmed: true },
+    });
+    await page.getByTestId('marketplace-selector').selectOption('ozon');
+    await page.getByRole('link', { name: 'Себестоимость' }).click();
+
+    const product = page.getByTestId('marketplace-product-ozon:42');
+    const costInput = page.getByTestId('marketplace-cost-input-ozon:42');
+    await costInput.fill('0');
+    const costPutResponse = page.waitForResponse((response) => (
+      response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === '/dashboard/marketplace/products/42/cost'
+    ));
+    await product.getByRole('button', { name: 'Сохранить' }).click();
+    await expect.poll(() => costPutGate.started).toBe(true);
+
+    const dateInputs = page.locator('.date-group input[type="date"]');
+    await dateInputs.nth(0).fill('2026-09-01');
+    await dateInputs.nth(1).fill('2026-09-01');
+    await page.getByRole('button', { name: 'Показать' }).click();
+
+    const septemberProduct = page.getByTestId('marketplace-product-ozon:42');
+    await expect(page.getByTestId('marketplace-screen-costs')).toBeVisible();
+    await expect(septemberProduct.locator('td').nth(5)).toContainText('201,00 ₽');
+    expect(overviewRequests).toContainEqual({ marketplace: 'ozon', date_from: '2026-09-01', date_to: '2026-09-01' });
+    const requestsAfterNewRangeLoaded = overviewRequests.length;
+
+    costPutGate.release();
+    await costPutResponse;
+    await expect.poll(() => costPutGate.completed).toBe(true);
+    await page.waitForTimeout(150);
+
+    expect(overviewRequests).toHaveLength(requestsAfterNewRangeLoaded);
+    await expect(page.getByTestId('marketplace-screen-costs')).toBeVisible();
+    await expect(septemberProduct.locator('td').nth(5)).toContainText('201,00 ₽');
+    await expect(septemberProduct.getByRole('status')).toHaveCount(0);
+    await expect(septemberProduct.getByRole('alert')).toHaveCount(0);
+    await expect(costInput).toHaveValue('4');
+  });
+
+  test('cost-save refresh clears loading when it supersedes a same-range refetch', async ({ page }) => {
+    const costPutGate = { started: false, completed: false, release: null };
+    let releaseRefetch;
+    let blockNextOzonOverview = false;
+    let refetchReached = false;
+    const blockedRefetch = new Promise((resolve) => { releaseRefetch = resolve; });
+    const overviewRequests = [];
+    const overview = { opexConfirmed: true };
+    await mockApplication(page, {
+      costPutGate,
+      overview,
+      overviewRequests,
+      handleOverview: async (route, marketplace) => {
+        if (marketplace === 'ozon' && blockNextOzonOverview) {
+          blockNextOzonOverview = false;
+          refetchReached = true;
+          await blockedRefetch;
+        }
+        return route.fulfill({ json: makeOverview(marketplace, overview) });
+      },
+    });
+    await page.getByTestId('marketplace-selector').selectOption('ozon');
+    await page.getByRole('link', { name: 'Себестоимость' }).click();
+
+    const product = page.getByTestId('marketplace-product-ozon:42');
+    const input = page.getByTestId('marketplace-cost-input-ozon:42');
+    await expect(product).toBeVisible();
+    await input.fill('0');
+    const costPutResponse = page.waitForResponse((response) => (
+      response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === '/dashboard/marketplace/products/42/cost'
+    ));
+    await product.getByRole('button', { name: 'Сохранить' }).click();
+    await expect.poll(() => costPutGate.started).toBe(true);
+
+    blockNextOzonOverview = true;
+    await page.getByTestId('marketplace-refresh-button').click();
+    await expect.poll(() => refetchReached).toBe(true);
+    await expect(page.getByTestId('marketplace-loading')).toBeVisible();
+
+    costPutGate.release();
+    await costPutResponse;
+    await expect.poll(() => costPutGate.completed).toBe(true);
+    await expect(page.getByTestId('marketplace-screen-costs')).toBeVisible();
+    const refreshedProduct = page.getByTestId('marketplace-product-ozon:42');
+    await expect(refreshedProduct.locator('td').nth(6)).toContainText('0,00 ₽');
+    await expect(refreshedProduct.locator('td').nth(7)).toContainText('79,00 ₽');
+
+    releaseRefetch();
+    await page.waitForTimeout(100);
+    await expect(refreshedProduct).toBeVisible();
   });
 
   test('Ozon daily expenses keep missing values unknown, accept explicit zero, and remain readonly in all mode', async ({ page }) => {
