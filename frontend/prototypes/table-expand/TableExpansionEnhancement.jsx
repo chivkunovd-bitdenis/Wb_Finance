@@ -3,27 +3,19 @@ import { createPortal } from 'react-dom';
 
 const baselineOnly = new URLSearchParams(window.location.search).get('baseline') === '1';
 
-function findTarget(marketplace) {
-  if (marketplace === 'wb') {
-    const heading = [...document.querySelectorAll('.content .table-card > .table-head-row h3')]
-      .find((element) => element.textContent?.trim() === 'Детализация по дням');
-    const card = heading?.closest('.table-card');
-    return { card, actions: card?.querySelector('.table-head-row > div') };
-  }
-
-  const table = document.querySelector('[data-testid="marketplace-daily-table"]');
-  const card = table?.closest('.table-card');
+function findTarget() {
+  const heading = [...document.querySelectorAll('.content .table-card > .table-head-row h3')]
+    .find((element) => element.textContent?.trim() === 'Детализация по дням');
+  const card = heading?.closest('.table-card');
   return { card, actions: card?.querySelector('.table-head-row > div') };
 }
 
-function paintDataRows(card, marketplace) {
+function paintDataRows(card) {
   if (!card) return;
-  const rows = marketplace === 'wb'
-    ? [...card.querySelectorAll('tbody tr')].filter((row) => {
-      const label = row.querySelector('td.left')?.textContent?.trim() || '';
-      return /^\d{2}\.\d{2}$/.test(label);
-    })
-    : [...card.querySelectorAll('tbody tr[data-testid^="marketplace-day-"]')];
+  const rows = [...card.querySelectorAll('tbody tr')].filter((row) => {
+    const label = row.querySelector('td.left')?.textContent?.trim() || '';
+    return /^\d{2}\.\d{2}$/.test(label);
+  });
 
   rows.forEach((row, index) => {
     row.classList.add('prototype-day-row');
@@ -98,7 +90,7 @@ export default function TableExpansionEnhancement() {
     const syncTarget = () => {
       const selector = document.querySelector('[data-testid="marketplace-selector"]');
       const selectedMarketplace = selector?.value || 'wb';
-      const next = findTarget(selectedMarketplace);
+      const next = findTarget();
       const previousCard = targetCardRef.current;
 
       setMarketplace((current) => (current === selectedMarketplace ? current : selectedMarketplace));
@@ -106,7 +98,7 @@ export default function TableExpansionEnhancement() {
       setPortalTarget((current) => (current === next.actions ? current : next.actions || null));
 
       if (expanded && previousCard !== next.card) setExpanded(false);
-      if (next.card) paintDataRows(next.card, selectedMarketplace);
+      if (next.card) paintDataRows(next.card);
     };
 
     const observer = new MutationObserver(syncTarget);
@@ -130,7 +122,7 @@ export default function TableExpansionEnhancement() {
     card.classList.remove('prototype-marketplace-wb', 'prototype-marketplace-ozon');
     if (marketplace === 'wb') card.classList.add('prototype-marketplace-wb');
     if (marketplace === 'ozon') card.classList.add('prototype-marketplace-ozon');
-    paintDataRows(card, marketplace);
+    paintDataRows(card);
 
     return () => {
       card.classList.remove('prototype-marketplace-wb', 'prototype-marketplace-ozon');

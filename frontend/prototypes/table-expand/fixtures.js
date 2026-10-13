@@ -105,6 +105,82 @@ function makeOzonRows(dateFrom, dateTo, marketplace) {
   });
 }
 
+function makeOzonDashboardRows(dateFrom, dateTo) {
+  return datesInRange(dateFrom, dateTo).map((date, index) => {
+    const revenue = Math.round((58400 + (index % 6) * 2140) * dayPattern[index % dayPattern.length]);
+    const baseCommission = Math.round(revenue * 0.155);
+    const acquiring = Math.round(revenue * 0.018);
+    const commission = baseCommission + acquiring;
+    const logistics = Math.round(revenue * 0.071);
+    const penalties = index % 6 === 4 ? 260 : 0;
+    const storage = Math.round(revenue * 0.014);
+    const adsSpend = Math.round(revenue * 0.038);
+    const otherExpenses = Math.round(revenue * 0.006);
+    const compensation = index % 4 === 1 ? 360 : 0;
+    const operationExpenses = 760 + otherExpenses - compensation;
+    const cogs = Math.round(revenue * 0.31);
+    const tax = Math.round(revenue * 0.06);
+    const margin = revenue - commission - logistics - penalties - storage - adsSpend - cogs - tax - operationExpenses;
+    const percent = (amount) => revenue ? (amount / revenue) * 100 : 0;
+
+    return {
+      date,
+      revenue,
+      commission,
+      commission_pct: percent(commission),
+      logistics,
+      logistics_pct: percent(logistics),
+      penalties,
+      cogs,
+      cogs_share: percent(cogs),
+      tax,
+      ads_spend: adsSpend,
+      ads_pct: percent(adsSpend),
+      storage,
+      storage_pct: percent(storage),
+      wb_expenses_share: percent(commission + logistics + penalties + storage),
+      operation_expenses,
+      margin,
+      margin_pct: percent(margin),
+      roi: cogs ? (margin / cogs) * 100 : 0,
+    };
+  });
+}
+
+function sumDashboardRows(...rowSets) {
+  const rowsByDate = new Map();
+  rowSets.flat().forEach((row) => {
+    const current = rowsByDate.get(row.date) || { date: row.date };
+    for (const key of ['revenue', 'commission', 'logistics', 'penalties', 'storage', 'ads_spend', 'cogs', 'tax', 'operation_expenses', 'margin']) {
+      current[key] = (current[key] || 0) + (Number(row[key]) || 0);
+    }
+    rowsByDate.set(row.date, current);
+  });
+
+  return [...rowsByDate.values()].map((row) => {
+    const percent = (amount) => row.revenue ? (amount / row.revenue) * 100 : 0;
+    return {
+      ...row,
+      commission_pct: percent(row.commission),
+      logistics_pct: percent(row.logistics),
+      cogs_share: percent(row.cogs),
+      ads_pct: percent(row.ads_spend),
+      storage_pct: percent(row.storage),
+      wb_expenses_share: percent(row.commission + row.logistics + row.penalties + row.storage),
+      margin_pct: percent(row.margin),
+      roi: row.cogs ? (row.margin / row.cogs) * 100 : 0,
+    };
+  });
+}
+
+function dashboardRowsForMarketplace(dateFrom, dateTo, marketplace) {
+  const wbRows = makeWbRows(dateFrom, dateTo);
+  const ozonRows = makeOzonDashboardRows(dateFrom, dateTo);
+  if (marketplace === 'ozon') return ozonRows;
+  if (marketplace === 'all') return sumDashboardRows(wbRows, ozonRows);
+  return wbRows;
+}
+
 export async function getMe() {
   return { user_id: 'prototype-user', email: 'demo@wb-finance.local', ai_module_enabled: false };
 }
@@ -128,15 +204,19 @@ export async function getDashboardState() {
   };
 }
 
-export async function getPnl(dateFrom, dateTo) {
-  return makeWbRows(dateFrom, dateTo);
+export async function getPnl(dateFrom, dateTo, marketplace = 'wb') {
+  return dashboardRowsForMarketplace(dateFrom, dateTo, marketplace);
 }
 
-export async function getFunnel(dateFrom, dateTo) {
-  return makeWbRows(dateFrom, dateTo).map((row) => ({
-    date: row.date,
-    order_sum: Math.round(row.revenue * 0.88),
-  }));
+export async function getFunnel(dateFrom, dateTo, marketplace = 'wb') {
+  const wbRows = makeWbRows(dateFrom, dateTo).map((row) => ({ date: row.date, order_sum: Math.round(row.revenue * 0.88) }));
+  const ozonRows = makeOzonDashboardRows(dateFrom, dateTo).map((row) => ({ date: row.date, order_sum: Math.round(row.revenue * 0.94) }));
+  if (marketplace === 'ozon') return ozonRows;
+  if (marketplace === 'all') {
+    const ordersByDate = new Map(wbRows.map((row) => [row.date, row.order_sum]));
+    return ozonRows.map((row) => ({ date: row.date, order_sum: row.order_sum + (ordersByDate.get(row.date) || 0) }));
+  }
+  return wbRows;
 }
 
 export async function getPlanFactMonths() {
