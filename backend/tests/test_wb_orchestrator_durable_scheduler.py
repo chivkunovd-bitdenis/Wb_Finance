@@ -167,3 +167,99 @@ def test_early_current_token_does_not_erase_pacing_deadline(store):
     assert claim(factory) == []
     tasks._orch_funnel_tail_step.assert_not_called()
     tasks.wb_orchestrator_tick.apply_async.assert_not_called()
+
+
+@pytest.mark.parametrize("http_code", [400, 401, 403, 404])
+def test_permanent_http_failure_preserves_work_and_requires_new_kick(store, http_code):
+    factory, uid = store
+    intents = {"high": {"funnel_tail": True}}
+    tasks.wb_orchestrator_kick(uid, intents)
+    token = claim(factory)[0][1]
+    response = requests.Response()
+    response.status_code = http_code
+    tasks._orch_funnel_tail_step.side_effect = requests.HTTPError(response=response)
+    assert tasks.wb_orchestrator_tick(uid, token)["http_code"] == http_code
+    st = state(factory, uid)
+    assert st.status == "error"
+    assert st.last_step == f"wb_http_{http_code}"
+    assert st.next_tick_at is None
+    assert st.dispatch_token is None and st.dispatch_lease_until is None
+    assert st.intents == intents
+    assert claim(factory) == []
+    # Retained broker copies cannot resurrect a permanent failure.
+    for _ in range(3):
+        assert tasks.wb_orchestrator_tick(uid)["message"] == "legacy_deferred"
+        assert tasks.wb_orchestrator_tick(uid, token)["message"] == "stale_dispatch"
+    assert claim(factory) == []
+    tasks._orch_funnel_tail_step.assert_called_once()
+    tasks.wb_orchestrator_tick.apply_async.assert_not_called()
+    tasks.wb_orchestrator_kick(uid, {})
+    replacement = claim(factory)[0][1]
+    tasks._orch_funnel_tail_step.side_effect = None
+    assert tasks.wb_orchestrator_tick(uid, replacement)["ok"]
+    assert state(factory, uid).status == "idle"
+
+
+def test_missing_key_preserves_intents_without_automatic_retries(store):
+    factory, uid = store
+    intents = {"high": {"funnel_tail": True}}
+    with factory() as db:
+        db.get(User, uid).wb_api_key = None
+        db.commit()
+    tasks.wb_orchestrator_kick(uid, intents)
+    assert tasks.wb_orchestrator_tick(uid, claim(factory)[0][1])["error"] == "no_wb_api_key"
+    st = state(factory, uid)
+    assert st.status == "error" and st.next_tick_at is None
+    assert st.intents == intents
+    assert claim(factory) == []
+    tasks._orch_funnel_tail_step.assert_not_called()
+    tasks.wb_orchestrator_tick.apply_async.assert_not_called()
+    tasks.wb_orchestrator_kick(uid, {})
+    assert len(claim(factory)) == 1
+
+
+def test_permanent_failure_does_not_drop_kick_received_during_step(store):
+    factory, uid = store
+    tasks.wb_orchestrator_kick(uid, {"high": {"funnel_tail": True}})
+    token = claim(factory)[0][1]
+    entered, release = Event(), Event()
+    def step(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        response = requests.Response()
+        response.status_code = 401
+        raise requests.HTTPError(response=response)
+    tasks._orch_funnel_tail_step.side_effect = step
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = pool.submit(tasks.wb_orchestrator_tick, uid, token)
+        assert entered.wait(10)
+        tasks.wb_orchestrator_kick(uid, {"low": {"finance_backfill_year": 2026}})
+        release.set()
+        assert result.result()["http_code"] == 401
+    st = state(factory, uid)
+    assert st.status == "scheduled"
+    assert st.next_tick_at > datetime.now(UTC)
+    assert st.intents == {"high": {"funnel_tail": True}, "low": {"finance_backfill_year": 2026}}
+    tasks.wb_orchestrator_tick.apply_async.assert_not_called()
+
+
+def test_permanent_failure_invalidates_replacement_lease_without_new_kick(store):
+    factory, uid = store
+    tasks.wb_orchestrator_kick(uid, {"high": {"funnel_tail": True}})
+    token = claim(factory)[0][1]
+    replacements = []
+    def step(*args, **kwargs):
+        with factory() as db:
+            st = locked_state(db, uid)
+            st.dispatch_lease_until = datetime.now(UTC) - timedelta(seconds=1)
+            db.commit()
+        replacements.extend(claim(factory))
+        response = requests.Response()
+        response.status_code = 403
+        raise requests.HTTPError(response=response)
+    tasks._orch_funnel_tail_step.side_effect = step
+    assert tasks.wb_orchestrator_tick(uid, token)["http_code"] == 403
+    assert len(replacements) == 1
+    assert tasks.wb_orchestrator_tick(uid, replacements[0][1])["message"] == "stale_dispatch"
+    assert claim(factory) == []
+    assert state(factory, uid).status == "error"

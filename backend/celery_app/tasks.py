@@ -1092,7 +1092,7 @@ def wb_orchestrator_tick(user_id: str, dispatch_token: str | None = None) -> dic
             now = _utcnow()
             if dispatch_token is None:
                 # Retained legacy messages are only wakeups. Never execute or republish them.
-                if st.next_tick_at is None and st.dispatch_token is None:
+                if st.next_tick_at is None and st.dispatch_token is None and st.status != "error":
                     schedule_state(st, now)
                 db.commit()
                 return {"ok": True, "message": "legacy_deferred"}
@@ -1111,19 +1111,36 @@ def wb_orchestrator_tick(user_id: str, dispatch_token: str | None = None) -> dic
             st.next_tick_at = None
             st.status = "running"
             db.commit()
+            terminal_error: str | None = None
             try:
                 user = db.get(User, user_id)
                 if not user or not user.wb_api_key or not user.wb_api_key.strip():
-                    return {"ok": False, "error": "no_wb_api_key"}
+                    terminal_error = "no_wb_api_key"
+                    return {"ok": False, "error": terminal_error}
                 return _run_orchestrator_step(db, st, user_id, now)
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                if code not in FUNNEL_YTD_HTTP_RETRY_CODES:
+                    terminal_error = f"wb_http_{code}" if code is not None else "wb_http_error"
+                    return {"ok": False, "error": terminal_error, "http_code": code}
+                raise
             finally:
                 db.rollback()
                 st = locked_state(db, user_id)
                 # A dispatcher may have renewed an expired lease during a long import.
                 # Keep that replacement token valid; the dedicated lock still prevents overlap.
-                if st.dispatch_token == dispatch_token:
+                if terminal_error and st.next_tick_at is None:
+                    # Permanent failures require a fresh kick. Keep the work, invalidate even
+                    # a replacement token issued while a long step outlived its dispatch lease.
                     st.dispatch_token = st.dispatch_lease_until = None
-                schedule_state(st, _utcnow(), delay=ORCH_STEP_DELAY_SEC)
+                    st.status = "error"
+                    st.cooldown_until = None
+                    st.last_step = terminal_error
+                else:
+                    # A kick during the step left a durable wakeup; never erase it on failure.
+                    if st.dispatch_token == dispatch_token:
+                        st.dispatch_token = st.dispatch_lease_until = None
+                    schedule_state(st, _utcnow(), delay=ORCH_STEP_DELAY_SEC)
                 db.commit()
     except Exception as exc:
         db.rollback()
