@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import date as real_date
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from unittest.mock import patch
 
 from app.models.pnl_daily import PnlDaily
 from app.models.user import User
 from app.models.wb_orchestrator_state import WbOrchestratorState
-from celery_app.tasks import wb_orchestrator_tick
+from celery_app.tasks import wb_orchestrator_tick, _run_orchestrator_step
 
 
 class _FixedDate(real_date):
@@ -58,7 +58,7 @@ def test_orchestrator_finance_backfill_skips_wb_when_pnl_daily_covered(real_db_s
         patch("celery_app.tasks.recalculate_sku_daily.delay") as mock_sku_delay,
         patch.object(wb_orchestrator_tick, "apply_async", return_value=None),
     ):
-        out = wb_orchestrator_tick(user_id)
+        out = _run_orchestrator_step(real_db_session, st, user_id, datetime.now(timezone.utc))
 
     assert out.get("ok") is True, out
     mock_sales.assert_not_called()
