@@ -16,6 +16,7 @@ from celery_app.tasks import (
     ORCH_STEP_DELAY_SEC,
     _orch_is_blocked,
     wb_orchestrator_tick,
+    _run_orchestrator_step,
 )
 
 USER_ID = "f7a767e1-ce32-4700-8bd1-8e561a11cf6a"
@@ -81,12 +82,12 @@ def test_finance_429_blocks_only_finance_and_keeps_funnel_going():
     session = _FakeSession(state, _user())
 
     with (
-        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks.locked_state", return_value=state),
         patch("celery_app.tasks._orch_finance_missing_step", side_effect=_http_429(314451)),
         patch("celery_app.tasks._orch_funnel_tail_step") as funnel_step,
         patch.object(wb_orchestrator_tick, "apply_async", return_value=None) as apply_async,
     ):
-        out = wb_orchestrator_tick(USER_ID)
+        out = _run_orchestrator_step(session, state, USER_ID, datetime.now(timezone.utc))
 
     assert out["error"] == "wb_retry_scheduled"
     assert out["blocked_op"] == ORCH_OP_FINANCE
@@ -95,7 +96,7 @@ def test_finance_429_blocks_only_finance_and_keeps_funnel_going():
     # Оркестратор не ушёл в глобальный cooldown, следующий tick — сразу с обычным шагом.
     assert state.status == "scheduled"
     assert state.cooldown_until is None
-    apply_async.assert_called_once_with(args=[USER_ID], countdown=ORCH_STEP_DELAY_SEC)
+    apply_async.assert_not_called()
     # Финансовая заявка сохранена, финансы заблокированы, воронка — нет.
     assert state.intents["high"]["finance_range"] == {"date_from": "2026-09-18", "date_to": "2026-09-20"}
     now = datetime.now(timezone.utc)
@@ -114,7 +115,7 @@ def test_tick_skips_blocked_finance_and_runs_funnel_tail():
     session = _FakeSession(state, _user())
 
     with (
-        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks.locked_state", return_value=state),
         patch("celery_app.tasks._orch_finance_missing_step") as finance_step,
         patch(
             "celery_app.tasks._orch_funnel_tail_step",
@@ -122,7 +123,7 @@ def test_tick_skips_blocked_finance_and_runs_funnel_tail():
         ) as funnel_step,
         patch.object(wb_orchestrator_tick, "apply_async", return_value=None),
     ):
-        out = wb_orchestrator_tick(USER_ID)
+        out = _run_orchestrator_step(session, state, USER_ID, datetime.now(timezone.utc))
 
     assert out["ok"] is True
     assert out["step"]["day"] == "2026-09-18"
@@ -144,19 +145,18 @@ def test_only_blocked_work_left_waits_until_window_opens():
     session = _FakeSession(state, _user())
 
     with (
-        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks.locked_state", return_value=state),
         patch("celery_app.tasks._orch_finance_missing_step") as finance_step,
         patch.object(wb_orchestrator_tick, "apply_async", return_value=None) as apply_async,
     ):
-        out = wb_orchestrator_tick(USER_ID)
+        out = _run_orchestrator_step(session, state, USER_ID, datetime.now(timezone.utc))
 
     finance_step.assert_not_called()
     assert out["message"] == "cooldown"
     assert state.status == "cooldown"
     assert state.last_step == "wb_blocked_wait"
     assert 3 * 3600 - 5 <= out["delay_sec"] <= 3 * 3600
-    apply_async.assert_called_once()
-    assert apply_async.call_args.kwargs["countdown"] == out["delay_sec"]
+    apply_async.assert_not_called()
 
 
 def test_funnel_429_with_no_other_work_uses_global_cooldown():
@@ -164,15 +164,15 @@ def test_funnel_429_with_no_other_work_uses_global_cooldown():
     session = _FakeSession(state, _user())
 
     with (
-        patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks.locked_state", return_value=state),
         patch("celery_app.tasks._orch_funnel_tail_step", side_effect=_http_429(45)),
         patch.object(wb_orchestrator_tick, "apply_async", return_value=None) as apply_async,
     ):
-        out = wb_orchestrator_tick(USER_ID)
+        out = _run_orchestrator_step(session, state, USER_ID, datetime.now(timezone.utc))
 
     assert out["error"] == "wb_retry_scheduled"
     assert "blocked_op" not in out
     assert state.status == "cooldown"
     assert state.last_step == "wb_http_429 funnel"
     assert _orch_is_blocked(state.intents, ORCH_OP_FUNNEL, datetime.now(timezone.utc))
-    apply_async.assert_called_once_with(args=[USER_ID], countdown=out["delay_sec"])
+    apply_async.assert_not_called()

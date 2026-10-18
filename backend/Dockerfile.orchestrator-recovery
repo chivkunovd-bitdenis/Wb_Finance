@@ -1,0 +1,12 @@
+# Reuse the exact installed dependencies during incident recovery. No pip/browser upgrade.
+# BASE_IMAGE must name the previously inspected WB Finance application image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+WORKDIR /app
+COPY app /app/app
+COPY celery_app /app/celery_app
+COPY scripts /app/scripts
+COPY alembic /app/alembic
+COPY alembic.ini /app/alembic.ini
+ARG VCS_REF
+LABEL org.opencontainers.image.revision=$VCS_REF

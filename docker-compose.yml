@@ -116,6 +116,9 @@ services:
 
   celery_worker:
     restart: unless-stopped
+    # Bound the whole worker (including its parent timer process) on the shared host.
+    mem_limit: 1g
+    memswap_limit: 1g
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -147,7 +150,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/data:/app/data
       - ./backend/wb_storage_state.json:/app/wb_storage_state.json:ro
-    command: celery -A celery_app.celery worker --loglevel=info
+    command: celery -A celery_app.celery worker --loglevel=info --concurrency=1 --max-memory-per-child=262144
 
   celery_beat:
     restart: unless-stopped

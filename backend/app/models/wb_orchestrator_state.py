@@ -30,6 +30,10 @@ class WbOrchestratorState(Base):
     # - low: backfills
     intents: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
 
+    next_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    dispatch_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    dispatch_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
