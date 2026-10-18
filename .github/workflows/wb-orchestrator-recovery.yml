@@ -46,6 +46,9 @@ jobs:
       - run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt ruff
       - name: Install real Redis for isolated preservation tests
         run: sudo apt-get update -qq && sudo apt-get install -y redis-server && command -v redis-server
+      - name: Build the complete test database schema
+        working-directory: backend
+        run: python -m alembic upgrade head
       - name: Offline backend regressions on PostgreSQL
         run: python -m pytest -q backend/tests -m 'not wb_real'
       - name: Selective queue recovery regressions
