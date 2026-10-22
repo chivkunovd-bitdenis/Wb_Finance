@@ -6,9 +6,10 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_store_context
 from app.models.reminder_log import ReminderLog
 from app.models.user import User
+from app.services.store_access_service import StoreContext
 from app.schemas.billing import (
     BillingStatusResponse,
     CheckoutRequest,
@@ -34,20 +35,47 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 @router.get("/status", response_model=BillingStatusResponse)
 def billing_status(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
-    return BillingStatusResponse(**get_billing_status(db, current_user))
+    """
+    Доступ к активному магазину.
+
+    В собственном магазине — подписка пользователя. В выданном магазине — подписка владельца:
+    сотрудник видит, до какого срока действует доступ, и не видит счетов и кнопок оплаты.
+    """
+    owner = store_ctx.store_owner
+    payload = get_billing_status(db, owner)
+    granted = not store_ctx.is_owner
+    access_until = None
+    if payload["subscription_status"] != "lifetime":
+        access_until = payload["current_period_ends_at"] or payload["trial_ends_at"]
+    return BillingStatusResponse(
+        **payload,
+        access_source="granted" if granted else "own",
+        store_owner_email=str(owner.email) if granted else None,
+        access_until=access_until,
+    )
+
+
+def _require_own_store(store_ctx: StoreContext) -> None:
+    """Оплата и счета относятся только к собственному магазину; в выданном магазине их нет."""
+    if not store_ctx.is_owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Оплату вносит владелец магазина",
+        )
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
 def checkout(
     body: CheckoutRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    _require_own_store(store_ctx)
     try:
-        result = create_checkout(db, current_user, Decimal(str(body.amount)), body.return_url)
+        result = create_checkout(db, store_ctx.viewer, Decimal(str(body.amount)), body.return_url)
     except YooKassaRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
     return CheckoutResponse(**result)
@@ -55,12 +83,13 @@ def checkout(
 
 @router.post("/yookassa/sync-return", response_model=YookassaSyncReturnResponse)
 def yookassa_sync_return(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Синхронизировать последний ожидающий платёж с API ЮKassa (после redirect)."""
+    _require_own_store(store_ctx)
     try:
-        result = sync_latest_yookassa_payment(db, current_user)
+        result = sync_latest_yookassa_payment(db, store_ctx.viewer)
     except YooKassaRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
     return YookassaSyncReturnResponse(**result)

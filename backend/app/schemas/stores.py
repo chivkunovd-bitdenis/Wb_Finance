@@ -9,6 +9,9 @@ class StoreItem(BaseModel):
 
 class StoresListResponse(BaseModel):
     stores: list[StoreItem]
+    # Магазин по умолчанию для входа без сохранённого выбора: у сотрудника без собственного
+    # WB-ключа и ровно с одним выданным магазином. Иначе None.
+    default_store_owner_user_id: str | None = None
 
 
 class StoreGrantRequest(BaseModel):

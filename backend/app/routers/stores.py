@@ -75,7 +75,10 @@ def get_accessible_stores(
                 access=access,
             )
         )
-    return StoresListResponse(stores=items)
+    granted_ids = [item.owner_user_id for item in items if item.access == "granted"]
+    has_own_wb_key = bool((current_user.wb_api_key or "").strip())
+    default_owner = granted_ids[0] if (not has_own_wb_key and len(granted_ids) == 1) else None
+    return StoresListResponse(stores=items, default_store_owner_user_id=default_owner)
 
 
 @router.get("/grants", response_model=OutgoingGrantsResponse)

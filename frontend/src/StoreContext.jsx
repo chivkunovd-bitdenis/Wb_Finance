@@ -48,8 +48,13 @@ export function StoreProvider({ children }) {
       if (activeOk) {
         setActiveStoreOwnerIdState(current);
       } else {
+        // Сотрудник без собственного WB-ключа с одним выданным магазином попадает сразу в него,
+        // а не в пустой собственный кабинет.
+        const preferred = data?.default_store_owner_user_id ? String(data.default_store_owner_user_id) : '';
         const own = list.find((s) => s.access === 'owner') || list[0];
-        const next = own ? String(own.owner_user_id) : '';
+        const next = preferred && list.some((s) => String(s.owner_user_id) === preferred)
+          ? preferred
+          : own ? String(own.owner_user_id) : '';
         setActiveStoreOwnerIdState(next);
         lsSet(ACTIVE_STORE_KEY, next);
       }

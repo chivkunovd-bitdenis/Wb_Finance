@@ -13,6 +13,7 @@ from app.core.feature_flags import (
 from app.services.offer_chat_service import require_admin
 from app.services.store_access_service import (
     StoreAccessDeniedError,
+    StoreAccessError,
     StoreAccessNotFoundError,
     StoreAccessInvalidInputError,
     StoreContext,
@@ -20,6 +21,31 @@ from app.services.store_access_service import (
 )
 
 security = HTTPBearer(auto_error=False)
+
+# Сотрудник работает под подпиской владельца магазина: ему не предлагаем оплачивать чужой магазин.
+GRANTED_ACCESS_BLOCKED_DETAIL = (
+    "Доступ к магазину приостановлен: подписка владельца магазина не активна. "
+    "Обратитесь к владельцу магазина."
+)
+
+
+def _billing_subject(db: Session, request: Request, viewer: User) -> User:
+    """
+    Чей биллинг проверять для запроса.
+
+    Если запрос идёт в выданный магазин (заголовок X-Store-Owner-Id), доступ определяет
+    подписка владельца. Иначе — собственная подписка пользователя. Если доступ к магазину
+    невалиден, остаётся собственная подписка: такой запрос всё равно не пройдёт проверку
+    магазина в get_store_context.
+    """
+    raw_owner_id = (request.headers.get("X-Store-Owner-Id") or "").strip()
+    if not raw_owner_id:
+        return viewer
+    try:
+        ctx = get_store_context_from_header(db, viewer=viewer, store_owner_id=raw_owner_id)
+    except StoreAccessError:
+        return viewer
+    return ctx.store_owner
 
 
 def get_current_user(
@@ -65,19 +91,24 @@ def get_current_user(
     if sub in db.new or db.is_modified(sub):
         db.commit()
     path = request.url.path or ""
+    # GET /stores — только список доступных магазинов. Без него не выбрать магазин сотрудника,
+    # поэтому он не блокируется биллингом собственного аккаунта.
     allow_without_access = (
         path.startswith("/auth")
         or path.startswith("/billing")
         or path.startswith("/health")
+        or (request.method == "GET" and path == "/stores")
     )
     if not allow_without_access:
+        subject = _billing_subject(db, request, user)
         try:
-            require_access(db, user)
+            require_access(db, subject)
         except PermissionError as exc:
             request.state.auth_error = "billing_access_denied"
+            detail = str(exc) if subject is user else GRANTED_ACCESS_BLOCKED_DETAIL
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=str(exc),
+                detail=detail,
             ) from exc
     return user
 

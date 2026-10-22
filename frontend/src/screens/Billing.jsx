@@ -46,9 +46,14 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const trialEndsAt = billingStatus?.trial_ends_at;
   const periodEndsAt = billingStatus?.current_period_ends_at;
 
+  // Доступ к выданному магазину определяет подписка владельца: сотрудник оплату не видит и не вносит.
+  const isGranted = billingStatus?.access_source === 'granted';
+  const isBlocked = Boolean(billingStatus?.is_access_blocked);
+  const accessUntil = billingStatus?.access_until;
+
   const isLifetime = status === 'lifetime';
   const isActive = status === 'active';
-  const showTrialForm = !isLifetime && status === 'inactive' && !trialEndsAt && !periodEndsAt;
+  const showTrialForm = !isGranted && !isLifetime && status === 'inactive' && !trialEndsAt && !periodEndsAt;
 
   useEffect(() => {
     let cancelled = false;
@@ -170,7 +175,7 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
         <div className="table-card" style={{ padding: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
             <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>
-              Статус подписки
+              {isGranted ? 'Доступ к магазину' : 'Статус подписки'}
             </span>
             <span style={{
               fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20,
@@ -196,18 +201,35 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
           <div style={{ height: '0.5px', background: 'var(--border-light)', marginBottom: 16 }} />
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {isGranted && (
+              <>
+                <Row label="Владелец магазина" value={billingStatus?.store_owner_email || '—'} />
+                {!isLifetime && accessUntil && (
+                  <Row label="Доступ до" value={formatDate(accessUntil)} />
+                )}
+                {isBlocked ? (
+                  <p style={{ fontSize: 12, color: 'var(--red)', lineHeight: 1.5 }}>
+                    Доступ к магазину приостановлен: подписка владельца не активна. Обратитесь к владельцу магазина.
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    Доступ к этому магазину предоставлен владельцем по его подписке. Оплачивать ничего не нужно.
+                  </p>
+                )}
+              </>
+            )}
             {isLifetime && (
               <p style={{ fontSize: 12, color: '#0369a1', lineHeight: 1.5 }}>
                 Вам предоставлен бессрочный доступ ко всем функциям платформы.
               </p>
             )}
-            {!isLifetime && trialEndsAt && (
+            {!isGranted && !isLifetime && trialEndsAt && (
               <Row label="Конец демо" value={formatDate(trialEndsAt)} />
             )}
-            {!isLifetime && periodEndsAt && (
+            {!isGranted && !isLifetime && periodEndsAt && (
               <Row label="Подписка активна до" value={formatDate(periodEndsAt)} />
             )}
-            {!isLifetime && !trialEndsAt && !periodEndsAt && (
+            {!isGranted && !isLifetime && !trialEndsAt && !periodEndsAt && (
               <p style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
                 Подключите WB API ключ ниже, чтобы активировать 5-дневное демо.
               </p>
@@ -237,7 +259,11 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
-              {isLifetime ? (
+              {isGranted ? (
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                  Оплачивает владелец
+                </div>
+              ) : isLifetime ? (
                 <>
                   <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: '#0ea5e9' }}>
                     Бесплатно
@@ -253,7 +279,7 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
                 </>
               )}
             </div>
-            {!isLifetime && (
+            {!isLifetime && !isGranted && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                 <button
                   type="button"
