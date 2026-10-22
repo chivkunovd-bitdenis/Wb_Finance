@@ -4,8 +4,9 @@
 - подписка оплачена и действует дальше сегодня: счёт начинается в день окончания текущего периода;
 - иначе (первая оплата, демо-период, истёкшая подписка): счёт начинается с сегодняшнего дня по Москве.
 
-Последний день периода входит в него: период «с 22.10.2026 по 21.11.2026» ровно один календарный месяц.
-Оплаченный счёт продлевает доступ до конца последнего дня периода по Москве.
+Период — полуоткрытый интервал [начало, окончание): окончание в него не входит и совпадает с началом следующего
+периода. Период «с 03.10.2026 по 03.11.2026» — ровно один календарный месяц. Оплаченный счёт продлевает доступ
+до 00:00 по Москве в день окончания периода, поэтому следующий счёт начинается ровно в этот день.
 """
 
 import calendar
@@ -123,7 +124,7 @@ def invoice_period_for(
     current_period_end: datetime | None,
     now: datetime,
 ) -> tuple[date, date]:
-    """Период следующего счёта: (первый день, последний день включительно)."""
+    """Период следующего счёта: (первый день, день окончания). День окончания в период не входит."""
     start: date | None = None
     if subscription_status == "active" and current_period_end is not None:
         paid_until = _as_aware(current_period_end)
@@ -131,7 +132,7 @@ def invoice_period_for(
             start = to_moscow_date(paid_until)
     if start is None:
         start = to_moscow_date(now)
-    return start, add_calendar_months(start, 1) - timedelta(days=1)
+    return start, add_calendar_months(start, 1)
 
 
 def _marketplace_key(values: Iterable[str]) -> tuple[str, ...]:
@@ -242,7 +243,7 @@ def create_or_reuse_invoice(
 
 
 def mark_invoice_paid(db: Session, invoice: BillingInvoice, now: datetime) -> None:
-    """Отметить счёт оплаченным и продлить доступ до конца периода счёта (по Москве).
+    """Отметить счёт оплаченным и продлить доступ до 00:00 по Москве в день окончания периода счёта.
 
     Если уже оплаченный период заканчивается позже, он сохраняется: счёт не сокращает доступ.
     """
@@ -253,7 +254,7 @@ def mark_invoice_paid(db: Session, invoice: BillingInvoice, now: datetime) -> No
     user_id = str(invoice.user_id)
     sub = get_or_create_subscription(db, user_id)
     access_start = moscow_midnight(invoice.period_start)
-    access_end = moscow_midnight(invoice.period_end + timedelta(days=1))
+    access_end = moscow_midnight(invoice.period_end)
     if sub.current_period_end is None or _as_aware(sub.current_period_end) < access_end:
         sub.current_period_start = access_start
         sub.current_period_end = access_end

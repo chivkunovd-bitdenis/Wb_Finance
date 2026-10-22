@@ -24,7 +24,7 @@ def _data(**changes: object) -> InvoicePdfData:
         number=1,
         issued_on=date(2026, 10, 3),
         period_start=date(2026, 10, 3),
-        period_end=date(2026, 11, 2),
+        period_end=date(2026, 11, 3),
         marketplaces=("wb", "ozon"),
         unit_price=Decimal("1490.00"),
         buyer=InvoiceBuyer(name="ООО «ТЕСТ»", inn="1234567890", kpp="123456789", address="Г МОСКВА, УЛ ТЕСТОВАЯ, Д 1"),
@@ -74,7 +74,7 @@ def test_pdf_is_single_page_and_contains_title_supplier_rows_and_total() -> None
     assert "ООО «ТЕСТ», ИНН 1234567890, КПП 123456789, Г МОСКВА, УЛ ТЕСТОВАЯ, Д 1" in text
     assert (
         "Предоставление доступа к системе WB Finance Pro (Wildberries) и её использование "
-        "за период с 03.10.2026 по 02.11.2026"
+        "за период с 03.10.2026 по 03.11.2026"
     ) in text
     assert "Предоставление доступа к системе WB Finance Pro (Ozon)" in text
     assert "Всего наименований на сумму 2 980,00 руб." in text

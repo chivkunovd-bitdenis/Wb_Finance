@@ -65,7 +65,7 @@ def test_first_invoice_covers_one_month_from_today_and_snapshots_buyer(real_db_s
 
     assert invoice.status == "issued"
     assert invoice.period_start == date(2026, 10, 22)
-    assert invoice.period_end == date(2026, 11, 21)
+    assert invoice.period_end == date(2026, 11, 22)
     assert Decimal(str(invoice.amount)) == Decimal("1490.00")
     assert invoice.number_display == f"ФП-{invoice.number}"
     assert invoice.buyer == {"name": "ООО «ТЕСТ»", "inn": "1234567890", "kpp": "123456789", "address": "Г МОСКВА, УЛ ТЕСТОВАЯ, Д 1"}
@@ -160,7 +160,7 @@ def test_mark_paid_keeps_later_existing_period_end(real_db_session) -> None:
     assert sub.status == "active"
 
 
-def test_next_invoice_after_paid_period_starts_the_day_after_it_ends(real_db_session) -> None:
+def test_next_invoice_after_paid_period_starts_exactly_on_its_period_end(real_db_session) -> None:
     session = real_db_session
     user = _make_user(session)
     _save_requisites(session, user)
@@ -169,9 +169,24 @@ def test_next_invoice_after_paid_period_starts_the_day_after_it_ends(real_db_ses
 
     following = create_or_reuse_invoice(session, user, ["wb"], NOW + timedelta(days=1))
 
-    assert following.period_start == date(2026, 11, 22)
-    assert following.period_end == date(2026, 12, 21)
+    assert following.period_start == invoice.period_end == date(2026, 11, 22)
+    assert following.period_end == date(2026, 12, 22)
     assert following.number > invoice.number
+
+
+def test_paid_periods_chain_into_each_other_in_database(real_db_session) -> None:
+    session = real_db_session
+    user = _make_user(session)
+    _save_requisites(session, user)
+    previous_end = None
+    for day in range(3):
+        invoice = create_or_reuse_invoice(session, user, ["wb"], NOW + timedelta(days=day))
+        if previous_end is not None:
+            assert invoice.period_start == previous_end
+        mark_invoice_paid(session, invoice, NOW + timedelta(days=day))
+        previous_end = invoice.period_end
+    sub = _subscription(session, user)
+    assert sub.current_period_end == moscow_midnight(previous_end)
 
 
 def test_paying_twice_is_rejected(real_db_session) -> None:

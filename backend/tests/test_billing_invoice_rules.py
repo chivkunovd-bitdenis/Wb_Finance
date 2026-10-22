@@ -14,6 +14,7 @@ from app.services.billing_invoice_service import (
     create_or_reuse_invoice,
     invoice_amount,
     invoice_period_for,
+    moscow_midnight,
     normalize_marketplaces,
     preview_invoice_period,
     to_moscow_date,
@@ -25,33 +26,47 @@ def _user() -> User:
 
 
 def test_first_payment_starts_today_in_moscow_and_lasts_one_calendar_month() -> None:
-    # 21.10 21:30 UTC уже 22.10 00:30 по Москве: период начинается 22.10.
+    # 21.10 21:30 UTC уже 22.10 00:30 по Москве: период начинается 22.10 и идёт до 22.11 (не включая).
     now = datetime(2026, 10, 21, 21, 30, tzinfo=UTC)
     start, end = invoice_period_for(subscription_status="inactive", current_period_end=None, now=now)
     assert start == date(2026, 10, 22)
-    assert end == date(2026, 11, 21)
+    assert end == date(2026, 11, 22)
 
 
 def test_trial_starts_today_and_ignores_trial_end() -> None:
     now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
     start, end = invoice_period_for(subscription_status="trial", current_period_end=None, now=now)
-    assert (start, end) == (date(2026, 10, 22), date(2026, 11, 21))
+    assert (start, end) == (date(2026, 10, 22), date(2026, 11, 22))
 
 
 def test_expired_subscription_starts_today() -> None:
     now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
     past_end = datetime(2026, 9, 1, tzinfo=UTC)
     start, end = invoice_period_for(subscription_status="expired", current_period_end=past_end, now=now)
-    assert (start, end) == (date(2026, 10, 22), date(2026, 11, 21))
+    assert (start, end) == (date(2026, 10, 22), date(2026, 11, 22))
 
 
 def test_active_subscription_with_future_end_starts_on_moscow_date_of_that_end() -> None:
     now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
-    # Доступ до конца 2 ноября по Москве: 2 ноября 23:59 MSK = 2 ноября 20:59 UTC -> период с 3 ноября.
+    # Оплачено до 00:00 3 ноября по Москве, значит следующий период начинается 3 ноября.
     paid_until = datetime(2026, 11, 3, 0, 0, tzinfo=MOSCOW_TZ)
     start, end = invoice_period_for(subscription_status="active", current_period_end=paid_until, now=now)
     assert start == date(2026, 11, 3)
-    assert end == date(2026, 12, 2)
+    assert end == date(2026, 12, 3)
+
+
+def test_consecutive_periods_chain_exactly_without_gaps_or_overlap() -> None:
+    now = datetime(2026, 10, 22, 9, 0, tzinfo=UTC)
+    first = invoice_period_for(subscription_status="inactive", current_period_end=None, now=now)
+    second = invoice_period_for(
+        subscription_status="active", current_period_end=moscow_midnight(first[1]), now=now
+    )
+    third = invoice_period_for(
+        subscription_status="active", current_period_end=moscow_midnight(second[1]), now=now
+    )
+    assert first == (date(2026, 10, 22), date(2026, 11, 22))
+    assert second == (date(2026, 11, 22), date(2026, 12, 22))
+    assert third == (date(2026, 12, 22), date(2027, 1, 22))
 
 
 def test_active_subscription_with_past_end_starts_today() -> None:
@@ -66,16 +81,19 @@ def test_naive_datetimes_are_treated_as_utc() -> None:
 
 
 @pytest.mark.parametrize(
-    ("start", "expected_end_day"),
+    ("start", "expected_end"),
     [
-        (date(2027, 1, 31), date(2027, 2, 27)),  # 31.01 + месяц = 28.02, последний день периода 27.02
-        (date(2028, 1, 31), date(2028, 2, 28)),  # високосный февраль: 31.01 + месяц = 29.02, период до 28.02
-        (date(2026, 12, 15), date(2027, 1, 14)),  # переход через год
+        (date(2027, 1, 31), date(2027, 2, 28)),  # короткий февраль: 31.01 -> 28.02
+        (date(2028, 1, 31), date(2028, 2, 29)),  # високосный февраль: 31.01 -> 29.02
+        (date(2026, 8, 31), date(2026, 9, 30)),  # сентябрь короче: 31.08 -> 30.09
+        (date(2026, 12, 15), date(2027, 1, 15)),  # переход через год
+        (date(2026, 10, 3), date(2026, 11, 3)),  # образец владельца: с 03.10 по 03.11
     ],
 )
-def test_period_end_clamps_day_and_crosses_year(start: date, expected_end_day: date) -> None:
-    _, end = invoice_period_for(subscription_status="inactive", current_period_end=None, now=datetime.combine(start, datetime.min.time(), tzinfo=MOSCOW_TZ))
-    assert end == expected_end_day
+def test_period_end_is_same_day_next_month_clamped(start: date, expected_end: date) -> None:
+    now = datetime.combine(start, datetime.min.time(), tzinfo=MOSCOW_TZ)
+    _, end = invoice_period_for(subscription_status="inactive", current_period_end=None, now=now)
+    assert end == expected_end
 
 
 def test_add_calendar_months_clamps_to_last_day() -> None:
@@ -137,5 +155,5 @@ def test_period_preview_uses_same_rule_as_issue() -> None:
         preview = preview_invoice_period(db, _user(), ["wb", "ozon"], now)
     expected_start = to_moscow_date(sub.current_period_end)
     assert preview.period_start == expected_start
-    assert preview.period_end == add_calendar_months(expected_start, 1) - timedelta(days=1)
+    assert preview.period_end == add_calendar_months(expected_start, 1)
     assert preview.amount == Decimal("2980.00")

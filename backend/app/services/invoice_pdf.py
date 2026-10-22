@@ -207,10 +207,10 @@ def _draw_bank_box(sheet: _Sheet, *, left: float, right: float, top: float) -> f
     sheet.hline(left, right, row1_bottom)
     sheet.vline(split_x, top, bottom)
     sheet.vline(label_x, top, bottom)
-    sheet.hline(split_x, right, top + 18.0)  # БИК над корреспондентским счётом
+    sheet.hline(split_x, label_x, top + 18.0)  # «БИК» и «Сч. №» делят только колонку подписей; значение одно
     sheet.hline(left, split_x, row1_bottom + 14.0)  # маленькая ячейка ИНН над названием получателя
 
-    sheet.text(left + 5, top + 15, SUPPLIER["bank_name"], font=FONT_BOLD, size=9)
+    sheet.text(left + 5, top + 15, SUPPLIER["bank_name"], size=9)
     sheet.text(left + 5, row1_bottom - 5, "Банк получателя", size=6.5)
     sheet.text(split_x + 5, top + 12, "БИК", size=6.5)
     sheet.text(label_x + 5, top + 12, SUPPLIER["bik"], size=8)
@@ -218,10 +218,10 @@ def _draw_bank_box(sheet: _Sheet, *, left: float, right: float, top: float) -> f
     sheet.text(label_x + 5, top + 30, SUPPLIER["corr_account"], size=8)
 
     sheet.text(left + 5, row1_bottom + 10, f"ИНН   {SUPPLIER['inn']}", size=7.5)
-    sheet.text(left + 5, row1_bottom + 24, SUPPLIER["name"], font=FONT_BOLD, size=8)
+    sheet.text(left + 5, row1_bottom + 24, SUPPLIER["name"], size=8)
     sheet.text(left + 5, bottom - 5, "Получатель", size=6.5)
-    sheet.text(split_x + 5, row1_bottom + 26, "Сч. №", size=6.5)
-    sheet.text(label_x + 5, row1_bottom + 26, SUPPLIER["account"], size=8)
+    sheet.text(split_x + 5, row1_bottom + 12, "Сч. №", size=6.5)
+    sheet.text(label_x + 5, row1_bottom + 12, SUPPLIER["account"], size=8)
     return bottom
 
 
