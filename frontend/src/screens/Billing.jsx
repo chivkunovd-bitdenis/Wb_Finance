@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api';
 import { useStore } from '../StoreContext';
 
-const PLAN_PRICE = 1490;
+// Цена одного маркетплейса за месяц; счёт выставляется на выбранные маркетплейсы.
+const MARKETPLACE_PRICE = 1490;
+
+const MARKETPLACES = [
+  { code: 'wb', label: 'Wildberries' },
+  { code: 'ozon', label: 'Ozon' },
+];
 
 const STATUS_CONFIG = {
   inactive: { label: 'Не активна',        color: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
@@ -13,12 +18,41 @@ const STATUS_CONFIG = {
   lifetime: { label: 'Безлимитный доступ', color: '#0ea5e9',              bg: '#e0f2fe'              },
 };
 
+const INVOICE_STATUS_CONFIG = {
+  issued:    { label: 'Выставлен', color: '#7c3aed',              bg: '#f5f3ff' },
+  paid:      { label: 'Оплачен',   color: 'var(--green)',          bg: 'var(--green-light)' },
+  cancelled: { label: 'Отменён',   color: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
+};
+
 const PLAN_FEATURES = [
   'Дашборд с прибылью, маржой и ROI',
   'Аналитика по артикулам и воронке',
   'Учёт себестоимости и опер. расходов',
   'AI CFO — краткий аудит каждый день',
 ];
+
+const EMPTY_REQUISITES = { name: '', inn: '', kpp: '', address: '' };
+
+const inputStyle = {
+  width: '100%',
+  background: 'var(--bg-secondary)',
+  border: '0.5px solid var(--border-mid)',
+  borderRadius: 8,
+  padding: '8px 12px',
+  fontSize: 13,
+  color: 'var(--text-primary)',
+  outline: 'none',
+  fontFamily: 'inherit',
+  boxSizing: 'border-box',
+};
+
+const sectionLabelStyle = {
+  fontSize: 11,
+  fontWeight: 500,
+  color: 'var(--text-tertiary)',
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+};
 
 function formatDate(dateStr) {
   if (!dateStr) return null;
@@ -29,16 +63,58 @@ function formatDate(dateStr) {
   });
 }
 
+/** «2026-10-22» -> «22.10.2026» без сдвига часового пояса. */
+function formatIsoDay(dateStr) {
+  if (!dateStr) return '';
+  const [year, month, day] = String(dateStr).split('-');
+  return `${day}.${month}.${year}`;
+}
+
+/** Дата выставления счёта по Москве, как её видит покупатель в документе. */
+function formatIssuedDay(dateTimeStr) {
+  if (!dateTimeStr) return '';
+  return new Date(dateTimeStr).toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' });
+}
+
+function formatRub(value) {
+  return `${Number(value || 0).toLocaleString('ru-RU')} ₽`;
+}
+
+function validateRequisites(form) {
+  if (!form.name.trim()) return 'Укажите наименование покупателя';
+  if (!/^\d{10}(\d{2})?$/.test(form.inn.trim())) return 'ИНН должен состоять из 10 или 12 цифр';
+  if (form.kpp.trim() && !/^\d{9}$/.test(form.kpp.trim())) return 'КПП должен состоять из 9 цифр';
+  if (!form.address.trim()) return 'Укажите адрес покупателя';
+  return '';
+}
+
+/** Скачать blob в браузере через временную ссылку. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function Billing({ billingStatus, onRefreshStatus }) {
-  useStore();
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
+  const { isOwnerStore } = useStore();
   const [loading, setLoading] = useState(false);
   const [wbApiKey, setWbApiKey] = useState('');
   const [wbApiKeyLoaded, setWbApiKeyLoaded] = useState(false);
   const [showWbKey] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('error');
+
+  const [requisites, setRequisites] = useState(null);
+  const [requisitesForm, setRequisitesForm] = useState(EMPTY_REQUISITES);
+  const [invoices, setInvoices] = useState([]);
+  const [selected, setSelected] = useState({ wb: true, ozon: false });
+  const [preview, setPreview] = useState(null);
+  const [invoiceBusy, setInvoiceBusy] = useState(false);
 
   const status = billingStatus?.subscription_status || 'inactive';
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.inactive;
@@ -49,6 +125,17 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
   const isLifetime = status === 'lifetime';
   const isActive = status === 'active';
   const showTrialForm = !isLifetime && status === 'inactive' && !trialEndsAt && !periodEndsAt;
+  // Счета выставляются только на собственный аккаунт и только если доступ не безлимитный.
+  const canInvoice = isOwnerStore && !isLifetime;
+
+  const selectedCodes = MARKETPLACES.filter((m) => selected[m.code]).map((m) => m.code);
+  const selectedKey = selectedCodes.join(',');
+  const previewForSelection = preview && preview.key === selectedKey ? preview : null;
+
+  const requisitesDirty = !requisites
+    || ['name', 'inn', 'kpp', 'address'].some(
+      (field) => String(requisitesForm[field] || '').trim() !== String(requisites[field] || '').trim(),
+    );
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +155,56 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!canInvoice) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [savedRequisites, list] = await Promise.all([
+          api.getBillingRequisites(),
+          api.listBillingInvoices(),
+        ]);
+        if (cancelled) return;
+        setRequisites(savedRequisites);
+        setRequisitesForm(
+          savedRequisites
+            ? {
+              name: savedRequisites.name || '',
+              inn: savedRequisites.inn || '',
+              kpp: savedRequisites.kpp || '',
+              address: savedRequisites.address || '',
+            }
+            : EMPTY_REQUISITES,
+        );
+        setInvoices(list);
+      } catch (e) {
+        if (!cancelled) {
+          setMsg(e?.message || 'Не удалось загрузить реквизиты и счета');
+          setMsgType('error');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [canInvoice]);
+
+  useEffect(() => {
+    if (!canInvoice || !selectedKey) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api.getBillingInvoicePreview(selectedKey.split(','));
+        if (!cancelled) setPreview({ key: selectedKey, ...data });
+      } catch {
+        if (!cancelled) setPreview(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [canInvoice, selectedKey, periodEndsAt]);
+
   const maskedWbKey = useMemo(() => {
     const s = String(wbApiKey || '').trim();
     if (!s) return 'не задан';
@@ -76,60 +213,11 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
     return `${s.slice(0, 4)}••••••••${s.slice(-4)}`;
   }, [wbApiKey, showWbKey]);
 
-  useEffect(() => {
-    if (searchParams.get('payment') !== 'return') return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const sync = await api.syncYookassaReturn();
-        if (cancelled) return;
-        if (sync.activated) {
-          setMsg('Оплата прошла успешно, подписка активирована.');
-          setMsgType('success');
-        } else if (sync.detail === 'still_pending') {
-          setMsg('Платёж ещё обрабатывается. Обновите страницу через минуту или дождитесь уведомления.');
-          setMsgType('error');
-        } else if (sync.detail === 'canceled') {
-          setMsg('Платёж отменён.');
-          setMsgType('error');
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setMsg(e?.message || 'Не удалось проверить статус оплаты');
-          setMsgType('error');
-        }
-      } finally {
-        if (!cancelled) await onRefreshStatus?.();
-        if (!cancelled) navigate('/billing', { replace: true });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [searchParams, navigate, onRefreshStatus]);
-
-  const handlePay = async () => {
-    setLoading(true);
-    setMsg('');
+  const refreshInvoices = async () => {
     try {
-      const returnUrl = `${window.location.origin}/billing?payment=return`;
-      const data = await api.createCheckout(PLAN_PRICE, returnUrl);
-      const url = String(data.confirmation_url || '').trim();
-      // Mock API без ключей ЮKassa раньше отдавал тот же return_url → ложный «возврат» и сброс UI.
-      if (!url || url === returnUrl) {
-        setMsg(
-          'Переход к оплате невозможен: на сервере не заданы YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY в backend/.env '
-          + 'или платёж вернулся без ссылки на ЮKassa. Проверьте настройки магазина.',
-        );
-        setMsgType('error');
-        return;
-      }
-      window.location.assign(url);
-    } catch (e) {
-      setMsg(e?.message || 'Не удалось создать оплату');
-      setMsgType('error');
-    } finally {
-      setLoading(false);
+      setInvoices(await api.listBillingInvoices());
+    } catch {
+      /* список обновится при следующем открытии экрана */
     }
   };
 
@@ -158,6 +246,100 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSaveRequisites = async () => {
+    const error = validateRequisites(requisitesForm);
+    if (error) {
+      setMsg(error);
+      setMsgType('error');
+      return;
+    }
+    setInvoiceBusy(true);
+    setMsg('');
+    try {
+      const saved = await api.saveBillingRequisites({
+        name: requisitesForm.name.trim(),
+        inn: requisitesForm.inn.trim(),
+        kpp: requisitesForm.kpp.trim() || null,
+        address: requisitesForm.address.trim(),
+      });
+      setRequisites(saved);
+      setRequisitesForm({
+        name: saved.name,
+        inn: saved.inn,
+        kpp: saved.kpp || '',
+        address: saved.address,
+      });
+      setMsg('Реквизиты сохранены. Теперь можно сформировать счёт.');
+      setMsgType('success');
+    } catch (e) {
+      setMsg(e?.message || 'Не удалось сохранить реквизиты');
+      setMsgType('error');
+    } finally {
+      setInvoiceBusy(false);
+    }
+  };
+
+  const handleCreateInvoice = async () => {
+    if (selectedCodes.length === 0) {
+      setMsg('Выберите хотя бы один маркетплейс');
+      setMsgType('error');
+      return;
+    }
+    if (requisitesDirty) {
+      setMsg('Сохраните реквизиты покупателя, прежде чем формировать счёт');
+      setMsgType('error');
+      return;
+    }
+    setInvoiceBusy(true);
+    setMsg('');
+    let invoice;
+    try {
+      invoice = await api.createBillingInvoice(selectedCodes);
+    } catch (e) {
+      setMsg(e?.message || 'Не удалось сформировать счёт');
+      setMsgType('error');
+      setInvoiceBusy(false);
+      return;
+    }
+    try {
+      const { blob, filename } = await api.downloadBillingInvoicePdf(invoice.id);
+      saveBlob(blob, filename || `Счет_${invoice.number_display}.pdf`);
+      setMsg(`Счёт ${invoice.number_display} сформирован и скачан.`);
+      setMsgType('success');
+    } catch (e) {
+      setMsg(
+        `Счёт ${invoice.number_display} сформирован, но файл не скачался: ${e?.message || 'ошибка'}. `
+        + 'Его можно скачать из списка ниже.',
+      );
+      setMsgType('error');
+    } finally {
+      await refreshInvoices();
+      setInvoiceBusy(false);
+    }
+  };
+
+  const handleDownloadInvoice = async (invoice) => {
+    setInvoiceBusy(true);
+    setMsg('');
+    try {
+      const { blob, filename } = await api.downloadBillingInvoicePdf(invoice.id);
+      saveBlob(blob, filename || `Счет_${invoice.number_display}.pdf`);
+    } catch (e) {
+      setMsg(e?.message || 'Не удалось скачать счёт');
+      setMsgType('error');
+    } finally {
+      setInvoiceBusy(false);
+    }
+  };
+
+  const setRequisitesField = (field) => (value) => {
+    setRequisitesForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const toggleMarketplace = (code) => {
+    setSelected((prev) => ({ ...prev, [code]: !prev[code] }));
   };
 
   return (
@@ -235,47 +417,23 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
 
           <div style={{ height: '0.5px', background: 'var(--border-light)', marginBottom: 20 }} />
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              {isLifetime ? (
-                <>
-                  <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: '#0ea5e9' }}>
-                    Бесплатно
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>навсегда</div>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em' }}>
-                    {PLAN_PRICE.toLocaleString('ru-RU')} ₽
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>в месяц</div>
-                </>
-              )}
-            </div>
-            {!isLifetime && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={handlePay}
-                  disabled={loading}
-                  style={{ padding: '8px 20px', fontSize: 13 }}
-                >
-                  {loading ? 'Переход к ЮKassa…' : isActive ? 'Продлить в ЮKassa' : 'Оплатить в ЮKassa'}
-                </button>
-                <span style={{ fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'right', maxWidth: 220, lineHeight: 1.4 }}>
-                  Карта, СБП и другие способы — через платёжный сервис{' '}
-                  <a
-                    href="https://yookassa.ru/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: 'var(--text-secondary)', fontWeight: 600 }}
-                  >
-                    ЮKassa
-                  </a>
-                </span>
-              </div>
+          <div>
+            {isLifetime ? (
+              <>
+                <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: '#0ea5e9' }}>
+                  Бесплатно
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>навсегда</div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em' }}>
+                  {MARKETPLACE_PRICE.toLocaleString('ru-RU')} ₽
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  в месяц за каждый маркетплейс
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -328,6 +486,179 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Invoice block: owner's own account only ── */}
+      {isOwnerStore && isLifetime && (
+        <div className="table-card" style={{ padding: 18 }}>
+          <span style={{ fontSize: 13, color: '#0369a1' }}>Безлимитный доступ — счёт не требуется</span>
+        </div>
+      )}
+
+      {canInvoice && (
+        <div className="table-card" style={{ padding: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>Счёт на оплату</span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 24 }}>
+            {/* Реквизиты покупателя */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={sectionLabelStyle}>Реквизиты для счёта</div>
+              <Field
+                label="Наименование покупателя"
+                value={requisitesForm.name}
+                onChange={setRequisitesField('name')}
+                placeholder='ИП Иванов Иван Иванович или ООО «Ромашка»'
+              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <Field
+                  label="ИНН (10 или 12 цифр)"
+                  value={requisitesForm.inn}
+                  onChange={setRequisitesField('inn')}
+                  inputMode="numeric"
+                  maxLength={12}
+                />
+                <Field
+                  label="КПП (9 цифр, необязательно)"
+                  value={requisitesForm.kpp}
+                  onChange={setRequisitesField('kpp')}
+                  inputMode="numeric"
+                  maxLength={9}
+                />
+              </div>
+              <Field
+                label="Адрес"
+                value={requisitesForm.address}
+                onChange={setRequisitesField('address')}
+                placeholder="Индекс, город, улица, дом"
+              />
+              <div>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={handleSaveRequisites}
+                  disabled={invoiceBusy || !requisitesDirty}
+                >
+                  Сохранить реквизиты
+                </button>
+              </div>
+            </div>
+
+            {/* Маркетплейсы, сумма и формирование счёта */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={sectionLabelStyle}>Маркетплейсы</div>
+              {MARKETPLACES.map((m) => (
+                <label key={m.code} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selected[m.code])}
+                    onChange={() => toggleMarketplace(m.code)}
+                  />
+                  <span>{`${m.label} — ${MARKETPLACE_PRICE.toLocaleString('ru-RU')} ₽/мес`}</span>
+                </label>
+              ))}
+
+              <div style={{
+                background: 'var(--bg-secondary)',
+                borderRadius: 8,
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}>
+                {previewForSelection ? (
+                  <>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>
+                      {`Итого: ${formatRub(previewForSelection.amount)}`}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {`Счёт на период с ${formatIsoDay(previewForSelection.period_start)} по ${formatIsoDay(previewForSelection.period_end)}`}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                    {selectedCodes.length === 0 ? 'Выберите маркетплейс' : 'Считаем сумму и период…'}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleCreateInvoice}
+                  disabled={invoiceBusy || selectedCodes.length === 0 || requisitesDirty}
+                  style={{ padding: '8px 20px', fontSize: 13 }}
+                >
+                  {invoiceBusy ? 'Формируем счёт…' : 'Сформировать счёт'}
+                </button>
+                {requisitesDirty && (
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                    Сохраните реквизиты покупателя, чтобы сформировать счёт.
+                  </span>
+                )}
+              </div>
+
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                После оплаты доступ продлится на период из счёта. Оплата по счёту поступает в течение 1–3 рабочих дней.
+              </p>
+            </div>
+          </div>
+
+          {invoices.length > 0 && (
+            <div style={{ marginTop: 22 }}>
+              <div style={{ ...sectionLabelStyle, marginBottom: 8 }}>Ваши счета</div>
+              <div className="table-wrap" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '8px 10px' }}>Номер</th>
+                      <th style={{ textAlign: 'left', padding: '8px 10px' }}>Дата</th>
+                      <th style={{ textAlign: 'left', padding: '8px 10px' }}>Период</th>
+                      <th style={{ textAlign: 'right', padding: '8px 10px' }}>Сумма</th>
+                      <th style={{ textAlign: 'left', padding: '8px 10px' }}>Статус</th>
+                      <th style={{ textAlign: 'right', padding: '8px 10px' }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoices.map((invoice) => {
+                      const statusInfo = INVOICE_STATUS_CONFIG[invoice.status] || INVOICE_STATUS_CONFIG.issued;
+                      return (
+                        <tr key={invoice.id} style={{ borderTop: '0.5px solid var(--border-light)' }}>
+                          <td style={{ padding: '8px 10px', fontWeight: 600 }}>{invoice.number_display}</td>
+                          <td style={{ padding: '8px 10px' }}>{formatIssuedDay(invoice.issued_at)}</td>
+                          <td style={{ padding: '8px 10px' }}>
+                            {`${formatIsoDay(invoice.period_start)} — ${formatIsoDay(invoice.period_end)}`}
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right' }}>{formatRub(invoice.amount)}</td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <span style={{
+                              fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20,
+                              color: statusInfo.color, background: statusInfo.bg,
+                            }}>
+                              {statusInfo.label}
+                            </span>
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                            <button
+                              type="button"
+                              className="btn-outline"
+                              onClick={() => handleDownloadInvoice(invoice)}
+                              disabled={invoiceBusy}
+                            >
+                              Скачать
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -387,6 +718,23 @@ export default function Billing({ billingStatus, onRefreshStatus }) {
         </div>
       )}
     </div>
+  );
+}
+
+function Field({ label, value, onChange, placeholder, inputMode, maxLength }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{label}</span>
+      <input
+        style={inputStyle}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        inputMode={inputMode}
+        maxLength={maxLength}
+        autoComplete="off"
+      />
+    </label>
   );
 }
 
