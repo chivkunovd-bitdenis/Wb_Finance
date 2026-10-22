@@ -535,6 +535,69 @@ export async function getBillingReminders() {
   return res.json();
 }
 
+// ── Billing: реквизиты покупателя и счета на оплату ──
+
+async function billingRequest(path, init = {}) {
+  const res = await apiFetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...headers(), ...(init.headers || {}) },
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Реквизиты покупателя для счёта или null, если ещё не сохранены. */
+export function getBillingRequisites() {
+  return billingRequest('/billing/requisites');
+}
+
+export function saveBillingRequisites(requisites) {
+  return billingRequest('/billing/requisites', { method: 'PUT', body: JSON.stringify(requisites) });
+}
+
+/** Период и сумма счёта без выпуска. marketplaces — массив кодов: ['wb'], ['ozon'] или ['wb', 'ozon']. */
+export function getBillingInvoicePreview(marketplaces) {
+  const query = new URLSearchParams({ marketplaces: marketplaces.join(',') });
+  return billingRequest(`/billing/invoices/preview?${query}`);
+}
+
+export function createBillingInvoice(marketplaces) {
+  return billingRequest('/billing/invoices', { method: 'POST', body: JSON.stringify({ marketplaces }) });
+}
+
+export function listBillingInvoices() {
+  return billingRequest('/billing/invoices');
+}
+
+/** Скачать PDF счёта: возвращает blob и имя файла из Content-Disposition. */
+export async function downloadBillingInvoicePdf(invoiceId) {
+  const res = await apiFetch(
+    `${API_BASE}/billing/invoices/${encodeURIComponent(invoiceId)}/pdf`,
+    { headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  let filename = '';
+  if (m) {
+    try {
+      filename = decodeURIComponent(m[1].trim());
+    } catch {
+      filename = '';
+    }
+  }
+  const blob = await res.blob();
+  return { blob, filename };
+}
+
 // ── AI module (tasks + hypotheses) ────────────────────────────────────────────
 
 export async function getAiTasks() {

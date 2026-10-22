@@ -14,6 +14,8 @@ from app.models.operational_expense import OperationalExpense
 from app.models.subscription import Subscription
 from app.models.payment import Payment
 from app.models.license import License
+from app.models.billing_requisites import BillingRequisites
+from app.models.billing_invoice import BillingInvoice
 from app.models.reminder_log import ReminderLog
 from app.models.webhook_event import WebhookEvent
 from app.models.daily_brief import DailyBrief
@@ -61,6 +63,8 @@ __all__ = [
     "Subscription",
     "Payment",
     "License",
+    "BillingRequisites",
+    "BillingInvoice",
     "ReminderLog",
     "WebhookEvent",
     "DailyBrief",
