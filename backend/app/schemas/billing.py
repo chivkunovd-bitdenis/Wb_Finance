@@ -12,6 +12,11 @@ class BillingStatusResponse(BaseModel):
     auto_renew: bool
     is_access_blocked: bool
     days_left: int
+    # own — подписка самого пользователя; granted — доступ по подписке владельца магазина
+    access_source: str = "own"
+    store_owner_email: str | None = None
+    # До какого срока действует доступ (для granted — срок подписки владельца), None если неизвестно/бессрочно
+    access_until: str | None = None
 
 
 class CheckoutRequest(BaseModel):

@@ -22,7 +22,9 @@ import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignatu
 export default function Layout() {
   const { logout: authLogout } = useAuth();
   const { cache, updateCache, clearCache } = useCache();
-  const { activeStoreOwnerId, activeStoreLabel } = useStore();
+  const { activeStoreOwnerId, activeStoreLabel, stores, storesError } = useStore();
+  // Статус доступа зависит от активного магазина, поэтому запрашиваем его, когда список магазинов уже загружен.
+  const storesReady = stores.length > 0 || Boolean(storesError);
   const logout = useCallback(() => {
     clearCache();
     authLogout();
@@ -89,10 +91,13 @@ export default function Layout() {
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
   const financeMissingActive = isFinanceMissingSyncActive(financeMissingSync);
   const funnelTailActive = isFunnelTailSyncActive(funnelTailSync);
+  const billingRequestRef = useRef(0);
   const loadBillingStatus = useCallback(async () => {
+    const requestId = ++billingRequestRef.current;
     try {
       const data = await api.getBillingStatus();
-      setBillingStatus(data);
+      // Ответ запроса, опередившего смену магазина, не должен перекрывать текущий статус доступа.
+      if (requestId === billingRequestRef.current) setBillingStatus(data);
     } catch (e) {
       if (e?.message === 'unauthorized') {
         clearCache();
@@ -334,8 +339,9 @@ export default function Layout() {
   const blockContentForSyncError = Boolean(initialError) && !isBillingPath && marketplace === 'wb';
 
   useEffect(() => {
+    if (!storesReady) return;
     loadBillingStatus();
-  }, [loadBillingStatus, location.pathname]);
+  }, [loadBillingStatus, location.pathname, activeStoreOwnerId, storesReady]);
 
   return (
     <div className={`layout ${marketplace === 'wb' ? '' : 'marketplace-mode'}`.trim()}>
@@ -536,9 +542,15 @@ export default function Layout() {
               )}
 
               {billingStatus?.subscription_status !== 'lifetime' && billingStatus?.days_left <= 3 && (
-                <div className="alert alert-danger" style={{ marginBottom: 12 }}>
-                  Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
-                </div>
+                billingStatus?.access_source === 'granted' ? (
+                  <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+                    Доступ к магазину по подписке владельца: осталось дней {billingStatus.days_left}. Оплачивает владелец магазина.
+                  </div>
+                ) : (
+                  <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+                    Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
+                  </div>
+                )
               )}
               {marketplace === 'wb' && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
                 <div className="marketplace-notice marketplace-notice-warning" data-testid="wb-profit-basis-note">

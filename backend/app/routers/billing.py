@@ -8,11 +8,12 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_store_context
 from app.models.billing_invoice import BillingInvoice
 from app.models.billing_requisites import BillingRequisites
 from app.models.reminder_log import ReminderLog
 from app.models.user import User
+from app.services.store_access_service import StoreContext
 from app.schemas.billing import (
     AdminBillingInvoiceResponse,
     BillingInvoiceResponse,
@@ -58,20 +59,47 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 @router.get("/status", response_model=BillingStatusResponse)
 def billing_status(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
-    return BillingStatusResponse(**get_billing_status(db, current_user))
+    """
+    Доступ к активному магазину.
+
+    В собственном магазине — подписка пользователя. В выданном магазине — подписка владельца:
+    сотрудник видит, до какого срока действует доступ, и не видит счетов и кнопок оплаты.
+    """
+    owner = store_ctx.store_owner
+    payload = get_billing_status(db, owner)
+    granted = not store_ctx.is_owner
+    access_until = None
+    if payload["subscription_status"] != "lifetime":
+        access_until = payload["current_period_ends_at"] or payload["trial_ends_at"]
+    return BillingStatusResponse(
+        **payload,
+        access_source="granted" if granted else "own",
+        store_owner_email=str(owner.email) if granted else None,
+        access_until=access_until,
+    )
+
+
+def _require_own_store(store_ctx: StoreContext) -> None:
+    """Оплата и счета относятся только к собственному магазину; в выданном магазине их нет."""
+    if not store_ctx.is_owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Оплату вносит владелец магазина",
+        )
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
 def checkout(
     body: CheckoutRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    _require_own_store(store_ctx)
     try:
-        result = create_checkout(db, current_user, Decimal(str(body.amount)), body.return_url)
+        result = create_checkout(db, store_ctx.viewer, Decimal(str(body.amount)), body.return_url)
     except YooKassaRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
     return CheckoutResponse(**result)
@@ -79,12 +107,13 @@ def checkout(
 
 @router.post("/yookassa/sync-return", response_model=YookassaSyncReturnResponse)
 def yookassa_sync_return(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Синхронизировать последний ожидающий платёж с API ЮKassa (после redirect)."""
+    _require_own_store(store_ctx)
     try:
-        result = sync_latest_yookassa_payment(db, current_user)
+        result = sync_latest_yookassa_payment(db, store_ctx.viewer)
     except YooKassaRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
     return YookassaSyncReturnResponse(**result)
@@ -243,10 +272,12 @@ def _check_admin_secret(x_admin_secret: str | None) -> None:
 
 @router.get("/requisites", response_model=BillingRequisitesResponse | None)
 def get_billing_requisites(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Реквизиты покупателя текущего пользователя или null, если ещё не сохранены."""
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     row = db.query(BillingRequisites).filter(BillingRequisites.user_id == str(current_user.id)).first()
     return _requisites_response(row) if row is not None else None
 
@@ -254,9 +285,11 @@ def get_billing_requisites(
 @router.put("/requisites", response_model=BillingRequisitesResponse)
 def put_billing_requisites(
     body: BillingRequisitesIn,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     user_id = str(current_user.id)
     row = db.query(BillingRequisites).filter(BillingRequisites.user_id == user_id).first()
     if row is None:
@@ -275,10 +308,12 @@ def put_billing_requisites(
 @router.get("/invoices/preview", response_model=InvoicePreviewResponse)
 def preview_billing_invoice(
     marketplaces: str = Query(..., description="Коды маркетплейсов через запятую: wb, ozon"),
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Период и сумма счёта без выпуска: что будет выставлено, если нажать «Сформировать счёт»."""
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     try:
         preview = preview_invoice_period(db, current_user, marketplaces.split(","), utc_now())
     except (InvoiceError, ValueError) as exc:
@@ -294,10 +329,12 @@ def preview_billing_invoice(
 @router.post("/invoices", response_model=BillingInvoiceResponse)
 def create_billing_invoice(
     body: CreateInvoiceRequest,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
     """Выставить счёт на выбранные маркетплейсы или вернуть уже выставленный такой же (тот же номер)."""
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     try:
         invoice = create_or_reuse_invoice(db, current_user, body.marketplaces, utc_now())
     except (InvoiceError, ValueError) as exc:
@@ -307,18 +344,22 @@ def create_billing_invoice(
 
 @router.get("/invoices", response_model=list[BillingInvoiceResponse])
 def list_billing_invoices(
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     return [_invoice_response(invoice) for invoice in list_user_invoices(db, str(current_user.id))]
 
 
 @router.get("/invoices/{invoice_id}/pdf")
 def download_billing_invoice_pdf(
     invoice_id: str,
-    current_user: User = Depends(get_current_user),
+    store_ctx: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ):
+    _require_own_store(store_ctx)
+    current_user = store_ctx.viewer
     invoice = find_user_invoice(db, str(current_user.id), invoice_id)
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")

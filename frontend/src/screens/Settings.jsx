@@ -1,43 +1,13 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../api';
 import { useStore } from '../StoreContext';
 
 export default function Settings() {
-  const { refreshStores, activeStore, activeStoreOwnerId, isOwnerStore } = useStore();
-  const [email, setEmail] = useState('');
-  const [lockedEmail, setLockedEmail] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const isGranted = Boolean(lockedEmail);
+  const { activeStore, activeStoreOwnerId, isOwnerStore } = useStore();
   const canManageOzon = Boolean(activeStore && isOwnerStore);
-  const value = isGranted ? lockedEmail : email;
-
-  const loadExisting = useCallback(async () => {
-    setError('');
-    try {
-      const data = await api.getOutgoingStoreGrants();
-      const grants = Array.isArray(data?.grants) ? data.grants : [];
-      const active = grants.find((g) => g.status === 'active' && !g.revoked_at) || null;
-      if (active?.viewer_email) {
-        setLockedEmail(String(active.viewer_email));
-      } else {
-        setLockedEmail('');
-      }
-    } catch (e) {
-      setError(e?.message || 'Не удалось загрузить настройки доступа');
-    }
-  }, []);
-
-  useEffect(() => {
-    loadExisting();
-  }, [loadExisting]);
-
-  const helperText = useMemo(() => {
-    if (isGranted) return 'Доступ выдан. Можно отключить в любой момент.';
-    return 'Введите e-mail селлера (существующего в системе), которому вы хотите выдать доступ к своему магазину.';
-  }, [isGranted]);
+  // Сотрудников приглашает только владелец магазина: в чужом кабинете блок скрыт.
+  const canManageTeam = Boolean(activeStore && isOwnerStore);
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -46,96 +16,225 @@ export default function Settings() {
       <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
       <OzonFinancialSettings key={`finance:${activeStoreOwnerId || 'self'}`} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
 
-      <div
-        style={{
-          padding: 14,
-          border: '1px solid rgba(0,0,0,0.12)',
-          borderRadius: 12,
-          background: 'white',
-        }}
-      >
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Выдать доступ к магазину</div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>{helperText}</div>
+      <TeamAccessSettings canManage={canManageTeam} />
+    </div>
+  );
+}
 
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={value}
-            disabled={loading || isGranted}
-            placeholder="seller@example.com"
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ minWidth: 260, flex: '1 1 260px' }}
-          />
+const teamRowStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 10,
+  padding: '8px 0',
+  borderBottom: '1px solid rgba(0,0,0,0.06)',
+  fontSize: 13,
+};
 
-          {!isGranted ? (
-            <button
-              className="btn-primary"
-              disabled={loading || !String(email).trim()}
-              onClick={async () => {
-                setLoading(true);
-                setError('');
-                try {
-                  const target = String(email).trim();
-                  await api.grantStoreAccess(target);
-                  setLockedEmail(target);
-                  setEmail('');
-                  await refreshStores();
-                } catch (e) {
-                  setError(e?.message || 'Не удалось выдать доступ');
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              {loading ? '...' : 'Выдать доступ'}
-            </button>
-          ) : (
-            <button
-              className="btn-danger"
-              disabled={loading}
-              onClick={async () => {
-                const ok = window.confirm('Отключить доступ селлеру к вашему магазину?');
-                if (!ok) return;
-                setLoading(true);
-                setError('');
-                try {
-                  await api.revokeStoreAccess(String(lockedEmail));
-                  setLockedEmail('');
-                  await refreshStores();
-                } catch (e) {
-                  setError(e?.message || 'Не удалось отключить доступ');
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              {loading ? '...' : 'Отключить доступ'}
-            </button>
-          )}
-        </div>
+function formatInviteDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('ru');
+}
 
-        {isGranted && (
-          <div
-            style={{
-              marginTop: 10,
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: '#e8f4ec',
-              color: '#155724',
-              border: '1px solid #c3e6cb',
-              fontSize: 13,
-            }}
-          >
-            Доступ активен для: <strong>{lockedEmail}</strong>
-          </div>
-        )}
+function TeamAccessSettings({ canManage }) {
+  const [managers, setManagers] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
 
-        {error && (
-          <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
-            {error}
-          </div>
-        )}
+  const reload = useCallback(async () => {
+    try {
+      const data = await api.getStoreTeam();
+      setManagers(Array.isArray(data?.managers) ? data.managers : []);
+      setInvites(Array.isArray(data?.invites) ? data.invites : []);
+      setLoadError('');
+    } catch (e) {
+      setLoadError(e?.message || 'Не удалось загрузить список сотрудников');
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canManage) reload();
+  }, [canManage, reload]);
+
+  if (!canManage) return null;
+
+  async function handleInvite() {
+    const target = String(email).trim();
+    if (!target) return;
+    setBusy(true);
+    setError('');
+    setCopied(false);
+    try {
+      const data = await api.createStoreInvite(target);
+      setCreated({
+        email: String(data.email),
+        link: `${window.location.origin}${data.invite_url_path}`,
+        expiresAt: data.expires_at,
+      });
+      setEmail('');
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось создать приглашение');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!created) return;
+    setError('');
+    try {
+      await navigator.clipboard.writeText(created.link);
+      setCopied(true);
+    } catch {
+      setError('Не удалось скопировать автоматически. Выделите ссылку и скопируйте вручную.');
+    }
+  }
+
+  async function handleRevokeManager(managerEmail) {
+    const ok = window.confirm('Отключить доступ сотруднику к вашему кабинету?');
+    if (!ok) return;
+    setBusy(true);
+    setError('');
+    try {
+      await api.revokeStoreAccess(String(managerEmail));
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось отключить доступ');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRevokeInvite(inviteId) {
+    setBusy(true);
+    setError('');
+    try {
+      await api.revokeStoreInvite(inviteId);
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось отозвать приглашение');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 14,
+        border: '1px solid rgba(0,0,0,0.12)',
+        borderRadius: 12,
+        background: 'white',
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Сотрудники</div>
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>
+        Пригласите сотрудника по email. Он зарегистрируется по ссылке и увидит ваш кабинет.
       </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          type="email"
+          value={email}
+          disabled={busy}
+          placeholder="employee@example.com"
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ minWidth: 260, flex: '1 1 260px' }}
+        />
+        <button className="btn-primary" disabled={busy || !String(email).trim()} onClick={handleInvite}>
+          {busy ? '...' : 'Пригласить'}
+        </button>
+      </div>
+
+      {created && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: '#e8f4ec',
+            color: '#155724',
+            border: '1px solid #c3e6cb',
+            fontSize: 13,
+          }}
+        >
+          <div>
+            Приглашение для <strong>{created.email}</strong> готово. Действует до {formatInviteDate(created.expiresAt)}.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              readOnly
+              value={created.link}
+              onFocus={(e) => e.target.select()}
+              style={{ flex: '1 1 260px', minWidth: 200 }}
+            />
+            <button className="btn-primary" onClick={handleCopy}>
+              {copied ? 'Скопировано' : 'Скопировать'}
+            </button>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Отправьте ссылку сотруднику — по ней он зарегистрируется и увидит ваш кабинет
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, fontWeight: 600, fontSize: 13 }}>Сотрудники с доступом</div>
+      {!loaded ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Загрузка…</div>
+      ) : managers.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Пока никого нет</div>
+      ) : (
+        managers.map((m) => (
+          <div key={m.viewer_user_id} style={teamRowStyle}>
+            <span>{m.email}</span>
+            <button className="btn-danger" disabled={busy} onClick={() => handleRevokeManager(m.email)}>
+              Отключить
+            </button>
+          </div>
+        ))
+      )}
+
+      <div style={{ marginTop: 16, fontWeight: 600, fontSize: 13 }}>Приглашения</div>
+      {!loaded ? null : invites.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Нет активных приглашений</div>
+      ) : (
+        invites.map((i) => (
+          <div key={i.id} style={teamRowStyle}>
+            <span>
+              {i.email}{' '}
+              <span style={{ color: i.status === 'expired' ? 'var(--red)' : 'var(--text-tertiary)' }}>
+                {i.status === 'expired' ? '· срок истёк' : `· действует до ${formatInviteDate(i.expires_at)}`}
+              </span>
+            </span>
+            <button className="btn-danger" disabled={busy} onClick={() => handleRevokeInvite(i.id)}>
+              Отозвать
+            </button>
+          </div>
+        ))
+      )}
+
+      {loadError && (
+        <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
+          {loadError}
+        </div>
+      )}
+      {error && (
+        <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }
