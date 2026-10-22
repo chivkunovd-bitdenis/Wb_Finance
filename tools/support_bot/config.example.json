@@ -1,0 +1,9 @@
+{
+  "state_dir": "~/.wbf-support-bot",
+  "bot_token": "",
+  "owner_user_id": null,
+  "internal_user_ids": [],
+  "chats": {},
+  "openai_api_key": "",
+  "transcribe_model": "gpt-4o-mini-transcribe"
+}
