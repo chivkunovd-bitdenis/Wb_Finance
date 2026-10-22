@@ -105,7 +105,7 @@ function getErrorMsg(data, fallback) {
   return fallback;
 }
 
-export async function register(email, password, wb_api_key, promo_code) {
+export async function register(email, password, wb_api_key, promo_code, invite_token) {
   const res = await apiFetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: headers(false),
@@ -114,6 +114,7 @@ export async function register(email, password, wb_api_key, promo_code) {
       password,
       wb_api_key: wb_api_key || null,
       promo_code: promo_code || null,
+      invite_token: invite_token || null,
     }),
   });
   const data = await res.json().catch(() => ({}));
@@ -1135,6 +1136,75 @@ export async function revokeStoreAccess(granteeEmail) {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({ grantee_email: granteeEmail }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+// ── Сотрудники: приглашения по ссылке ─────────────────────────────────────────
+
+/** Команда владельца: активные сотрудники и приглашения. Возвращает { managers, invites }. */
+export async function getStoreTeam() {
+  const res = await apiFetch(`${API_BASE}/stores/team`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Создать приглашение. В ответе invite_url_path со ссылкой; токен виден только в этом ответе. */
+export async function createStoreInvite(email) {
+  const res = await apiFetch(`${API_BASE}/stores/invites`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ email }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function revokeStoreInvite(inviteId) {
+  const res = await apiFetch(`${API_BASE}/stores/invites/${encodeURIComponent(inviteId)}/revoke`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Публичная проверка приглашения по токену (вход не нужен). */
+export async function lookupStoreInvite(token) {
+  const res = await apiFetch(
+    `${API_BASE}/stores/invites/lookup?token=${encodeURIComponent(token)}`,
+    { headers: headers(false) },
+  );
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Принять приглашение текущим пользователем. Возвращает { owner_user_id, owner_email, status }. */
+export async function acceptStoreInvite(token) {
+  const res = await apiFetch(`${API_BASE}/stores/invites/accept`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ token }),
   });
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {

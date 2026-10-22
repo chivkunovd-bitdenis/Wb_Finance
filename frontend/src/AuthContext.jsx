@@ -22,8 +22,8 @@ export function AuthProvider({ children }) {
     return data;
   }, [setToken]);
 
-  const register = useCallback(async (email, password, wb_api_key, promo_code) => {
-    await api.register(email, password, wb_api_key, promo_code);
+  const register = useCallback(async (email, password, wb_api_key, promo_code, invite_token) => {
+    await api.register(email, password, wb_api_key, promo_code, invite_token);
     const data = await api.login(email, password);
     setToken(data.access_token);
     return data;
