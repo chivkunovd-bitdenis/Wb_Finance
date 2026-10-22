@@ -33,3 +33,22 @@ pnpm-debug.log*
 
 # Local-only test credentials (never commit)
 .local-test-creds.txt
+
+# Бот поддержки клиентов (tools/support_bot): конфиг с токенами и переписка с клиентами
+# не коммитятся, даже если кто-то укажет папку состояния внутри репозитория.
+tools/support_bot/config.json
+tools/support_bot/state/
+tools/support_bot/.venv/
+**/wbf-support-bot-state/
+**/.wbf-support-bot/
+**/state.db
+**/state.db-wal
+**/state.db-shm
+**/watch.last
+**/watch.last.tmp
+**/promise_alerts.json
+**/promise_alerts.json.tmp
+
+# Кэши инструментов
+.pytest_cache/
+.ruff_cache/

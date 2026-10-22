@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Шаблон. install.sh подставляет вместо __PYTHON__, __APP_DIR__, __CONFIG__ и __LOG__ реальные пути.
+     Токен бота здесь НЕ хранится: он только в config.json (права 600). -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>pro.wbfinance.support-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>wbf_support_bot</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>__CONFIG__</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__APP_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Перезапуск при падении. Пауза 30 с не даёт уйти в быстрый цикл перезапусков. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>
