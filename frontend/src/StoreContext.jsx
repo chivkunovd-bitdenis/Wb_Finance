@@ -40,11 +40,21 @@ export function StoreProvider({ children }) {
       const list = Array.isArray(data?.stores) ? data.stores : [];
       setStores(list);
 
+      // Берём выбранный магазин из localStorage в момент ответа, а не из замыкания:
+      // параллельное обновление, начатое раньше переключения, не должно откатить выбор.
+      const current = lsGet(ACTIVE_STORE_KEY) || '';
       // Ensure active store is accessible; otherwise fallback to own store.
-      const activeOk = activeStoreOwnerId && list.some((s) => String(s.owner_user_id) === String(activeStoreOwnerId));
-      if (!activeOk) {
+      const activeOk = current && list.some((s) => String(s.owner_user_id) === String(current));
+      if (activeOk) {
+        setActiveStoreOwnerIdState(current);
+      } else {
+        // Сотрудник без собственного WB-ключа с одним выданным магазином попадает сразу в него,
+        // а не в пустой собственный кабинет.
+        const preferred = data?.default_store_owner_user_id ? String(data.default_store_owner_user_id) : '';
         const own = list.find((s) => s.access === 'owner') || list[0];
-        const next = own ? String(own.owner_user_id) : '';
+        const next = preferred && list.some((s) => String(s.owner_user_id) === preferred)
+          ? preferred
+          : own ? String(own.owner_user_id) : '';
         setActiveStoreOwnerIdState(next);
         lsSet(ACTIVE_STORE_KEY, next);
       }
@@ -53,7 +63,7 @@ export function StoreProvider({ children }) {
     } finally {
       setLoadingStores(false);
     }
-  }, [activeStoreOwnerId]);
+  }, []);
 
   useEffect(() => {
     refreshStores();

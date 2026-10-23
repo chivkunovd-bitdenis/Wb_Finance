@@ -4,6 +4,8 @@ import * as api from '../api';
 import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
+import TableExpandButton from '../components/TableExpandButton';
+import useFullscreenCard from '../components/useFullscreenCard';
 
 function computeCogsFromShare(revenue, sharePct) {
   const rev = Number(revenue);
@@ -47,6 +49,7 @@ function formatNum(n) {
 export default function Dashboard({ range, refreshTrigger, cache, updateCache }) {
   const { dateFrom, dateTo } = range || {};
   const storeId = useActiveStoreId();
+  const detailsTable = useFullscreenCard();
   const [planFactEnabled, setPlanFactEnabled] = useState(false);
   const [planFactEdit, setPlanFactEdit] = useState(false);
   const [planFactMonths, setPlanFactMonths] = useState([]);
@@ -484,10 +487,11 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
       <ChartCard title="Продажи, ₽" badge="сумма за день" labels={labels} data={revenueSeries} borderColor="#14b8a6" />
 
-      <div className="table-card">
+      <div className={detailsTable.cardClassName}>
         <div className="table-head-row">
           <h3>Детализация по дням</h3>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <TableExpandButton expanded={detailsTable.expanded} onToggle={detailsTable.toggle} />
             <div className="columns-menu" ref={columnsMenuRef}>
               <button
                 type="button"

@@ -274,7 +274,7 @@ function DailyTable({ rows, currency, incomplete, warnings, marketplace }) {
     return <div className="marketplace-empty" data-testid="marketplace-daily-empty">Нет дневных строк за выбранный период.</div>;
   }
   return (
-    <DataTable title="Динамика по дням" tag={`${rows.length} дн.`}>
+    <DataTable title="Динамика по дням" tag={`${rows.length} дн.`} expandable>
       <table className="marketplace-wide-table" data-testid="marketplace-daily-table">
         <thead><tr><th className="left">День</th><th>Эквайринг</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>Нетто, шт.</th>{DAILY_COLUMNS.filter(([key]) => key !== 'acquiring').map(([key, label]) => <th key={key}>{key === 'margin' ? profitLabel(marketplace) : label}</th>)}</tr></thead>
         <tbody>
