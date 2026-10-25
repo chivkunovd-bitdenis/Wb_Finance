@@ -99,4 +99,21 @@ if _AI_REVIEW_REPLIES_BEAT_ENABLED:
         }
     )
 
+# Ozon: enabled by default because automatic synchronisation is part of the connection flow; set to 0 to disable.
+_OZON_DAILY_REFRESH_BEAT_ENABLED = (
+    (os.getenv("OZON_DAILY_REFRESH_BEAT_ENABLED") or "1").strip().lower() in {"1", "true", "yes", "on"}
+)
+
+if _OZON_DAILY_REFRESH_BEAT_ENABLED:
+    beat_schedule.update(
+        {
+            # Moscow time: refresh the last three completed Ozon days for every ready connection
+            # and resume any unfinished year-to-date backfill.
+            "ozon-daily-refresh-0630-msk": {
+                "task": "ozon_daily_refresh",
+                "schedule": crontab(hour=6, minute=30),
+            },
+        }
+    )
+
 celery_app.conf.beat_schedule = beat_schedule

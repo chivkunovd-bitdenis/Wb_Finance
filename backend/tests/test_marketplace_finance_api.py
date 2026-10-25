@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -21,6 +22,21 @@ from app.models.ozon import (
 )
 from app.models.store_access_grant import StoreAccessGrant
 from app.models.user import User
+
+
+@pytest.fixture(autouse=True)
+def _no_eager_worker(monkeypatch):
+    """Saving a connection queues a backfill; API tests must never run the worker eagerly against the database."""
+    monkeypatch.setattr("app.routers.marketplace_finance.ozon_sync_run.delay", lambda run_id: None)
+
+
+def _retire_auto_backfill(session, owner_id: str) -> None:
+    """Saving a connection queues the automatic backfill; the stubbed broker never runs it, so retire it to free the owner's slot."""
+    session.query(OzonSyncRun).filter(
+        OzonSyncRun.user_id == owner_id,
+        OzonSyncRun.status.in_(("queued", "running")),
+    ).update({"status": "failed"}, synchronize_session=False)
+    session.commit()
 
 
 def _user(email: str, *, tax_rate: Decimal = Decimal("0.06")) -> User:
@@ -78,6 +94,7 @@ def test_connection_is_encrypted_owner_writable_and_viewer_read_only(real_db_ses
                 json={"client_id": "ozon-client-123", "api_key": "ozon-secret-test-value"},
             )
             assert saved.status_code == 200
+            _retire_auto_backfill(real_db_session, str(owner.id))
             assert saved.json()["configured"] is True
             assert saved.json()["client_id"] == "ozon-client-123"
             assert "ozon-secret-test-value" not in saved.text
@@ -264,11 +281,17 @@ def test_sync_is_bounded_and_only_owner_queues_run(real_db_session, monkeypatch)
                 "Authorization": f"Bearer {_token(str(viewer.id))}",
                 "X-Store-Owner-Id": str(owner.id),
             }
-            client.put(
+            connected = client.put(
                 "/dashboard/marketplace/connection",
                 headers=owner_headers,
                 json={"client_id": "client", "api_key": "key"},
             )
+            assert connected.status_code == 200
+            # Saving the connection queues only the automatic backfill chunk; the manual requests below are counted separately.
+            assert len(queued) == 1
+            assert real_db_session.query(OzonSyncRun).filter_by(id=queued[0]).one().trigger == "backfill"
+            _retire_auto_backfill(real_db_session, str(owner.id))
+            queued.clear()
 
             too_long = client.post(
                 "/dashboard/marketplace/sync",
@@ -316,6 +339,7 @@ def test_changing_client_id_is_rejected_after_ledger_exists(real_db_session, mon
                 json={"client_id": "client-1", "api_key": "key-1"},
             )
             assert first.status_code == 200
+            _retire_auto_backfill(real_db_session, str(owner.id))
             active_run = OzonSyncRun(
                 user_id=str(owner.id),
                 date_from=date(2026, 10, 1),

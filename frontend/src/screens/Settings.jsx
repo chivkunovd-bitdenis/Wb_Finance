@@ -15,6 +15,7 @@ export default function Settings() {
 
       <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
       <OzonFinancialSettings key={`finance:${activeStoreOwnerId || 'self'}`} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
+      <OzonManualSync key={`sync:${activeStoreOwnerId || 'self'}`} canManage={canManageOzon} />
 
       <TeamAccessSettings canManage={canManageTeam} />
     </div>
@@ -261,127 +262,101 @@ function formatTaxRatePercent(rate) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(Number(rate) * 100)}%`;
 }
 
-function OzonFinancialSettings({ activeStoreOwnerId, canManage }) {
-  const [settings, setSettings] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [expensesConfirmedDraft, setExpensesConfirmedDraft] = useState(false);
-  const [error, setError] = useState('');
-  const [saved, setSaved] = useState(false);
-  const requestGeneration = useRef(0);
-  const originalTaxRate = settings?.tax_rate == null ? null : Number(settings.tax_rate);
-  const originalExpensesConfirmed = settings?.operation_expenses_confirmed === true;
-  const isDirty = settings !== null && expensesConfirmedDraft !== originalExpensesConfirmed;
+/** Secondary action only: Ozon data loads automatically from 1 January; this re-reads up to 31 days by hand. */
+function OzonManualSync({ canManage }) {
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const generation = ++requestGeneration.current;
-    setLoading(true);
-    setSettings(null);
-    setExpensesConfirmedDraft(false);
-    setError('');
-    setSaved(false);
-
-    api.getMarketplaceSettings({ signal: controller.signal })
-      .then((result) => {
-        if (generation !== requestGeneration.current) return;
-        setSettings(result);
-        setExpensesConfirmedDraft(result?.operation_expenses_confirmed === true);
-      })
-      .catch((loadError) => {
-        if (generation !== requestGeneration.current || controller.signal.aborted) return;
-        setError(loadError?.message || 'Не удалось загрузить налоговые и расходные настройки Ozon.');
-      })
-      .finally(() => {
-        if (generation === requestGeneration.current && !controller.signal.aborted) setLoading(false);
-      });
-
-    return () => {
-      controller.abort();
-      if (generation === requestGeneration.current) requestGeneration.current += 1;
-    };
-  }, [activeStoreOwnerId]);
-
-  const reset = () => {
-    setExpensesConfirmedDraft(originalExpensesConfirmed);
-    setError('');
-    setSaved(false);
-  };
-
-  const save = async (event) => {
+  const submit = async (event) => {
     event.preventDefault();
-    if (!canManage || saving) return;
-    const payload = {
-      operation_expenses_confirmed: expensesConfirmedDraft,
-    };
-    setSaving(true);
-    setError('');
-    setSaved(false);
+    if (!canManage || busy) return;
+    if (!dateFrom || !dateTo || dateTo < dateFrom) {
+      setMessage('Укажите даты: дата окончания не раньше даты начала.');
+      return;
+    }
+    const days = Math.floor((Date.parse(`${dateTo}T00:00:00Z`) - Date.parse(`${dateFrom}T00:00:00Z`)) / 86400000) + 1;
+    if (days > 31) {
+      setMessage('За один раз можно синхронизировать не более 31 дня.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
     try {
-      const result = await api.saveMarketplaceSettings(payload);
-      const next = {
-        tax_rate: result?.tax_rate === undefined ? originalTaxRate : result.tax_rate,
-        tax_rate_source: result?.tax_rate_source === undefined ? settings?.tax_rate_source : result.tax_rate_source,
-        operation_expenses_confirmed: result?.operation_expenses_confirmed === undefined
-          ? payload.operation_expenses_confirmed
-          : result.operation_expenses_confirmed,
-      };
-      setSettings(next);
-      setExpensesConfirmedDraft(next.operation_expenses_confirmed === true);
-      setSaved(true);
-    } catch (saveError) {
-      setError(saveError?.message || 'Не удалось сохранить настройки Ozon.');
+      const result = await api.syncMarketplaceFinance(dateFrom, dateTo);
+      setMessage(result?.status ? `Запрос принят: ${result.status}.` : 'Запрос на синхронизацию принят.');
+    } catch (error) {
+      setMessage(error?.message || 'Не удалось запустить синхронизацию Ozon.');
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  const expensesConfirmedLabel = originalExpensesConfirmed ? 'Подтверждены' : 'Не подтверждены';
+  return (
+    <section className="marketplace-settings-card" data-testid="ozon-manual-sync">
+      <div className="marketplace-settings-heading">
+        <div>
+          <h3>Синхронизация Ozon вручную</h3>
+          <p>Данные Ozon загружаются автоматически с 1 января и обновляются каждое утро. Эта кнопка нужна, чтобы перечитать отдельный период до 31 дня.</p>
+        </div>
+      </div>
+      {canManage ? (
+        <form className="marketplace-connection-form" onSubmit={submit}>
+          <label>
+            <span>С</span>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </label>
+          <label>
+            <span>По</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </label>
+          <div className="marketplace-connection-actions">
+            <button className="btn-outline" type="submit" disabled={busy} data-testid="ozon-manual-sync-submit">
+              {busy ? 'Запускаем…' : 'Синхронизировать Ozon'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="marketplace-settings-readonly">Синхронизировать Ozon может владелец магазина.</div>
+      )}
+      {message && <div className="marketplace-notice marketplace-notice-info" role="status">{message}</div>}
+    </section>
+  );
+}
 
+/** Tax comes from the WB setting; operating expenses are entered per day as in WB, with no confirmation gate. */
+function OzonFinancialSettings({ activeStoreOwnerId }) {
+  const [taxRate, setTaxRate] = useState(null);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .getMarketplaceSettings({ signal: controller.signal })
+      .then((data) => {
+        setTaxRate(data?.tax_rate ?? null);
+        setLoadError('');
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setLoadError(error?.message || 'Не удалось загрузить налоговую ставку.');
+      });
+    return () => controller.abort();
+  }, [activeStoreOwnerId]);
+
+  const taxText = formatTaxRatePercent(taxRate);
   return (
     <section className="marketplace-settings-card" data-testid="ozon-financial-settings">
       <div className="marketplace-settings-heading">
         <div>
-          <h3>Налог и общие расходы Ozon</h3>
-          <p>Ставка налога берётся из настроек Wildberries; отдельно здесь настраивается только полнота собственных расходов Ozon.</p>
+          <h3>Налог и расходы Ozon</h3>
+          <p>
+            Ставка налога берётся из настроек Wildberries: {taxText}. Операционные расходы вносятся по дням в разделе
+            «Опер. расходы»; день без записи считается нулём, как в WB.
+          </p>
         </div>
-        <span className="tag tag-gray" data-testid="ozon-financial-settings-status">
-          {loading || saving ? 'Проверяем' : error ? 'Ошибка' : 'Настроено'}
-        </span>
       </div>
-
-      {error && <div className="marketplace-notice marketplace-notice-error" role="alert" data-testid="ozon-financial-settings-error">{error}</div>}
-      {loading ? (
-        <div className="marketplace-settings-note">Загружаем настройки магазина…</div>
-      ) : canManage ? (
-        <form className="marketplace-connection-form" onSubmit={save}>
-          <div className="marketplace-settings-note" data-testid="ozon-tax-rate-readonly">
-            Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Измените её в общих настройках учёта Wildberries.
-          </div>
-          <label className="marketplace-confirmation-label">
-            <input
-              type="checkbox"
-              checked={expensesConfirmedDraft}
-              onChange={(event) => { setExpensesConfirmedDraft(event.target.checked); setSaved(false); }}
-              disabled={saving}
-              data-testid="ozon-opex-confirm"
-            />
-            <span>Подтверждаю, что все общие операционные расходы Ozon внесены.</span>
-          </label>
-          <div className="marketplace-settings-note">Если подтверждение включено, день без отдельной суммы считается днём с расходами 0 ₽. Пока оно выключено, незаполненная сумма остаётся неизвестной.</div>
-          <div className="marketplace-connection-actions">
-            <button className="btn-primary" type="submit" disabled={saving || !isDirty} data-testid="ozon-financial-settings-save">
-              {saving ? 'Сохраняем…' : 'Сохранить настройки'}
-            </button>
-            <button className="btn-outline" type="button" disabled={saving || !isDirty} onClick={reset}>Сбросить</button>
-          </div>
-        </form>
-      ) : (
-        <div className="marketplace-settings-readonly" data-testid="ozon-financial-settings-viewer-readonly">
-          Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Общие расходы: {expensesConfirmedLabel.toLowerCase()}.
-        </div>
-      )}
-      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-financial-settings-saved">Настройки сохранены.</div>}
+      {loadError && <div className="marketplace-notice marketplace-notice-error" role="alert">{loadError}</div>}
     </section>
   );
 }

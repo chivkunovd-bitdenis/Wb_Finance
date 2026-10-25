@@ -109,7 +109,7 @@ def test_normalizes_real_shaped_posting_with_product_delivery_and_positive_expen
     assert "дубли" not in " ".join(normalized["warnings"])
 
 
-def test_returns_preserve_signed_income_and_expense_reversals_and_net_zero_still_has_unknown_cogs():
+def test_returns_preserve_signed_income_and_expense_reversals_and_returned_units_net_out_of_cogs():
     sale = posting_accrual(
         201,
         total="81.00",
@@ -133,11 +133,12 @@ def test_returns_preserve_signed_income_and_expense_reversals_and_net_zero_still
     assert daily["commission"] == Decimal("0.00")
     assert daily["logistics"] == Decimal("0.00")
     assert daily["marketplace_net"] == Decimal("0.00")
-    assert daily["cogs"] is None
-    assert product["cogs"] is None
+    # The returned unit went back to stock and was resold, so the sold and returned units net to zero at cost.
     assert daily["sold_quantity"] == Decimal("1")
-    assert daily["returned_quantity"] is None
-    assert daily["net_quantity"] is None
+    assert daily["returned_quantity"] == Decimal("1")
+    assert daily["net_quantity"] == Decimal("0")
+    assert daily["cogs"] == Decimal("0")
+    assert product["cogs"] == Decimal("0")
     assert daily["reconciliation_difference"] == Decimal("0.00")
 
 
@@ -774,3 +775,65 @@ def test_identical_duplicate_is_counted_once_with_warning():
 
 def test_empty_input_returns_no_invented_day():
     assert normalize_accruals([], []) == {"daily": [], "products": [], "warnings": []}
+
+
+def test_one_posting_without_commission_block_keeps_the_day_revenue_and_marks_only_that_gap():
+    known = posting_accrual(801, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    missing = posting_accrual(802, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="sku-2")
+    del missing["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, missing], [], costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    sku_1 = product_day(normalized, "sku-1")
+    sku_2 = product_day(normalized, "sku-2")
+
+    # The known posting still counts; the day is not blanked because one detail is missing.
+    assert daily["revenue"] == Decimal("200.00")
+    assert daily["commission"] == Decimal("30.00")
+    assert daily["reconciliation_difference"] is None
+    assert daily["profitability_complete"] is False
+    # Units for the SKU with the missing block are unconfirmed, so the day's COGS stays unknown.
+    assert daily["cogs"] is None
+    assert sku_1["revenue"] == Decimal("200.00")
+    assert sku_2["revenue"] is None
+    assert any("блок commission" in warning for warning in normalized["warnings"])
+
+
+def test_product_margin_inputs_stay_known_when_another_sku_on_the_day_has_a_gap():
+    known = posting_accrual(811, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    missing = posting_accrual(812, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="sku-2")
+    del missing["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, missing], [], costs={"sku-1": Decimal("20.00")})
+    sku_1 = product_day(normalized, "sku-1")
+    sku_2 = product_day(normalized, "sku-2")
+
+    # The product's own accrual reconciles and its cost is known, so its net and COGS are computed.
+    assert sku_1["marketplace_net"] == Decimal("166.00")
+    assert sku_1["cogs"] == Decimal("20.00")
+    assert sku_1["profitability_complete"] is True
+    assert sku_2["marketplace_net"] is None
+    assert sku_2["profitability_complete"] is False
+    # The day's revenue is partial, so the known-cost share of that revenue is unknown rather than 100%.
+    assert daily_row(normalized)["cost_known_revenue_share"] is None
+
+
+def test_verified_return_posting_nets_its_unit_out_of_cogs_and_does_not_block_the_day():
+    # Shape of a real return accrual (owner-verified 2026-10-25): seller_price -4900, sale commission +2548 refunded,
+    # total -2352, quantity 1, FBO. Two units were sold the same day.
+    sale = posting_accrual(831, total="4165.00", sale="4900.00", commission="-735.00", delivery="0.00", sku="sku-1", quantity=2)
+    returned = posting_accrual(832, total="-2352.00", sale="-4900.00", commission="2548.00", delivery="0.00", sku="sku-1", quantity=1)
+    returned["posting"]["products"][0]["commission"]["seller_price"] = money("-4900.00")
+
+    normalized = normalize_accruals([sale, returned], [], costs={"sku-1": Decimal("2450.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["sold_quantity"] == Decimal("2")
+    assert daily["returned_quantity"] == Decimal("1")
+    assert daily["net_quantity"] == Decimal("1")
+    # The returned unit goes back to stock and is resold, so COGS is cost × (2 sold − 1 returned).
+    assert product["cogs"] == Decimal("2450.00")
+    assert daily["cogs"] == Decimal("2450.00")
+    assert daily["reconciliation_difference"] == Decimal("0.00")
+    assert product["profitability_complete"] is True

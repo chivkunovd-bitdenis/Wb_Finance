@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.crypto import CryptoConfigError, decrypt_text, encrypt_text
@@ -53,9 +54,33 @@ DAILY_SOURCE_QUALITY_FIELDS = (
     "sku_allocation_complete",
     "profitability_complete",
     *OZON_QUANTITY_FIELDS,
+    # Share (0..1) of the day's revenue whose SKU COGS is known; null when the day's revenue is unknown or zero.
+    "cost_known_revenue_share",
 )
 ZERO_DAY_FIELDS = DAILY_AMOUNT_FIELDS
 MAX_SYNC_DAYS = 31
+# Why a run was queued; stored on the run so chaining never guesses from timing.
+MANUAL_TRIGGER = "manual"
+BACKFILL_TRIGGER = "backfill"
+DAILY_TRIGGER = "daily"
+SYNC_TRIGGERS = (MANUAL_TRIGGER, BACKFILL_TRIGGER, DAILY_TRIGGER)
+# Beat refreshes the last three completed days for every ready connection.
+DAILY_REFRESH_DAYS = 3
+ACTIVE_RUN_STATUSES = ("queued", "running")
+FINISHED_RUN_STATUSES = ("complete", "partial")
+# Field names of the WB daily P&L row, in the order the shared Dashboard reads them.
+WB_SHAPED_PNL_FIELDS = (
+    "revenue",
+    "commission",
+    "logistics",
+    "penalties",
+    "storage",
+    "ads_spend",
+    "cogs",
+    "tax",
+    "operation_expenses",
+    "margin",
+)
 
 
 class MarketplaceFinanceError(ValueError):
@@ -90,6 +115,13 @@ def _money(value: Any) -> float | None:
     if amount is None:
         return None
     return float(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _share(value: Any) -> float | None:
+    amount = _decimal(value)
+    if amount is None:
+        return None
+    return float(amount.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 
 def _money_sum(values: list[Any]) -> float | None:
@@ -303,11 +335,19 @@ def _sync_payload(run: OzonSyncRun | None) -> dict[str, Any] | None:
     }
 
 
-def connection_status(*, db: Session, user_id: str) -> dict[str, Any]:
+def connection_status(*, db: Session, user_id: str, today: date | None = None) -> dict[str, Any]:
     row = db.query(OzonConnection).filter(OzonConnection.user_id == user_id).first()
     run = _latest_run(db, user_id)
+    backfill = _backfill_payload(db, user_id=user_id, today=today or date.today())
     if row is None:
-        return {"configured": False, "client_id": None, "status": "missing", "error": None, "sync": _sync_payload(run)}
+        return {
+            "configured": False,
+            "client_id": None,
+            "status": "missing",
+            "error": None,
+            "sync": _sync_payload(run),
+            "backfill": backfill,
+        }
     try:
         client_id = decrypt_text(row.client_id_enc)
     except (CryptoConfigError, ValueError):
@@ -324,14 +364,24 @@ def connection_status(*, db: Session, user_id: str) -> dict[str, Any]:
         "status": status,
         "error": visible_error,
         "sync": _sync_payload(run),
+        "backfill": backfill,
     }
 
 
-def enqueue_sync(*, db: Session, user_id: str, date_from: date, date_to: date) -> OzonSyncRun:
+def enqueue_sync(
+    *,
+    db: Session,
+    user_id: str,
+    date_from: date,
+    date_to: date,
+    trigger: str = MANUAL_TRIGGER,
+) -> OzonSyncRun:
     if date_to < date_from:
         raise MarketplaceFinanceError("date_to must be on or after date_from")
     if (date_to - date_from).days + 1 > MAX_SYNC_DAYS:
         raise MarketplaceFinanceError(f"A manual Ozon sync can cover at most {MAX_SYNC_DAYS} days")
+    if trigger not in SYNC_TRIGGERS:
+        raise MarketplaceFinanceError("unknown Ozon sync trigger")
     lock = _acquire_owner_lock(db, user_id)
     if lock is None:
         raise MarketplaceFinanceError("Синхронизация уже ожидает запуска или выполняется")
@@ -352,7 +402,14 @@ def enqueue_sync(*, db: Session, user_id: str, date_from: date, date_to: date) -
             # replacement. A waiting Celery delivery then sees either failed or queued,
             # never an acknowledged run orphaned by a racing replacement.
             _mark_stale_run_failed(db, active)
-        run = OzonSyncRun(user_id=user_id, date_from=date_from, date_to=date_to, status="queued", progress=0)
+        run = OzonSyncRun(
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            status="queued",
+            trigger=trigger,
+            progress=0,
+        )
         db.add(run)
         db.commit()
         db.refresh(run)
@@ -1047,22 +1104,15 @@ def _build_ozon_products(
             }
             product_tax = _derive_ozon_tax(row.get("revenue"), tax_rate)
             product_daily["tax"] = _money(product_tax)
-            state_daily = state.daily_data if isinstance(state.daily_data, dict) else {}
+            # The product row already requires its own classification, SKU allocation, accrual reconciliation,
+            # quantities and cost. A different SKU's gap or the day's total mismatch must not hide this margin.
             profitability_complete = row.get("profitability_complete") is True
-            classification_complete = row.get("accrual_classification_complete") is True
-            product_allocation_complete = row.get("sku_allocation_complete") is True
-            sku_allocation_complete = state_daily.get("sku_allocation_complete") is True
-            daily_difference = _decimal(state_daily.get("reconciliation_difference"))
             product_net = _decimal(row.get("marketplace_net"))
             product_cogs = _decimal(row.get("cogs"))
             product_daily["margin"] = (
                 _money(product_net - product_cogs - product_tax)
                 if (
                     profitability_complete
-                    and classification_complete
-                    and product_allocation_complete
-                    and sku_allocation_complete
-                    and daily_difference == Decimal("0")
                     and product_net is not None
                     and product_cogs is not None
                     and product_tax is not None
@@ -1181,31 +1231,6 @@ def _derive_ozon_tax(revenue: Any, tax_rate: Any) -> Decimal | None:
     return max(amount, Decimal("0")) * rate
 
 
-def _derive_ozon_margin(
-    *,
-    row: dict[str, Any],
-    tax: Decimal | None,
-    operation_expenses: Decimal | None,
-    operation_expenses_confirmed: bool,
-    profitability_complete: bool,
-    reconciliation_difference: Any,
-) -> Decimal | None:
-    marketplace_net = _decimal(row.get("marketplace_net"))
-    cogs = _decimal(row.get("cogs"))
-    difference = _decimal(reconciliation_difference)
-    if (
-        not operation_expenses_confirmed
-        or not profitability_complete
-        or difference != Decimal("0")
-        or marketplace_net is None
-        or cogs is None
-        or tax is None
-        or operation_expenses is None
-    ):
-        return None
-    return marketplace_net - cogs - tax - operation_expenses
-
-
 def build_overview(
     *,
     db: Session,
@@ -1225,7 +1250,6 @@ def build_overview(
     expenses_by_date = _ozon_expenses_by_date(
         db=db, user_id=user_id, date_from=date_from, date_to=date_to
     )
-    expenses_confirmed = finance_settings["operation_expenses_confirmed"]
     wb_enabled = bool((store_owner.wb_api_key or "").strip())
     ozon_enabled = bool(connection["configured"])
     # `all` is a comparison of both source ledgers. Missing connection or coverage stays visible.
@@ -1252,8 +1276,6 @@ def build_overview(
         warnings.append("Ozon не подключён")
     if require_ozon and tax_rate is None:
         warnings.append("Ставка налога Ozon не задана; налог и прибыль Ozon неизвестны")
-    if require_ozon and not expenses_confirmed:
-        warnings.append("Полнота операционных расходов Ozon не подтверждена; прибыль Ozon неизвестна")
 
     daily: list[dict[str, Any]] = []
     missing_dates: list[str] = []
@@ -1296,34 +1318,22 @@ def build_overview(
             ozon_result = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
             ozon_result["date"] = day.isoformat()
             tax = _derive_ozon_tax(ozon_result.get("revenue"), tax_rate)
-            expense = expenses_by_date.get(day)
-            if expense is None and expenses_confirmed:
-                expense = Decimal("0")
+            # Entered operating expenses; a day without an entry counts as 0, as in WB.
+            expense = expenses_by_date.get(day, Decimal("0"))
             ozon_result["tax"] = tax
             ozon_result["operation_expenses"] = expense
-            profitability_complete = (
-                state is not None
-                and (
-                    state.status == "empty"
-                    or (
-                        isinstance(ozon_daily, dict)
-                        and ozon_daily.get("profitability_complete") is True
-                        and ozon_daily.get("accrual_classification_complete") is True
-                    )
-                )
-            )
-            ozon_result["margin"] = _derive_ozon_margin(
-                row=ozon_result,
-                tax=tax,
-                operation_expenses=expense,
-                operation_expenses_confirmed=expenses_confirmed,
-                profitability_complete=profitability_complete,
-                reconciliation_difference=ozon_result.get("reconciliation_difference"),
-            )
+            # Margin is set after the products are built (see the known-cost pass below), not per day here.
+            ozon_result["margin"] = None
 
         if marketplace == "ozon":
             result = ozon_result or {field: None for field in DAILY_AMOUNT_FIELDS}
-            daily.append({"date": day.isoformat(), **_day_numbers(result)})
+            daily.append(
+                {
+                    "date": day.isoformat(),
+                    **_day_numbers(result),
+                    "cost_known_revenue_share": _share(result.get("cost_known_revenue_share")),
+                }
+            )
             day += timedelta(days=1)
             continue
 
@@ -1335,12 +1345,9 @@ def build_overview(
         result = {"date": day.isoformat()}
         for field in DAILY_AMOUNT_FIELDS:
             if field == "operation_expenses":
-                if not expenses_confirmed:
-                    result[field] = None
-                else:
-                    ozon_expense = expenses_by_date.get(day, Decimal("0")) if require_ozon else Decimal("0")
-                    wb_expense = _decimal(wb_rows[day].operation_expenses) if require_wb else Decimal("0")
-                    result[field] = _money(wb_expense + ozon_expense) if wb_expense is not None else None
+                ozon_expense = expenses_by_date.get(day, Decimal("0")) if require_ozon else Decimal("0")
+                wb_expense = _decimal(wb_rows[day].operation_expenses) if require_wb else Decimal("0")
+                result[field] = _money(wb_expense + ozon_expense) if wb_expense is not None else None
             elif field == "unallocated_amount" and require_wb:
                 # WB's legacy ledger has no unallocated-fee field, so the combined total is unknown.
                 result[field] = None
@@ -1356,6 +1363,21 @@ def build_overview(
         products.extend(_build_wb_products(db, user_id=user_id, date_from=date_from, date_to=date_to))
         products.extend(_build_ozon_products(db, user_id=user_id, day_states=day_states, tax_rate=tax_rate))
 
+    if require_ozon:
+        # Owner decision (2026-10-25): margin = net − COGS − tax − entered operating expenses, computed over the SKUs
+        # whose cost is known, exactly as WB sums its day. Missing operating expenses count as 0; no confirmation gate.
+        known_by_day = _known_cost_by_day(products)
+        for row in daily:
+            day_obj = date.fromisoformat(row["date"])
+            row.update(
+                _day_profit_known(
+                    marketplace=marketplace,
+                    row=row,
+                    known=known_by_day.get(row["date"]),
+                    ozon_expense=expenses_by_date.get(day_obj, Decimal("0")),
+                    wb_row=wb_rows.get(day_obj) if require_wb else None,
+                )
+            )
     warnings = list(dict.fromkeys(warnings))
     return {
         "marketplace": marketplace,
@@ -1377,3 +1399,321 @@ def build_overview(
         },
         "sync": connection["sync"],
     }
+
+
+# ── Automatic synchronisation: year-to-date backfill chain and daily refresh ──
+
+
+def backfill_window(today: date) -> tuple[date, date] | None:
+    """1 January of the current year through yesterday; None until one day can be complete."""
+    through = today - timedelta(days=1)
+    start = date(today.year, 1, 1)
+    if through < start:
+        return None
+    return start, through
+
+
+def _latest_backfill_run(db: Session, *, user_id: str, start: date) -> OzonSyncRun | None:
+    # Chunks are contiguous, so the latest chunk has the largest start date; created_at only breaks ties
+    # (a retry shares its failed chunk's start date).
+    return (
+        db.query(OzonSyncRun)
+        .filter(
+            OzonSyncRun.user_id == user_id,
+            OzonSyncRun.trigger == BACKFILL_TRIGGER,
+            OzonSyncRun.date_from >= start,
+        )
+        .order_by(OzonSyncRun.date_from.desc(), OzonSyncRun.created_at.desc())
+        .first()
+    )
+
+
+def _backfill_payload(db: Session, *, user_id: str, today: date) -> dict[str, Any] | None:
+    window = backfill_window(today)
+    if window is None:
+        return None
+    start, through = window
+    latest = _latest_backfill_run(db, user_id=user_id, start=start)
+    last_done = (
+        db.query(OzonSyncRun.date_to)
+        .filter(
+            OzonSyncRun.user_id == user_id,
+            OzonSyncRun.trigger == BACKFILL_TRIGGER,
+            OzonSyncRun.date_from >= start,
+            OzonSyncRun.status.in_(FINISHED_RUN_STATUSES),
+        )
+        .order_by(OzonSyncRun.date_to.desc())
+        .first()
+    )
+    last_completed = last_done[0] if last_done else None
+    if latest is None:
+        status = "idle"
+    elif latest.status in ACTIVE_RUN_STATUSES:
+        status = "running"
+    elif latest.status == "failed":
+        status = "failed"
+    elif last_completed is not None and last_completed >= through:
+        status = "complete"
+    else:
+        # The next bounded chunk is queued by the finishing worker or, if that was blocked, by the daily job.
+        status = "running"
+    return {
+        "status": status,
+        "date_from": start.isoformat(),
+        "through_date": through.isoformat(),
+        "last_completed_date": last_completed.isoformat() if last_completed else None,
+        "error": latest.error_message if latest is not None and latest.status == "failed" else None,
+    }
+
+
+def next_backfill_run(db: Session, *, user_id: str, today: date) -> OzonSyncRun | None:
+    """Queue the next due ≤31-day backfill chunk; None when nothing is due or the owner is busy."""
+    window = backfill_window(today)
+    if window is None:
+        return None
+    start, through = window
+    latest = _latest_backfill_run(db, user_id=user_id, start=start)
+    if latest is None:
+        date_from = start
+        date_to = min(start + timedelta(days=MAX_SYNC_DAYS - 1), through)
+    elif latest.status in ACTIVE_RUN_STATUSES:
+        return None
+    elif latest.status == "failed":
+        # Retry the same chunk; days already saved as complete are replaced atomically, never double-counted.
+        date_from, date_to = latest.date_from, latest.date_to
+    elif latest.date_to >= through:
+        return None
+    else:
+        date_from = latest.date_to + timedelta(days=1)
+        date_to = min(date_from + timedelta(days=MAX_SYNC_DAYS - 1), through)
+    try:
+        return enqueue_sync(
+            db=db,
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            trigger=BACKFILL_TRIGGER,
+        )
+    except MarketplaceFinanceError:
+        # A manual or daily run holds the owner's single slot; the daily job resumes the chain.
+        return None
+    except IntegrityError:
+        db.rollback()
+        return None
+
+
+def schedule_initial_backfill(db: Session, *, user_id: str, today: date) -> OzonSyncRun | None:
+    """Called after a connection is saved: start the year-to-date backfill from its first chunk."""
+    return next_backfill_run(db, user_id=user_id, today=today)
+
+
+def chain_backfill_after_run(db: Session, *, run_id: str, today: date) -> OzonSyncRun | None:
+    """Called by the worker after a run finishes: queue the next chunk only after a finished backfill run."""
+    run = db.query(OzonSyncRun).filter(OzonSyncRun.id == run_id).first()
+    if run is None or run.trigger != BACKFILL_TRIGGER or run.status not in FINISHED_RUN_STATUSES:
+        return None
+    return next_backfill_run(db, user_id=str(run.user_id), today=today)
+
+
+def plan_daily_refresh_for_ready_connections(db: Session, *, today: date) -> list[str]:
+    """Beat job: resume an unfinished backfill, else refresh the last three completed days."""
+    through = today - timedelta(days=1)
+    date_from = through - timedelta(days=DAILY_REFRESH_DAYS - 1)
+    user_ids = [
+        str(row.user_id)
+        for row in db.query(OzonConnection.user_id).filter(OzonConnection.status == "ready").all()
+    ]
+    queued: list[str] = []
+    for user_id in user_ids:
+        run = next_backfill_run(db, user_id=user_id, today=today)
+        if run is None:
+            try:
+                run = enqueue_sync(
+                    db=db,
+                    user_id=user_id,
+                    date_from=date_from,
+                    date_to=through,
+                    trigger=DAILY_TRIGGER,
+                )
+            except MarketplaceFinanceError:
+                continue
+            except IntegrityError:
+                db.rollback()
+                continue
+        queued.append(str(run.id))
+    return queued
+
+
+# ── Marketplace rows shaped like the WB screens' API responses ────────────────
+
+
+def _known_cost_by_day(products: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Ozon SKUs whose margin is computable on a day: their COGS, margin and revenue, summed per day."""
+    by_day: dict[str, dict[str, float]] = {}
+    for product in products:
+        if product.get("marketplace") != "ozon":
+            continue
+        for row in product.get("daily") or []:
+            if row.get("revenue") is None or row.get("cogs") is None or row.get("margin") is None:
+                continue
+            bucket = by_day.setdefault(row["date"], {"cogs": 0.0, "margin": 0.0, "revenue": 0.0})
+            bucket["cogs"] += float(row["cogs"])
+            bucket["margin"] += float(row["margin"])
+            bucket["revenue"] += float(row["revenue"])
+    return by_day
+
+
+def _day_profit_known(
+    *,
+    marketplace: str,
+    row: dict[str, Any],
+    known: dict[str, float] | None,
+    ozon_expense: Decimal,
+    wb_row: PnlDaily | None,
+) -> dict[str, float | None]:
+    """WB-style day profit over the Ozon SKUs whose cost is known; the combined view adds the WB day as saved."""
+    if row.get("revenue") is None:
+        return {"cogs": None, "margin": None, "known_cost_revenue": None}
+    ozon_margin = known["margin"] - float(ozon_expense) if known else None
+    if marketplace == "ozon":
+        return {
+            "cogs": round(known["cogs"], 2) if known else None,
+            "margin": round(ozon_margin, 2) if ozon_margin is not None else None,
+            "known_cost_revenue": round(known["revenue"], 2) if known else 0.0,
+        }
+    cogs_parts: list[float] = []
+    margin_parts: list[float] = []
+    revenue_parts: list[float] = []
+    if wb_row is not None:
+        if wb_row.cogs is not None:
+            cogs_parts.append(float(wb_row.cogs))
+        if wb_row.margin is not None:
+            margin_parts.append(float(wb_row.margin))
+        if wb_row.revenue is not None:
+            revenue_parts.append(float(wb_row.revenue))
+    if known:
+        cogs_parts.append(known["cogs"])
+        revenue_parts.append(known["revenue"])
+    if ozon_margin is not None:
+        margin_parts.append(ozon_margin)
+    return {
+        "cogs": round(sum(cogs_parts), 2) if cogs_parts else None,
+        "margin": round(sum(margin_parts), 2) if margin_parts else None,
+        "known_cost_revenue": round(sum(revenue_parts), 2) if revenue_parts else 0.0,
+    }
+
+
+def build_marketplace_pnl_rows(
+    *, db: Session, store_owner: User, marketplace: str, date_from: date, date_to: date
+) -> list[dict[str, Any]]:
+    """Daily rows in the WB /dashboard/pnl shape, read from the overview's day rules.
+
+    Owner decision (2026-10-25): a day's revenue and expense lines sum the known postings; COGS and margin are sums
+    over the SKUs whose cost is known; margin = net - COGS - tax - entered operating expenses (missing = 0). A day with
+    no data at all stays null. known_cost_revenue is the revenue that carries that cost.
+    """
+    overview = build_overview(
+        db=db,
+        store_owner=store_owner,
+        marketplace=marketplace,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return [
+        {
+            "date": row["date"],
+            **{field: row.get(field) for field in WB_SHAPED_PNL_FIELDS},
+            "known_cost_revenue": row.get("known_cost_revenue"),
+        }
+        for row in overview["daily"]
+    ]
+
+
+def build_marketplace_sku_rows(
+    *, db: Session, store_owner: User, marketplace: str, date_from: date, date_to: date
+) -> list[dict[str, Any]]:
+    """Per product and day rows; Ozon has no funnel, so order counts are null rather than zero."""
+    overview = build_overview(
+        db=db,
+        store_owner=store_owner,
+        marketplace=marketplace,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    rows: list[dict[str, Any]] = []
+    for product in overview["products"]:
+        nm_id = str(product["sku"])
+        for day_row in product.get("daily") or []:
+            rows.append(
+                {
+                    "date": day_row["date"],
+                    "nm_id": nm_id,
+                    "marketplace": product["marketplace"],
+                    "revenue": day_row.get("revenue"),
+                    "commission": day_row.get("commission"),
+                    "logistics": day_row.get("logistics"),
+                    "penalties": day_row.get("penalties"),
+                    "storage": day_row.get("storage"),
+                    "ads_spend": day_row.get("ads_spend"),
+                    "cogs": day_row.get("cogs"),
+                    "tax": day_row.get("tax"),
+                    "margin": day_row.get("margin"),
+                    "open_count": None,
+                    "cart_count": None,
+                    "order_count": None,
+                    "order_sum": None,
+                }
+            )
+    rows.sort(key=lambda row: (row["date"], row["nm_id"]))
+    return rows
+
+
+def build_marketplace_article_rows(*, db: Session, store_owner: User, marketplace: str) -> list[dict[str, Any]]:
+    """Product list with the owner's cost; an Ozon SKU without a saved cost stays null (unknown)."""
+    user_id = str(store_owner.id)
+    rows: list[dict[str, Any]] = []
+    if marketplace in {"ozon", "all"}:
+        catalogue = {str(row.sku): row for row in db.query(OzonProduct).filter(OzonProduct.user_id == user_id).all()}
+        costs = {str(row.sku): row for row in db.query(OzonProductCost).filter(OzonProductCost.user_id == user_id).all()}
+        skus = set(catalogue) | set(costs)
+        for state in (
+            db.query(OzonSyncDay)
+            .filter(OzonSyncDay.user_id == user_id, OzonSyncDay.status == "complete")
+            .all()
+        ):
+            for product in state.products_data or []:
+                if isinstance(product, dict) and str(product.get("sku") or "").strip():
+                    skus.add(str(product["sku"]).strip())
+        for sku in sorted(skus):
+            item = catalogue.get(sku)
+            cost = costs.get(sku)
+            rows.append(
+                {
+                    "nm_id": sku,
+                    "marketplace": "ozon",
+                    "vendor_code": item.offer_id if item is not None else None,
+                    "name": item.name if item is not None else None,
+                    "subject_name": None,
+                    "cost_price": _money(cost.cost_price) if cost is not None else None,
+                }
+            )
+    if marketplace == "all":
+        for article in db.query(Article).filter(Article.user_id == user_id).order_by(Article.nm_id.asc()).all():
+            rows.append(
+                {
+                    "nm_id": str(article.nm_id),
+                    "marketplace": "wb",
+                    "vendor_code": article.vendor_code,
+                    "name": article.name,
+                    "subject_name": article.subject_name,
+                    "cost_price": _money(article.cost_price),
+                }
+            )
+    return rows
+
+
+def list_ozon_operational_expenses(
+    *, db: Session, user_id: str, date_from: date, date_to: date
+) -> list[dict[str, Any]]:
+    expenses = _ozon_expenses_by_date(db=db, user_id=user_id, date_from=date_from, date_to=date_to)
+    return [{"date": day.isoformat(), "amount": _money(amount)} for day, amount in sorted(expenses.items())]

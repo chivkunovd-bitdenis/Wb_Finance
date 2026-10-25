@@ -43,8 +43,13 @@ async function waitForPnlOperationExpense(dateIso, expectedAmount, { timeoutMs =
   return false;
 }
 
-export default function OperationalExpenses({ range, refreshTrigger, cache, updateCache, onRefresh }) {
+/**
+ * WB keeps a list of expense records with comments. Ozon stores one owner-entered amount per day and no comment,
+ * so for Ozon the same list shows the day's amount, the date is fixed while editing, and no comment is offered.
+ */
+export default function OperationalExpenses({ range, refreshTrigger, cache, updateCache, onRefresh, marketplace = 'wb' }) {
   const { dateFrom, dateTo } = range || {};
+  const isWb = marketplace === 'wb';
 
   const [items, setItems] = useState(() => {
     const c = cache?.operational_expenses;
@@ -71,6 +76,18 @@ export default function OperationalExpenses({ range, refreshTrigger, cache, upda
 
     setLoading(true);
     setError('');
+    if (!isWb) {
+      api
+        .getMarketplaceExpenses(dateFrom, dateTo)
+        .then((data) => {
+          const rows = Array.isArray(data) ? data : [];
+          // The day is the record identity for Ozon: one amount per date.
+          setItems(rows.map((row) => ({ id: row.date, date: row.date, amount: row.amount, comment: null })));
+        })
+        .catch((e) => setError(e.message || 'Ошибка загрузки'))
+        .finally(() => setLoading(false));
+      return;
+    }
     api
       .getOperationalExpenses(dateFrom, dateTo)
       .then((data) => {
@@ -80,7 +97,7 @@ export default function OperationalExpenses({ range, refreshTrigger, cache, upda
       })
       .catch((e) => setError(e.message || 'Ошибка загрузки'))
       .finally(() => setLoading(false));
-  }, [dateFrom, dateTo, refreshTrigger, updateCache]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, isWb]);
 
   useEffect(() => {
     // Обновляем дефолт в форме только если форма сейчас не редактирует конкретную запись.
@@ -145,6 +162,13 @@ export default function OperationalExpenses({ range, refreshTrigger, cache, upda
 
     setSaving(true);
     try {
+      if (!isWb) {
+        // Ozon recalculates from saved data inside this request, so there is nothing to poll.
+        await api.saveMarketplaceDailyExpense(savedDate, amount);
+        setFormOpen(false);
+        if (typeof onRefresh === 'function') onRefresh();
+        return;
+      }
       if (mode === 'create') {
         await api.createOperationalExpense({
           date: form.date,
@@ -214,6 +238,7 @@ export default function OperationalExpenses({ range, refreshTrigger, cache, upda
                 <input
                   type="date"
                   value={form.date}
+                  disabled={!isWb && mode === 'edit'}
                   onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
                   style={{
                     background: 'var(--bg-secondary)',
@@ -249,26 +274,28 @@ export default function OperationalExpenses({ range, refreshTrigger, cache, upda
               </div>
             </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>Комментарий</div>
-              <textarea
-                value={form.comment}
-                onChange={(e) => setForm((prev) => ({ ...prev, comment: e.target.value }))}
-                rows={3}
-                placeholder="Например: оплата за отгрузку/фулфилмент..."
-                style={{
-                  background: 'var(--bg-secondary)',
-                  border: '0.5px solid var(--border-light)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '7px 10px',
-                  fontSize: 12,
-                  color: 'var(--text-primary)',
-                  outline: 'none',
-                  width: '100%',
-                  resize: 'vertical',
-                }}
-              />
-            </div>
+            {isWb && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>Комментарий</div>
+                <textarea
+                  value={form.comment}
+                  onChange={(e) => setForm((prev) => ({ ...prev, comment: e.target.value }))}
+                  rows={3}
+                  placeholder="Например: оплата за отгрузку/фулфилмент..."
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    border: '0.5px solid var(--border-light)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '7px 10px',
+                    fontSize: 12,
+                    color: 'var(--text-primary)',
+                    outline: 'none',
+                    width: '100%',
+                    resize: 'vertical',
+                  }}
+                />
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
               <button className="btn-primary" onClick={handleSubmit} disabled={saving}>

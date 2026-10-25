@@ -1158,6 +1158,30 @@ export async function saveMarketplaceProductCost(sku, costPrice) {
   });
 }
 
+/** Daily P&L rows in the WB /dashboard/pnl shape for ozon or all; unknown days are null. */
+export async function getMarketplacePnl(marketplace, dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace, date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/pnl?${query}`, { signal });
+}
+
+/** Per product and day rows in the WB /dashboard/sku shape; `nm_id` is text and `marketplace` says whose product it is. */
+export async function getMarketplaceSku(marketplace, dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace, date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/sku?${query}`, { signal });
+}
+
+/** Product list with saved costs in the WB /dashboard/articles shape. */
+export async function getMarketplaceArticles(marketplace, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace });
+  return marketplaceRequest(`/dashboard/marketplace/articles?${query}`, { signal });
+}
+
+/** Owner-entered Ozon operating expenses by day; days without a saved amount are absent. */
+export async function getMarketplaceExpenses(dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/expenses?${query}`, { signal });
+}
+
 // ── Stores (access + switching) ──────────────────────────────────────────────
 
 export async function getStores() {

@@ -15,7 +15,7 @@ import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
 import AiChat from './screens/AiChat';
-import MarketplaceFinance, { WbOnlyNotice } from './screens/MarketplaceFinance';
+import MarketplaceNotices, { WbOnlyNotice } from './components/MarketplaceNotices';
 import { useStore } from './StoreContext';
 import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignature } from './storeDataGuard';
 
@@ -63,6 +63,8 @@ export default function Layout() {
   const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
   const [marketplace, setMarketplace] = useState('wb');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Marketplace sync progress asks the shared screens to reread, as the WB sync banners do.
+  const requestScreenRefresh = useCallback(() => setRefreshTrigger((t) => t + 1), []);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialTriggered, setInitialTriggered] = useState(false);
   const [waitForFunnelAfterInitial, setWaitForFunnelAfterInitial] = useState(false);
@@ -560,6 +562,16 @@ export default function Layout() {
                   <strong>Маржа WB — предварительная оценка.</strong> В сохранённых данных нет полной детализации удержаний и оснований доплат, поэтому итог не сверён со всеми статьями финансового отчёта. Текущая себестоимость применяется к прошлым продажам; незаполненная себестоимость в прежнем расчёте считается нулевой.
                 </div>
               )}
+              {marketplace !== 'wb'
+                && !billingStatus?.is_access_blocked
+                && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
+                <MarketplaceNotices
+                  marketplace={marketplace}
+                  range={range}
+                  refreshTrigger={refreshTrigger}
+                  onProgress={requestScreenRefresh}
+                />
+              )}
               <Routes>
                 {billingStatus?.is_access_blocked ? (
                   <>
@@ -575,13 +587,13 @@ export default function Layout() {
                   path="/dashboard"
                   element={marketplace === 'wb'
                     ? <Dashboard range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
-                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="dashboard" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                    : <Dashboard key={`${activeStoreOwnerId}:${marketplace}`} marketplace={marketplace} range={range} refreshTrigger={refreshTrigger} />}
                 />
                 <Route
                   path="/articles"
                   element={marketplace === 'wb'
                     ? <Articles range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
-                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="articles" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                    : <Articles key={`${activeStoreOwnerId}:${marketplace}`} marketplace={marketplace} range={range} refreshTrigger={refreshTrigger} />}
                 />
                 <Route
                   path="/funnel"
@@ -599,7 +611,15 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="costs" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                  ) : (
+                    <Costs
+                      key={`${activeStoreOwnerId}:${marketplace}`}
+                      marketplace={marketplace}
+                      range={range}
+                      refreshTrigger={refreshTrigger}
+                      onRefresh={() => setRefreshTrigger((t) => t + 1)}
+                    />
+                  )}
                 />
                 <Route
                   path="/operational-expenses"
@@ -611,7 +631,15 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="expenses" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                  ) : (
+                    <OperationalExpenses
+                      key={`${activeStoreOwnerId}:${marketplace}`}
+                      marketplace={marketplace}
+                      range={range}
+                      refreshTrigger={refreshTrigger}
+                      onRefresh={() => setRefreshTrigger((t) => t + 1)}
+                    />
+                  )}
                 />
                 <Route
                   path="/billing"

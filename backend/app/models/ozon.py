@@ -187,6 +187,8 @@ class OzonSyncRun(Base):
     date_from = Column(Date, nullable=False)
     date_to = Column(Date, nullable=False)
     status = Column(String(16), nullable=False, server_default="queued")
+    # manual: owner button; backfill: automatic year-to-date chain; daily: beat refresh of recent days.
+    trigger = Column(String(16), nullable=False, server_default="manual")
     progress = Column(Integer, nullable=False, server_default="0")
     error_message = Column(String(1000), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -197,6 +199,7 @@ class OzonSyncRun(Base):
     __table_args__ = (
         CheckConstraint("date_from <= date_to", name="ck_ozon_sync_run_valid_range"),
         CheckConstraint("status in ('queued','running','complete','partial','failed')", name="ck_ozon_sync_run_status"),
+        CheckConstraint("trigger in ('manual','backfill','daily')", name="ck_ozon_sync_run_trigger"),
         CheckConstraint("progress >= 0", name="ck_ozon_sync_run_progress_nonnegative"),
         Index(
             "uq_ozon_sync_run_one_active_per_owner",
