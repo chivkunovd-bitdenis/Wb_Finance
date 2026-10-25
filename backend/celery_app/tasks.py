@@ -51,6 +51,15 @@ from app.models.daily_brief import DailyBrief
 logger = logging.getLogger(__name__)
 
 TAX_RATE = 0.06
+
+
+def wb_tax(revenue: float, tax_rate: float) -> float:
+    """Налог = ставка × выручка со знаком, как у Ozon (решение владельца 25.10.2026).
+
+    День, где возвратов больше продаж, уменьшает налог, а не считается нулём, поэтому налог за период
+    равен ставке × выручке периода.
+    """
+    return revenue * tax_rate
 FUNNEL_YTD_DAYS_PER_RUN = 2
 FUNNEL_YTD_CHAIN_COUNTDOWN_SEC = 25
 FUNNEL_YTD_429_RETRY_BASE_SEC = 90
@@ -2598,7 +2607,7 @@ def recalculate_pnl(user_id: str, date_from: str, date_to: str) -> dict:
                 ads_spend += float(r.spend or 0)
 
             comm = rev - ppvz
-            tax = rev * user_tax_rate if rev > 0 else 0
+            tax = wb_tax(rev, user_tax_rate)
             margin = rev - comm - logistics - penalties - storage - ads_spend - cogs - tax - op_expenses
             pnl_rows.append((d, rev, comm, logistics, penalties, storage, ads_spend, cogs, tax, op_expenses, margin))
 
@@ -2721,7 +2730,7 @@ def recalculate_sku_daily(user_id: str, date_from: str, date_to: str) -> dict:
         )
         for (d, nm), row in sku.items():
             rev = row["revenue"]
-            tax = rev * user_tax_rate if rev > 0 else 0
+            tax = wb_tax(rev, user_tax_rate)
             margin = rev - row["commission"] - row["logistics"] - row["penalties"] - row["storage"] - row["ads_spend"] - row["cogs"] - tax
             db.add(SkuDaily(
                 user_id=user_id,
