@@ -298,6 +298,7 @@ def test_ozon_margin_subtracts_entered_operating_expenses_without_a_confirmation
     real_db_session.add_all(
         [
             _connection(str(owner.id)),
+            OzonProductCost(user_id=str(owner.id), sku="7001", cost_price=Decimal("20.00")),
             OzonSyncDay(
                 user_id=str(owner.id),
                 day=day,

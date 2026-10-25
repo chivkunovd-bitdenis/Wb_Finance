@@ -342,6 +342,31 @@ def test_article_rows_keep_an_unset_cost_null_and_use_catalogue_names(real_db_se
     assert rows["7002"]["name"] is None
 
 
+def test_article_rows_leave_out_skus_without_a_catalogue_card_unless_a_cost_is_saved(real_db_session):
+    owner_id = _owner(real_db_session, "auto-sync-articles-uncatalogued@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    real_db_session.add_all(
+        [
+            OzonProduct(user_id=owner_id, sku="7001", offer_id="offer-7", name="Catalog item"),
+            OzonProductCost(user_id=owner_id, sku="7998", cost_price=Decimal("3.00")),
+            OzonSyncDay(
+                user_id=owner_id,
+                day=date(2026, 1, 9),
+                status="complete",
+                daily_data=_day_values(),
+                products_data=[{"sku": "7001"}, {"sku": "7998"}, {"sku": "7999"}],
+                warnings=[],
+            ),
+        ]
+    )
+    real_db_session.commit()
+
+    rows = {row["nm_id"] for row in build_marketplace_article_rows(db=real_db_session, store_owner=owner, marketplace="ozon")}
+
+    # 7999 appears only as an Ozon SKU in the accruals: owner decision (2026-10-25) leaves it out of the screens.
+    assert rows == {"7001", "7998"}
+
+
 # ── API: connection save starts the backfill; new read endpoints keep the WB shape ──
 
 
@@ -505,6 +530,7 @@ def test_overview_keeps_day_revenue_and_computes_product_margin_despite_another_
     # SKU 7002 has no entered cost, so it has no margin at all (as in the reference workbook), though its charge
     # still reduces the day: 166 − 4 − COGS 20 − tax 12 = 130.
     assert products["7002"]["daily"][0]["margin"] is None
+    assert products["7002"]["daily"][0]["cogs"] is None
     assert products["7002"]["daily"][0]["logistics"] == 4.0
     assert gap_day["margin"] == 130.0
 
@@ -518,6 +544,7 @@ def test_pnl_row_sums_only_skus_with_known_cost_once_operating_expenses_are_conf
     owner_id = _owner(real_db_session, "auto-sync-pnl-known-cost@example.com")
     owner = real_db_session.query(User).filter_by(id=owner_id).one()
     real_db_session.add(OzonFinanceSettings(user_id=owner_id, operation_expenses_confirmed=True))
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="7001", cost_price=Decimal("20.00")))
     real_db_session.commit()
     day = date(2026, 2, 3)
     known = posting_accrual(921, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())

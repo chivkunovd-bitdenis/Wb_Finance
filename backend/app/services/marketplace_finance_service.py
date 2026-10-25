@@ -1137,8 +1137,10 @@ def _build_ozon_products(
             }
             product_tax = _derive_ozon_tax(row.get("revenue"), tax_rate)
             product_daily["tax"] = _money(product_tax)
-            # A SKU without an entered cost has no margin on any day, so its period margin is never a partial sum.
+            # A SKU without an entered cost has no COGS or margin on any day (not even a zero-unit day), so its
+            # period totals are never a partial sum.
             product_cogs = _decimal(row.get("cogs")) if sku in costs else None
+            product_daily["cogs"] = _money(product_cogs)
             product_daily["margin"] = _money(_product_margin(row, cogs=product_cogs, tax=product_tax))
             product_daily["operation_expenses"] = None
             product["daily"].append(product_daily)
@@ -1806,10 +1808,14 @@ def build_marketplace_article_rows(*, db: Session, store_owner: User, marketplac
         catalogue = {str(row.sku): row for row in db.query(OzonProduct).filter(OzonProduct.user_id == user_id).all()}
         costs = {str(row.sku): row for row in db.query(OzonProductCost).filter(OzonProductCost.user_id == user_id).all()}
         skus = set(catalogue) | set(costs)
+        # Owner decision (2026-10-25): SKUs without a catalogue card are left out, as in the reports; a SKU that
+        # already has a saved cost stays listed so the cost can still be changed or cleared.
         for state in (
             db.query(OzonSyncDay)
             .filter(OzonSyncDay.user_id == user_id, OzonSyncDay.status == "complete")
             .all()
+            if not catalogue
+            else []
         ):
             for product in state.products_data or []:
                 if isinstance(product, dict) and str(product.get("sku") or "").strip():

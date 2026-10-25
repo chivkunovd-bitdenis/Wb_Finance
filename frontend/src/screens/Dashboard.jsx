@@ -516,7 +516,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
           label="Маржа"
           value={moneyKpi(totals.margin)}
           delta={unknownAsNull
-            ? (marginKnown ? `маржа по товарам с себестоимостью${knownSharePct != null ? ` (${knownSharePct}% выручки)` : ''}; опер. расходы: ${formatNum(totals.operation_expenses || 0)} ₽ внесено` : 'Прибыль пока неизвестна')
+            ? (marginKnown ? `пришло на баланс − себестоимость − налог${knownSharePct != null ? `; себестоимость известна для ${knownSharePct}% выручки` : ''}; опер. расходы: ${formatNum(totals.operation_expenses || 0)} ₽ внесено` : 'Прибыль пока неизвестна')
             : (marginKnown ? `${
             marginIsPositive ? '▲' : '▼'
           } ${Math.abs(marginPercentOfRevenue).toFixed(1)}% от выручки` : 'Прибыль пока неизвестна')}
@@ -533,7 +533,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
           label="ROI"
           value={roiKnown ? (roiAvailable ? `${Math.round(roiPercent)}%` : '0%') : '—'}
           delta={unknownAsNull
-            ? (roiKnown ? 'по товарам с себестоимостью' : 'Себестоимость неизвестна')
+            ? (roiKnown ? 'маржа ÷ известная себестоимость' : 'Себестоимость неизвестна')
             : (roiKnown ? (roiAvailable ? 'за период' : 'Данные не внесены') : 'Себестоимость неизвестна')}
           valueStyle={{ color: 'var(--text-tertiary)' }}
           deltaColor="var(--text-tertiary)"
