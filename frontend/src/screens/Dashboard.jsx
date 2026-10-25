@@ -516,7 +516,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
           label="Маржа"
           value={moneyKpi(totals.margin)}
           delta={unknownAsNull
-            ? (marginKnown ? `маржа по товарам с себестоимостью${knownSharePct != null ? ` (${knownSharePct}% выручки)` : ''}` : 'Прибыль пока неизвестна')
+            ? (marginKnown ? `маржа по товарам с себестоимостью${knownSharePct != null ? ` (${knownSharePct}% выручки)` : ''}; опер. расходы: ${formatNum(totals.operation_expenses || 0)} ₽ внесено` : 'Прибыль пока неизвестна')
             : (marginKnown ? `${
             marginIsPositive ? '▲' : '▼'
           } ${Math.abs(marginPercentOfRevenue).toFixed(1)}% от выручки` : 'Прибыль пока неизвестна')}

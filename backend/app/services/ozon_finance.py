@@ -250,19 +250,32 @@ def normalize_accruals(
                 continue
             product.pop("_has_sale_activity", None)
             product_quantity_complete = product.pop("_quantity_complete", True)
-            product_return = product.pop("_return_activity", False) or unscoped_return_activity
+            # The flag is read here and consumed by the product pass below (profit gate).
+            product_return = product.get("_return_activity", False) or unscoped_return_activity
             sold_quantity = product.get("sold_quantity")
-            product["returned_quantity"] = None if product_return or not product_quantity_complete else Decimal("0")
-            product["net_quantity"] = (
-                sold_quantity
-                if product_quantity_complete and not product_return and sold_quantity is not None
+            returned_quantity = product.get("returned_quantity")
+            if not product_quantity_complete:
+                product["returned_quantity"] = None
+                returned_quantity = None
+            # Owner decision (2026-10-25): units of a return posting go back to stock and are resold, so they
+            # net out of COGS. A return signal with no return posting quantity cannot be netted: stays unknown.
+            return_blocked = product_return and not (returned_quantity is not None and returned_quantity > 0)
+            if return_blocked:
+                # A return fee without its return posting: the returned units themselves are unknown.
+                product["returned_quantity"] = None
+                returned_quantity = None
+            net_quantity = (
+                sold_quantity - returned_quantity
+                if product_quantity_complete
+                and not return_blocked
+                and sold_quantity is not None
+                and returned_quantity is not None
                 else None
             )
-            if product_return or not product_quantity_complete:
+            product["net_quantity"] = net_quantity
+            if net_quantity is None:
                 product["cogs"] = None
-            elif sold_quantity is None:
-                product["cogs"] = None
-            elif sold_quantity == 0:
+            elif net_quantity == 0:
                 product["cogs"] = Decimal("0")
             else:
                 cost = _valid_cost((costs or {}).get(product_key[1]))
@@ -270,7 +283,7 @@ def normalize_accruals(
                     product["cogs"] = None
                     missing_sku_cost = True
                 else:
-                    product["cogs"] = cost * sold_quantity
+                    product["cogs"] = cost * net_quantity
                     cogs += product["cogs"]
             # Revenue of SKUs whose COGS is known, to report how much of the day's revenue has a cost behind it.
             if product.get("cogs") is not None:
@@ -281,17 +294,30 @@ def normalize_accruals(
                     known_cost_revenue += product_revenue
 
         sold_quantity = row.get("sold_quantity")
-        row["returned_quantity"] = None if return_activity or not quantity_complete else Decimal("0")
+        returned_quantity = row.get("returned_quantity")
+        if not quantity_complete:
+            row["returned_quantity"] = None
+            returned_quantity = None
+        return_blocked = return_activity and not (returned_quantity is not None and returned_quantity > 0)
+        if return_blocked:
+            row["returned_quantity"] = None
+            returned_quantity = None
         row["net_quantity"] = (
-            sold_quantity if quantity_complete and not return_activity and sold_quantity is not None else None
+            sold_quantity - returned_quantity
+            if quantity_complete
+            and not return_blocked
+            and sold_quantity is not None
+            and returned_quantity is not None
+            else None
         )
-        if not sale_activity and quantity_complete:
+        if not sale_activity and quantity_complete and returned_quantity == 0:
             row["cogs"] = Decimal("0")
         elif (
             quantity_complete
             and quantity_sku_complete
-            and not return_activity
+            and not return_blocked
             and sold_quantity is not None
+            and returned_quantity is not None
             and not missing_sku_cost
         ):
             row["cogs"] = cogs
@@ -327,7 +353,7 @@ def normalize_accruals(
             and reconciliation_matches
             and quantity_complete
             and quantity_sku_complete
-            and not return_activity
+            and not return_blocked
             and row.get("cogs") is not None
             and row.get("compensation") == 0
         )
@@ -363,10 +389,9 @@ def normalize_accruals(
         row.pop("_unallocated_product_fields", None)
         quality = daily_quality.get((day, currency), {})
         product_return_activity = product_return_activity or quality.get("unscoped_return_activity", False)
-        if product_return_activity:
-            row["returned_quantity"] = None
-            row["net_quantity"] = None
-            row["cogs"] = None
+        # A return signal blocks profit only when no return posting quantity explains it; COGS was decided above.
+        product_returned = row.get("returned_quantity")
+        product_return_blocked = product_return_activity and not (product_returned is not None and product_returned > 0)
         unknown_sku_posting = quality.get("unknown_sku_posting", False)
         # A product's profit depends on its own postings and on the reconciliation of its own accruals.
         # Another SKU's missing detail or a mismatched accrual on the same day must not hide this margin.
@@ -408,7 +433,7 @@ def normalize_accruals(
             and sku_allocation_complete
             and product_reconciled
             and product_quantity_complete
-            and not product_return_activity
+            and not product_return_blocked
             and not unknown_sku_posting
             and row.get("marketplace_net") is not None
             and row.get("cogs") is not None
@@ -1088,13 +1113,14 @@ def _normalize_accrual(
                         elif product is not None:
                             _sum(product, "sold_quantity", quantity)
                     elif sale <= 0 and quantity is not None:
-                        daily["_return_activity"] = True
-                        if product is not None:
-                            product["_return_activity"] = True
-                        warnings.append(
-                            f"{day}: начисление {accrual_id} содержит sale_amount <= 0; "
-                            "направление количества и себестоимость не подтверждены"
-                        )
+                        # Owner decision (2026-10-25): a return posting's units go back to the warehouse and are
+                        # resold, so the explicit posting quantity nets out of COGS for this SKU and day.
+                        _sum(daily, "returned_quantity", quantity)
+                        if sku is None:
+                            daily["_quantity_sku_complete"] = False
+                            daily["_sku_allocation_complete"] = False
+                        elif product is not None:
+                            _sum(product, "returned_quantity", quantity)
                     else:
                         _mark_quantity_unknown(
                             daily,

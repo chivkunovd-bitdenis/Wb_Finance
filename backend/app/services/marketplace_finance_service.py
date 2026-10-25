@@ -1231,31 +1231,6 @@ def _derive_ozon_tax(revenue: Any, tax_rate: Any) -> Decimal | None:
     return max(amount, Decimal("0")) * rate
 
 
-def _derive_ozon_margin(
-    *,
-    row: dict[str, Any],
-    tax: Decimal | None,
-    operation_expenses: Decimal | None,
-    operation_expenses_confirmed: bool,
-    profitability_complete: bool,
-    reconciliation_difference: Any,
-) -> Decimal | None:
-    marketplace_net = _decimal(row.get("marketplace_net"))
-    cogs = _decimal(row.get("cogs"))
-    difference = _decimal(reconciliation_difference)
-    if (
-        not operation_expenses_confirmed
-        or not profitability_complete
-        or difference != Decimal("0")
-        or marketplace_net is None
-        or cogs is None
-        or tax is None
-        or operation_expenses is None
-    ):
-        return None
-    return marketplace_net - cogs - tax - operation_expenses
-
-
 def build_overview(
     *,
     db: Session,
@@ -1275,7 +1250,6 @@ def build_overview(
     expenses_by_date = _ozon_expenses_by_date(
         db=db, user_id=user_id, date_from=date_from, date_to=date_to
     )
-    expenses_confirmed = finance_settings["operation_expenses_confirmed"]
     wb_enabled = bool((store_owner.wb_api_key or "").strip())
     ozon_enabled = bool(connection["configured"])
     # `all` is a comparison of both source ledgers. Missing connection or coverage stays visible.
@@ -1302,8 +1276,6 @@ def build_overview(
         warnings.append("Ozon не подключён")
     if require_ozon and tax_rate is None:
         warnings.append("Ставка налога Ozon не задана; налог и прибыль Ozon неизвестны")
-    if require_ozon and not expenses_confirmed:
-        warnings.append("Полнота операционных расходов Ozon не подтверждена; прибыль Ozon неизвестна")
 
     daily: list[dict[str, Any]] = []
     missing_dates: list[str] = []
@@ -1346,30 +1318,12 @@ def build_overview(
             ozon_result = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
             ozon_result["date"] = day.isoformat()
             tax = _derive_ozon_tax(ozon_result.get("revenue"), tax_rate)
-            expense = expenses_by_date.get(day)
-            if expense is None and expenses_confirmed:
-                expense = Decimal("0")
+            # Entered operating expenses; a day without an entry counts as 0, as in WB.
+            expense = expenses_by_date.get(day, Decimal("0"))
             ozon_result["tax"] = tax
             ozon_result["operation_expenses"] = expense
-            profitability_complete = (
-                state is not None
-                and (
-                    state.status == "empty"
-                    or (
-                        isinstance(ozon_daily, dict)
-                        and ozon_daily.get("profitability_complete") is True
-                        and ozon_daily.get("accrual_classification_complete") is True
-                    )
-                )
-            )
-            ozon_result["margin"] = _derive_ozon_margin(
-                row=ozon_result,
-                tax=tax,
-                operation_expenses=expense,
-                operation_expenses_confirmed=expenses_confirmed,
-                profitability_complete=profitability_complete,
-                reconciliation_difference=ozon_result.get("reconciliation_difference"),
-            )
+            # Margin is set after the products are built (see the known-cost pass below), not per day here.
+            ozon_result["margin"] = None
 
         if marketplace == "ozon":
             result = ozon_result or {field: None for field in DAILY_AMOUNT_FIELDS}
@@ -1391,12 +1345,9 @@ def build_overview(
         result = {"date": day.isoformat()}
         for field in DAILY_AMOUNT_FIELDS:
             if field == "operation_expenses":
-                if not expenses_confirmed:
-                    result[field] = None
-                else:
-                    ozon_expense = expenses_by_date.get(day, Decimal("0")) if require_ozon else Decimal("0")
-                    wb_expense = _decimal(wb_rows[day].operation_expenses) if require_wb else Decimal("0")
-                    result[field] = _money(wb_expense + ozon_expense) if wb_expense is not None else None
+                ozon_expense = expenses_by_date.get(day, Decimal("0")) if require_ozon else Decimal("0")
+                wb_expense = _decimal(wb_rows[day].operation_expenses) if require_wb else Decimal("0")
+                result[field] = _money(wb_expense + ozon_expense) if wb_expense is not None else None
             elif field == "unallocated_amount" and require_wb:
                 # WB's legacy ledger has no unallocated-fee field, so the combined total is unknown.
                 result[field] = None
@@ -1412,15 +1363,21 @@ def build_overview(
         products.extend(_build_wb_products(db, user_id=user_id, date_from=date_from, date_to=date_to))
         products.extend(_build_ozon_products(db, user_id=user_id, day_states=day_states, tax_rate=tax_rate))
 
-    if marketplace == "ozon":
-        # Revenue of SKUs with a computable margin, per day: the same subset the dashboard's COGS and margin sum over.
+    if require_ozon:
+        # Owner decision (2026-10-25): margin = net − COGS − tax − entered operating expenses, computed over the SKUs
+        # whose cost is known, exactly as WB sums its day. Missing operating expenses count as 0; no confirmation gate.
         known_by_day = _known_cost_by_day(products)
         for row in daily:
-            known = known_by_day.get(row["date"])
-            if known is not None:
-                row["known_cost_revenue"] = round(known["revenue"], 2)
-            else:
-                row["known_cost_revenue"] = 0.0 if row.get("revenue") is not None else None
+            day_obj = date.fromisoformat(row["date"])
+            row.update(
+                _day_profit_known(
+                    marketplace=marketplace,
+                    row=row,
+                    known=known_by_day.get(row["date"]),
+                    ozon_expense=expenses_by_date.get(day_obj, Decimal("0")),
+                    wb_row=wb_rows.get(day_obj) if require_wb else None,
+                )
+            )
     warnings = list(dict.fromkeys(warnings))
     return {
         "marketplace": marketplace,
@@ -1606,14 +1563,54 @@ def _known_cost_by_day(products: list[dict[str, Any]]) -> dict[str, dict[str, fl
     return by_day
 
 
+def _day_profit_known(
+    *,
+    marketplace: str,
+    row: dict[str, Any],
+    known: dict[str, float] | None,
+    ozon_expense: Decimal,
+    wb_row: PnlDaily | None,
+) -> dict[str, float | None]:
+    """WB-style day profit over the Ozon SKUs whose cost is known; the combined view adds the WB day as saved."""
+    if row.get("revenue") is None:
+        return {"cogs": None, "margin": None, "known_cost_revenue": None}
+    ozon_margin = known["margin"] - float(ozon_expense) if known else None
+    if marketplace == "ozon":
+        return {
+            "cogs": round(known["cogs"], 2) if known else None,
+            "margin": round(ozon_margin, 2) if ozon_margin is not None else None,
+            "known_cost_revenue": round(known["revenue"], 2) if known else 0.0,
+        }
+    cogs_parts: list[float] = []
+    margin_parts: list[float] = []
+    revenue_parts: list[float] = []
+    if wb_row is not None:
+        if wb_row.cogs is not None:
+            cogs_parts.append(float(wb_row.cogs))
+        if wb_row.margin is not None:
+            margin_parts.append(float(wb_row.margin))
+        if wb_row.revenue is not None:
+            revenue_parts.append(float(wb_row.revenue))
+    if known:
+        cogs_parts.append(known["cogs"])
+        revenue_parts.append(known["revenue"])
+    if ozon_margin is not None:
+        margin_parts.append(ozon_margin)
+    return {
+        "cogs": round(sum(cogs_parts), 2) if cogs_parts else None,
+        "margin": round(sum(margin_parts), 2) if margin_parts else None,
+        "known_cost_revenue": round(sum(revenue_parts), 2) if revenue_parts else 0.0,
+    }
+
+
 def build_marketplace_pnl_rows(
     *, db: Session, store_owner: User, marketplace: str, date_from: date, date_to: date
 ) -> list[dict[str, Any]]:
-    """Daily rows in the WB /dashboard/pnl shape with the same sum rules the WB screens use.
+    """Daily rows in the WB /dashboard/pnl shape, read from the overview's day rules.
 
-    A day's revenue and expense lines are the sum of the known postings (a missing posting does not blank the
-    day). COGS and margin are the sums over the SKUs whose cost is known; `known_cost_revenue` says how much
-    revenue that is. A day with no data at all stays null. Profit still needs confirmed operating expenses.
+    Owner decision (2026-10-25): a day's revenue and expense lines sum the known postings; COGS and margin are sums
+    over the SKUs whose cost is known; margin = net - COGS - tax - entered operating expenses (missing = 0). A day with
+    no data at all stays null. known_cost_revenue is the revenue that carries that cost.
     """
     overview = build_overview(
         db=db,
@@ -1622,47 +1619,14 @@ def build_marketplace_pnl_rows(
         date_from=date_from,
         date_to=date_to,
     )
-    user_id = str(store_owner.id)
-    known_by_day = _known_cost_by_day(overview["products"])
-    wb_rows = _wb_daily_rows(db, user_id=user_id, date_from=date_from, date_to=date_to) if marketplace == "all" else {}
-    settings = get_marketplace_settings(db=db, user_id=user_id)
-    expenses = _ozon_expenses_by_date(db=db, user_id=user_id, date_from=date_from, date_to=date_to)
-    rows: list[dict[str, Any]] = []
-    for row in overview["daily"]:
-        day = row["date"]
-        known = known_by_day.get(day)
-        out: dict[str, Any] = {"date": day, **{field: row.get(field) for field in WB_SHAPED_PNL_FIELDS}}
-        if row.get("revenue") is None:
-            out["cogs"] = None
-            out["margin"] = None
-            out["known_cost_revenue"] = None
-            rows.append(out)
-            continue
-        ozon_expense = expenses.get(date.fromisoformat(day), Decimal("0")) if settings["operation_expenses_confirmed"] else None
-        ozon_known_margin = (known["margin"] - float(ozon_expense)) if known and ozon_expense is not None else None
-        if marketplace == "ozon":
-            out["cogs"] = round(known["cogs"], 2) if known else None
-            out["margin"] = round(ozon_known_margin, 2) if ozon_known_margin is not None else None
-            out["known_cost_revenue"] = round(known["revenue"], 2) if known else 0.0
-            rows.append(out)
-            continue
-        # Combined view: WB keeps its own saved COGS and margin; the Ozon part is its known-cost subset.
-        wb = wb_rows.get(date.fromisoformat(day))
-        cogs_parts = [float(wb.cogs)] if wb is not None and wb.cogs is not None else []
-        margin_parts = [float(wb.margin)] if wb is not None and wb.margin is not None else []
-        revenue_parts = [float(wb.revenue)] if wb is not None and wb.revenue is not None else []
-        if known:
-            cogs_parts.append(known["cogs"])
-            revenue_parts.append(known["revenue"])
-        if ozon_known_margin is not None:
-            margin_parts.append(ozon_known_margin)
-        out["cogs"] = round(sum(cogs_parts), 2) if cogs_parts else None
-        # Unconfirmed Ozon operating expenses make the combined profit unknown, not the WB part alone.
-        profit_unknown = not settings["operation_expenses_confirmed"] or (known is not None and ozon_known_margin is None)
-        out["margin"] = None if profit_unknown or not margin_parts else round(sum(margin_parts), 2)
-        out["known_cost_revenue"] = round(sum(revenue_parts), 2) if revenue_parts else 0.0
-        rows.append(out)
-    return rows
+    return [
+        {
+            "date": row["date"],
+            **{field: row.get(field) for field in WB_SHAPED_PNL_FIELDS},
+            "known_cost_revenue": row.get("known_cost_revenue"),
+        }
+        for row in overview["daily"]
+    ]
 
 
 def build_marketplace_sku_rows(

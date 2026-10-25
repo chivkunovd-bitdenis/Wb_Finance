@@ -267,8 +267,8 @@ def test_pnl_rows_use_wb_fields_and_keep_unknown_or_missing_days_null(real_db_se
     assert known["commission"] == 10.0  # expenses keep the WB positive convention
     assert known["logistics"] == 4.0
     assert known["tax"] == 6.0  # revenue × the owner's WB tax rate
-    assert known["operation_expenses"] is None  # operating expenses are not confirmed
-    assert known["margin"] is None  # profit stays unknown until costs and expenses are confirmed
+    assert known["operation_expenses"] == 0.0  # no expense entered for the day counts as zero, as in WB
+    assert known["margin"] is None  # no SKU on this day has a known cost, so no margin is claimed
     assert all(missing[field] is None for field in WB_SHAPED_PNL_FIELDS)
 
 
