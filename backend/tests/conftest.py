@@ -74,6 +74,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dependency_overrides():
+    """Restore test-only auth/store overrides even if another fixture fails before yield."""
+    original = app.dependency_overrides.copy()
+    try:
+        yield
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original)
+
+
 @pytest.fixture
 def client():
     """Клиент для запросов к API без реальной БД."""

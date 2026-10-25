@@ -1,7 +1,7 @@
 """Billing: buyer requisites and invoices (счета на оплату).
 
 Revision ID: e4b5c6d7f8a9
-Revises: d8e9f0a1b2c3
+Revises: e3b8f4a12c90
 Create Date: 2026-10-22
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "e4b5c6d7f8a9"
-down_revision: Union[str, None] = "d8e9f0a1b2c3"
+down_revision: Union[str, None] = "e3b8f4a12c90"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

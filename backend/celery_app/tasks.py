@@ -17,6 +17,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
+from app.services.wb_orchestrator_scheduler import (
+    claim_due, due_for_state, execution_lock, locked_state,
+    release_failed_publish, schedule_state, utc,
+)
 from app.core.feature_flags import is_daily_brief_enabled
 from app.models.user import User
 from app.models.article import Article
@@ -60,10 +64,6 @@ FUNNEL_TAIL_SINGLE_FLIGHT_SEC = 120
 
 # Orchestrator pacing: keep WB requests spaced even after cooldown.
 ORCH_STEP_DELAY_SEC = 20
-
-# If a user is stuck in orchestrator status=running (e.g. tick died), we must be able to
-# wake a new tick on subsequent kicks without creating a storm.
-ORCH_RUNNING_STALE_WAKE_SEC = 5 * 60  # 5 minutes
 
 # WB иногда возвращает реальное окно "когда можно снова" через заголовки.
 # В логах это видно как reset_sec=... (X-RateLimit-Reset). Значение может быть часами.
@@ -822,7 +822,8 @@ def _intents_after_consumed_step(
             latest_lane.pop(key, None)
 
     for key, value in (remaining_lane or {}).items():
-        latest_lane[key] = value
+        if latest_lane.get(key) == snapshot_lane.get(key):
+            latest_lane[key] = value
 
     return _intents_with_lane(current_intents or {}, lane, latest_lane)
 
@@ -838,7 +839,7 @@ def _save_orch_step_state(
     cooldown_until: str | None,
     last_step: str,
 ) -> dict:
-    db.refresh(st)
+    st = locked_state(db, str(st.user_id))
     st.intents = _intents_after_consumed_step(
         cast(dict, st.intents or {}),
         snapshot_intents,
@@ -854,13 +855,7 @@ def _save_orch_step_state(
 
 
 def _ensure_orch_state(db, *, user_id: str) -> WbOrchestratorState:
-    st = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
-    if st is None:
-        st = WbOrchestratorState(user_id=user_id, status="idle", intents={})
-        db.add(st)
-        db.commit()
-        db.refresh(st)
-    return st
+    return locked_state(db, user_id, create=True)
 
 
 @celery_app.task(name="archive_backfill_manager")
@@ -926,38 +921,40 @@ def archive_backfill_manager() -> dict:
 
 @celery_app.task(name="wb_orchestrator_kick")
 def wb_orchestrator_kick(user_id: str, intents_patch: dict | None = None) -> dict:
-    """
-    External triggers call this task instead of fanning out WB calls.
-    It only updates intents and schedules a single orchestrator tick.
-    """
+    """Merge durable work; beat is the only producer of immediate token ticks."""
     db = SessionLocal()
     try:
         st = _ensure_orch_state(db, user_id=user_id)
         st.intents = _intents_merge(cast(dict, st.intents or {}), cast(dict, intents_patch or {}))
-        cooldown_dt = _parse_iso_utc(st.cooldown_until)
-        cooldown_expired = st.status == "cooldown" and (cooldown_dt is None or cooldown_dt <= _utcnow())
-
-        running_is_stale = False
-        if st.status == "running" and st.updated_at is not None:
-            updated = st.updated_at
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
-            running_is_stale = (_utcnow() - updated).total_seconds() >= ORCH_RUNNING_STALE_WAKE_SEC
-
-        # schedule tick if idle/cooldown-expired, or if 'running' looks stale (tick may have died).
-        # If running is healthy, it will pick up intents on the next loop.
-        if st.status == "idle" or cooldown_expired or running_is_stale:
-            st.status = "scheduled"
-            db.add(st)
-            db.commit()
-            wb_orchestrator_tick.delay(user_id)
-        else:
-            db.add(st)
-            db.commit()
+        now = _utcnow()
+        due = due_for_state(st, now)
+        # Repeated kicks cannot postpone work or bypass an existing pacing deadline.
+        if due is None:
+            schedule_state(st, now)
+        elif st.next_tick_at is None or (st.status == "cooldown" and due < utc(st.next_tick_at)):
+            schedule_state(st, now)
+        db.commit()
         return {"ok": True, "status": st.status}
     except Exception as exc:
         db.rollback()
         return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="wb_orchestrator_dispatch", ignore_result=True)
+def wb_orchestrator_dispatch() -> dict:
+    db = SessionLocal()
+    sent = 0
+    try:
+        for user_id, token in claim_due(db):
+            try:
+                wb_orchestrator_tick.apply_async(args=[user_id, token])
+                sent += 1
+            except Exception:
+                logger.exception("orchestrator publish failed user_id=%s", user_id)
+                release_failed_publish(db, user_id, token)
+        return {"ok": True, "sent": sent}
     finally:
         db.close()
 
@@ -990,7 +987,7 @@ def _orch_is_blocked(intents: dict, op: str, now_dt: datetime) -> bool:
 
 
 def _orch_set_blocked(db, st: WbOrchestratorState, *, op: str, until: datetime) -> dict:
-    db.refresh(st)
+    st = locked_state(db, str(st.user_id))
     intents = dict(cast(dict, st.intents or {}))
     blocked = dict(intents.get("blocked") or {})
     blocked[op] = _iso_utc(until)
@@ -1085,161 +1082,155 @@ def _orch_funnel_tail_step(db, *, user_id: str) -> dict:
 
 
 @celery_app.task(name="wb_orchestrator_tick")
-def wb_orchestrator_tick(user_id: str) -> dict:
-    """
-    Single per-user orchestrator that:
-    - enforces global cooldown after 429 based on WB headers
-    - executes one step per tick (pacing), prioritizing high lane
-    - avoids fan-out tasks and self-retry storms
-    """
+def wb_orchestrator_tick(user_id: str, dispatch_token: str | None = None) -> dict:
     db = SessionLocal()
     try:
-        user = db.get(User, user_id)
-        if not user:
-            return {"ok": False, "error": "user_not_found"}
-        if not user.wb_api_key or not user.wb_api_key.strip():
-            return {"ok": False, "error": "no_wb_api_key"}
-
-        st = _ensure_orch_state(db, user_id=user_id)
-
-        # single-flight: if another tick recently marked running, do nothing
-        if st.status == "running" and st.updated_at is not None:
-            updated = st.updated_at
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
-            if (_utcnow() - updated).total_seconds() < 30:
+        with execution_lock(db, user_id) as acquired:
+            if not acquired:
                 return {"ok": True, "message": "already_running"}
-
-        now_dt = _utcnow()
-        cooldown_dt = _parse_iso_utc(st.cooldown_until)
-        if cooldown_dt is not None and cooldown_dt > now_dt:
-            st.status = "cooldown"
-            db.add(st)
+            st = _ensure_orch_state(db, user_id=user_id)
+            now = _utcnow()
+            if dispatch_token is None:
+                # Retained legacy messages are only wakeups. Never execute or republish them.
+                if st.next_tick_at is None and st.dispatch_token is None and st.status != "error":
+                    schedule_state(st, now)
+                db.commit()
+                return {"ok": True, "message": "legacy_deferred"}
+            if st.dispatch_token != dispatch_token:
+                db.rollback()
+                return {"ok": True, "message": "stale_dispatch"}
+            due = due_for_state(st, now)
+            if due is None or due > now or (st.next_tick_at is not None and utc(st.next_tick_at) > now):
+                existing_due = utc(st.next_tick_at)
+                schedule_state(st, now)
+                if st.next_tick_at is not None and existing_due is not None:
+                    st.next_tick_at = max(st.next_tick_at, existing_due)
+                st.dispatch_token = st.dispatch_lease_until = None
+                db.commit()
+                return {"ok": True, "message": "not_due"}
+            st.next_tick_at = None
+            st.status = "running"
             db.commit()
-            delay = int((cooldown_dt - now_dt).total_seconds())
-            wb_orchestrator_tick.apply_async(args=[user_id], countdown=max(1, delay))
-            return {"ok": True, "message": "cooldown", "delay_sec": delay}
+            terminal_error: str | None = None
+            try:
+                user = db.get(User, user_id)
+                if not user or not user.wb_api_key or not user.wb_api_key.strip():
+                    terminal_error = "no_wb_api_key"
+                    return {"ok": False, "error": terminal_error}
+                return _run_orchestrator_step(db, st, user_id, now)
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                if code not in FUNNEL_YTD_HTTP_RETRY_CODES:
+                    terminal_error = f"wb_http_{code}" if code is not None else "wb_http_error"
+                    return {"ok": False, "error": terminal_error, "http_code": code}
+                raise
+            finally:
+                db.rollback()
+                st = locked_state(db, user_id)
+                # A dispatcher may have renewed an expired lease during a long import.
+                # Keep that replacement token valid; the dedicated lock still prevents overlap.
+                if terminal_error and st.next_tick_at is None:
+                    # Permanent failures require a fresh kick. Keep the work, invalidate even
+                    # a replacement token issued while a long step outlived its dispatch lease.
+                    st.dispatch_token = st.dispatch_lease_until = None
+                    st.status = "error"
+                    st.cooldown_until = None
+                    st.last_step = terminal_error
+                else:
+                    # A kick during the step left a durable wakeup; never erase it on failure.
+                    if st.dispatch_token == dispatch_token:
+                        st.dispatch_token = st.dispatch_lease_until = None
+                    schedule_state(st, _utcnow(), delay=ORCH_STEP_DELAY_SEC)
+                db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("orchestrator tick failed user_id=%s", user_id)
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
 
-        st.status = "running"
-        db.add(st)
-        db.commit()
 
-        intents = copy.deepcopy(cast(dict, st.intents or {}))
-        high = dict(intents.get("high") or {})
-        low = dict(intents.get("low") or {})
-        finance_blocked = _orch_is_blocked(intents, ORCH_OP_FINANCE, now_dt)
-        funnel_blocked = _orch_is_blocked(intents, ORCH_OP_FUNNEL, now_dt)
-        # Which WB API the current step talks to — needed to block only that op on 429.
-        current_op: str | None = None
+def _run_orchestrator_step(db, st, user_id, now_dt):
+    intents = copy.deepcopy(cast(dict, st.intents or {}))
+    high = dict(intents.get("high") or {})
+    low = dict(intents.get("low") or {})
+    finance_blocked = _orch_is_blocked(intents, ORCH_OP_FINANCE, now_dt)
+    funnel_blocked = _orch_is_blocked(intents, ORCH_OP_FUNNEL, now_dt)
+    # Which WB API the current step talks to — needed to block only that op on 429.
+    current_op: str | None = None
 
-        try:
-            # High lane 1: finance missing range (explicit). Skipped (intent kept) while
-            # statistics-api is blocked, so the funnel tail below can still progress.
-            fr = high.get("finance_range")
-            if isinstance(fr, dict) and fr.get("date_from") and fr.get("date_to") and not finance_blocked:
-                current_op = ORCH_OP_FINANCE
-                df = str(fr["date_from"])
-                dt = str(fr["date_to"])
-                res = _orch_finance_missing_step(db, user_id=user_id, date_from=df, date_to=dt)
-                high.pop("finance_range", None)
-                saved_intents = _save_orch_step_state(
-                    db,
-                    st,
-                    snapshot_intents=intents,
-                    lane="high",
-                    remaining_lane=high,
-                    status="idle",
-                    cooldown_until=None,
-                    last_step=f"finance_missing {df}..{dt}",
-                )
-                # If more work exists, schedule next tick with pacing.
-                if saved_intents:
-                    wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
-                return {"ok": True, "step": res}
+    try:
+        # High lane 1: finance missing range (explicit). Skipped (intent kept) while
+        # statistics-api is blocked, so the funnel tail below can still progress.
+        fr = high.get("finance_range")
+        if isinstance(fr, dict) and fr.get("date_from") and fr.get("date_to") and not finance_blocked:
+            current_op = ORCH_OP_FINANCE
+            df = str(fr["date_from"])
+            dt = str(fr["date_to"])
+            res = _orch_finance_missing_step(db, user_id=user_id, date_from=df, date_to=dt)
+            high.pop("finance_range", None)
+            _save_orch_step_state(
+                db,
+                st,
+                snapshot_intents=intents,
+                lane="high",
+                remaining_lane=high,
+                status="idle",
+                cooldown_until=None,
+                last_step=f"finance_missing {df}..{dt}",
+            )
+            return {"ok": True, "step": res}
 
-            # High lane 2: funnel tail repair
-            if high.get("funnel_tail") is True and not funnel_blocked:
-                current_op = ORCH_OP_FUNNEL
-                res = _orch_funnel_tail_step(db, user_id=user_id)
-                st.last_step = f"funnel_tail {res.get('day') or ''}".strip()
-                # keep intent until complete
-                if res.get("message") == "complete":
-                    high.pop("funnel_tail", None)
-                saved_intents = _save_orch_step_state(
-                    db,
-                    st,
-                    snapshot_intents=intents,
-                    lane="high",
-                    remaining_lane=high,
-                    status="idle",
-                    cooldown_until=None,
-                    last_step=f"funnel_tail {res.get('day') or ''}".strip(),
-                )
-                if saved_intents or (res.get("missing_left", 0) > 0):
-                    wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
-                return {"ok": True, "step": res}
+        # High lane 2: funnel tail repair
+        if high.get("funnel_tail") is True and not funnel_blocked:
+            current_op = ORCH_OP_FUNNEL
+            res = _orch_funnel_tail_step(db, user_id=user_id)
+            st.last_step = f"funnel_tail {res.get('day') or ''}".strip()
+            # keep intent until complete
+            if res.get("message") == "complete":
+                high.pop("funnel_tail", None)
+            _save_orch_step_state(
+                db,
+                st,
+                snapshot_intents=intents,
+                lane="high",
+                remaining_lane=high,
+                status="idle",
+                cooldown_until=None,
+                last_step=f"funnel_tail {res.get('day') or ''}".strip(),
+            )
+            return {"ok": True, "step": res}
 
-            # Low lane: finance backfill via existing FinanceBackfillState, one month per tick
-            backfill_year = low.get("finance_backfill_year")
-            if backfill_year in {2025, 2026} and not finance_blocked:
-                current_op = ORCH_OP_FINANCE
-                y = int(backfill_year)
-                # ensure state exists
-                state = (
-                    db.query(FinanceBackfillState)
-                    .filter(FinanceBackfillState.user_id == user_id, FinanceBackfillState.calendar_year == y)
-                    .first()
-                )
-                if not state:
-                    state = FinanceBackfillState(user_id=user_id, calendar_year=y, status="idle")
-                    db.add(state)
-                    db.commit()
-                    db.refresh(state)
-                year_start = date(y, 1, 1)
-                year_end_cap = date(y, 12, 31)
-                yesterday = date.today() - timedelta(days=1)
-                through = yesterday if yesterday <= year_end_cap else year_end_cap
-                cursor = through if state.last_completed_date is None else (state.last_completed_date - timedelta(days=1))
-                if cursor < year_start:
-                    state.status = "complete"
-                    state.error_message = None
-                    db.add(state)
-                    db.commit()
-                    if y == 2026:
-                        low["finance_backfill_year"] = 2025
-                    else:
-                        low.pop("finance_backfill_year", None)
-                    saved_intents = _save_orch_step_state(
-                        db,
-                        st,
-                        snapshot_intents=intents,
-                        lane="low",
-                        remaining_lane=low,
-                        status="idle",
-                        cooldown_until=None,
-                        last_step=f"finance_backfill_{y} complete",
-                    )
-                    if saved_intents:
-                        wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
-                    return {"ok": True, "step": {"message": "complete", "year": y}}
-
-                df_d, dt_d = _build_desc_month_chunk(cursor=cursor, year_start=year_start)
-                df = df_d.isoformat()
-                dt = dt_d.isoformat()
-                state.status = "running"
+        # Low lane: finance backfill via existing FinanceBackfillState, one month per tick
+        backfill_year = low.get("finance_backfill_year")
+        if backfill_year in {2025, 2026} and not finance_blocked:
+            current_op = ORCH_OP_FINANCE
+            y = int(backfill_year)
+            # ensure state exists
+            state = (
+                db.query(FinanceBackfillState)
+                .filter(FinanceBackfillState.user_id == user_id, FinanceBackfillState.calendar_year == y)
+                .first()
+            )
+            if not state:
+                state = FinanceBackfillState(user_id=user_id, calendar_year=y, status="idle")
                 db.add(state)
                 db.commit()
-                # Архив: грузим только если данных за период нет.
-                # Проверяем coverage по pnl_daily (после успешного прохода он есть на каждый день).
-                if not _pnl_daily_covers_range(db, user_id=user_id, start=df_d, end=dt_d):
-                    sync_sales(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
-                    sync_ads(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
-                    recalculate_pnl.delay(user_id, df, dt)
-                    recalculate_sku_daily.delay(user_id, df, dt)
-                state.last_completed_date = dt_d
+                db.refresh(state)
+            year_start = date(y, 1, 1)
+            year_end_cap = date(y, 12, 31)
+            yesterday = date.today() - timedelta(days=1)
+            through = yesterday if yesterday <= year_end_cap else year_end_cap
+            cursor = through if state.last_completed_date is None else (state.last_completed_date - timedelta(days=1))
+            if cursor < year_start:
+                state.status = "complete"
                 state.error_message = None
                 db.add(state)
                 db.commit()
+                if y == 2026:
+                    low["finance_backfill_year"] = 2025
+                else:
+                    low.pop("finance_backfill_year", None)
                 _save_orch_step_state(
                     db,
                     st,
@@ -1248,69 +1239,89 @@ def wb_orchestrator_tick(user_id: str) -> dict:
                     remaining_lane=low,
                     status="idle",
                     cooldown_until=None,
-                    last_step=f"finance_backfill_{y} {df}..{dt}",
+                    last_step=f"finance_backfill_{y} complete",
                 )
-                wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
-                return {"ok": True, "step": {"year": y, "chunk": {"date_from": df, "date_to": dt}}}
+                return {"ok": True, "step": {"message": "complete", "year": y}}
 
-            # Only blocked work left: wait until the earliest WB window opens.
-            blocked_waits = [
-                _orch_blocked_until(intents, op)
-                for op in _orch_pending_ops(intents)
-                if _orch_is_blocked(intents, op, now_dt)
-            ]
-            if blocked_waits:
-                until = min(u for u in blocked_waits if u is not None)
-                delay = max(1, int((until - now_dt).total_seconds()))
-                _orch_set_cooldown(db, st, until=until, reason="wb_blocked_wait")
-                wb_orchestrator_tick.apply_async(args=[user_id], countdown=delay)
-                return {"ok": True, "message": "cooldown", "delay_sec": delay}
-
-            # Nothing to do
-            st.status = "idle"
-            st.cooldown_until = None
-            db.add(st)
+            df_d, dt_d = _build_desc_month_chunk(cursor=cursor, year_start=year_start)
+            df = df_d.isoformat()
+            dt = dt_d.isoformat()
+            state.status = "running"
+            db.add(state)
             db.commit()
-            return {"ok": True, "message": "idle"}
+            # Архив: грузим только если данных за период нет.
+            # Проверяем coverage по pnl_daily (после успешного прохода он есть на каждый день).
+            if not _pnl_daily_covers_range(db, user_id=user_id, start=df_d, end=dt_d):
+                sync_sales(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                sync_ads(user_id, df, dt, schedule_retry=False, enqueue_recalc=False)
+                recalculate_pnl.delay(user_id, df, dt)
+                recalculate_sku_daily.delay(user_id, df, dt)
+            state.last_completed_date = dt_d
+            state.error_message = None
+            db.add(state)
+            db.commit()
+            _save_orch_step_state(
+                db,
+                st,
+                snapshot_intents=intents,
+                lane="low",
+                remaining_lane=low,
+                status="idle",
+                cooldown_until=None,
+                last_step=f"finance_backfill_{y} {df}..{dt}",
+            )
+            return {"ok": True, "step": {"year": y, "chunk": {"date_from": df, "date_to": dt}}}
 
-        except requests.HTTPError as exc:
-            code = exc.response.status_code if exc.response is not None else None
-            if code in FUNNEL_YTD_HTTP_RETRY_CODES:
-                delay = _retry_http_delay_with_headers(int(code), 1, exc.response)
-                until = now_dt + timedelta(seconds=delay)
-                reason = f"wb_http_{code}" + (f" {current_op}" if current_op else "")
-                if current_op:
-                    latest = _orch_set_blocked(db, st, op=current_op, until=until)
-                    others_ready = [
-                        op
-                        for op in _orch_pending_ops(latest)
-                        if op != current_op and not _orch_is_blocked(latest, op, now_dt)
-                    ]
-                    if others_ready:
-                        # Другая WB-операция не заблокирована — не замораживаем весь оркестратор.
-                        st.status = "scheduled"
-                        st.cooldown_until = None
-                        st.last_step = reason[:300]
-                        db.add(st)
-                        db.commit()
-                        wb_orchestrator_tick.apply_async(args=[user_id], countdown=ORCH_STEP_DELAY_SEC)
-                        return {
-                            "ok": False,
-                            "error": "wb_retry_scheduled",
-                            "http_code": int(code),
-                            "delay_sec": delay,
-                            "blocked_op": current_op,
-                            "continue_with": sorted(others_ready),
-                        }
-                _orch_set_cooldown(db, st, until=until, reason=reason)
-                wb_orchestrator_tick.apply_async(args=[user_id], countdown=delay)
-                return {"ok": False, "error": "wb_retry_scheduled", "http_code": int(code), "delay_sec": delay}
-            raise
-    except Exception as exc:
-        db.rollback()
-        return {"ok": False, "error": str(exc)}
-    finally:
-        db.close()
+        # Only blocked work left: wait until the earliest WB window opens.
+        blocked_waits = [
+            _orch_blocked_until(intents, op)
+            for op in _orch_pending_ops(intents)
+            if _orch_is_blocked(intents, op, now_dt)
+        ]
+        if blocked_waits:
+            until = min(u for u in blocked_waits if u is not None)
+            delay = max(1, int((until - now_dt).total_seconds()))
+            _orch_set_cooldown(db, st, until=until, reason="wb_blocked_wait")
+            return {"ok": True, "message": "cooldown", "delay_sec": delay}
+
+        # Nothing to do
+        st.status = "idle"
+        st.cooldown_until = None
+        db.add(st)
+        db.commit()
+        return {"ok": True, "message": "idle"}
+
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else None
+        if code in FUNNEL_YTD_HTTP_RETRY_CODES:
+            delay = _retry_http_delay_with_headers(int(code), 1, exc.response)
+            until = now_dt + timedelta(seconds=delay)
+            reason = f"wb_http_{code}" + (f" {current_op}" if current_op else "")
+            if current_op:
+                latest = _orch_set_blocked(db, st, op=current_op, until=until)
+                others_ready = [
+                    op
+                    for op in _orch_pending_ops(latest)
+                    if op != current_op and not _orch_is_blocked(latest, op, now_dt)
+                ]
+                if others_ready:
+                    # Другая WB-операция не заблокирована — не замораживаем весь оркестратор.
+                    st.status = "scheduled"
+                    st.cooldown_until = None
+                    st.last_step = reason[:300]
+                    db.add(st)
+                    db.commit()
+                    return {
+                        "ok": False,
+                        "error": "wb_retry_scheduled",
+                        "http_code": int(code),
+                        "delay_sec": delay,
+                        "blocked_op": current_op,
+                        "continue_with": sorted(others_ready),
+                    }
+            _orch_set_cooldown(db, st, until=until, reason=reason)
+            return {"ok": False, "error": "wb_retry_scheduled", "http_code": int(code), "delay_sec": delay}
+        raise
 
 
 def _ensure_articles_from_raw(db, user_id: str, start: date, end: date, subject_by_nm: dict[int, str | None] | None = None) -> int:

@@ -125,6 +125,7 @@ def test_orchestrator_kick_wakes_expired_cooldown():
 
     with (
         patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks._ensure_orch_state", return_value=state),
         patch.object(wb_orchestrator_tick, "delay", return_value=None) as mock_delay,
     ):
         out = wb_orchestrator_kick(
@@ -133,7 +134,8 @@ def test_orchestrator_kick_wakes_expired_cooldown():
         )
 
     assert out == {"ok": True, "status": "scheduled"}
-    mock_delay.assert_called_once_with(user_id)
+    mock_delay.assert_not_called()
+    assert state.next_tick_at is not None
     assert state.status == "scheduled"
     assert state.intents["high"]["funnel_tail"] is True
     assert state.intents["high"]["finance_range"] == {"date_from": "2026-04-28", "date_to": "2026-04-29"}
@@ -158,6 +160,7 @@ def test_orchestrator_kick_wakes_stale_running():
 
     with (
         patch("celery_app.tasks.SessionLocal", return_value=session),
+        patch("celery_app.tasks._ensure_orch_state", return_value=state),
         patch.object(wb_orchestrator_tick, "delay", return_value=None) as mock_delay,
     ):
         out = wb_orchestrator_kick(
@@ -166,7 +169,8 @@ def test_orchestrator_kick_wakes_stale_running():
         )
 
     assert out == {"ok": True, "status": "scheduled"}
-    mock_delay.assert_called_once_with(user_id)
+    mock_delay.assert_not_called()
+    assert state.next_tick_at is not None
     assert state.status == "scheduled"
     assert state.intents["high"]["funnel_tail"] is True
 
