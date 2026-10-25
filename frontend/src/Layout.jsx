@@ -331,7 +331,10 @@ export default function Layout() {
 
   /** Ошибка первичной синхронизации не должна блокировать «Подписку» и оплату. */
   const isBillingPath = (location.pathname || '').startsWith('/billing');
-  const blockContentForSyncError = Boolean(initialError) && !isBillingPath && marketplace === 'wb';
+  const isSettingsPath = (location.pathname || '').startsWith('/settings');
+  const isSyncExemptPath = isBillingPath || isSettingsPath;
+  const blockContentForSyncLoading = initialLoading && !isSyncExemptPath && marketplace === 'wb';
+  const blockContentForSyncError = Boolean(initialError) && !isSyncExemptPath && marketplace === 'wb';
 
   useEffect(() => {
     loadBillingStatus();
@@ -362,7 +365,7 @@ export default function Layout() {
         />
 
         <div className="content">
-          {initialLoading && marketplace === 'wb' ? (
+          {blockContentForSyncLoading ? (
             <div className="loader-center">
               <div className="loader-spinner" />
               <p style={{ fontWeight: 700 }}>Первая синхронизация данных с Wildberries...</p>
@@ -378,14 +381,14 @@ export default function Layout() {
                 Быстрый чек: открой <code>{`${window.location.origin}/docs`}</code> и попробуй <code>POST /sync/initial</code>.
               </div>
               <div style={{ marginTop: 12, fontSize: 13 }}>
-                Раздел <strong>Подписка</strong> в боковом меню открывается даже при этой ошибке — можно оплатить доступ.
+                Разделы <strong>Подписка</strong> и <strong>Настройки</strong> в боковом меню открываются даже при этой ошибке — можно сменить ключ или оплатить доступ.
               </div>
             </div>
           ) : (
             <>
               {marketplace === 'wb' && (
                 <>
-              {initialError && isBillingPath && (
+              {initialError && isSyncExemptPath && (
                 <div
                   role="alert"
                   style={{
