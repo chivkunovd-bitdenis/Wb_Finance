@@ -1071,8 +1071,10 @@ def _product_margin(row: dict[str, Any], *, cogs: Decimal | None, tax: Decimal |
     Uses only the SKU's own fields and its known cost; sku-allocation and profitability flags are not required.
     Not-tied charges and operating expenses belong to the day, not to the SKU.
     """
+    # An unclassified charge with a known amount is still a charge (the reference workbook counts it in «Прочие»);
+    # only a null amount, which means the value itself is unknown, makes the margin unknown.
     revenue = _decimal(row.get("revenue"))
-    if revenue is None or cogs is None or tax is None or row.get("accrual_classification_complete") is not True:
+    if revenue is None or cogs is None or tax is None:
         return None
     charges = Decimal("0")
     for field in _PRODUCT_CHARGE_FIELDS:
@@ -1114,7 +1116,8 @@ def _build_ozon_products(
         )
         for row in data:
             sku = str(row.get("sku") or "").strip()
-            if not sku:
+            # Owner decision (2026-10-25): a SKU without a catalogue card is left out (see _catalogued_ozon_day).
+            if not sku or (catalogue and sku not in catalogue):
                 continue
             product = products.setdefault(
                 sku,
@@ -1134,7 +1137,9 @@ def _build_ozon_products(
             }
             product_tax = _derive_ozon_tax(row.get("revenue"), tax_rate)
             product_daily["tax"] = _money(product_tax)
-            product_daily["margin"] = _money(_product_margin(row, cogs=_decimal(row.get("cogs")), tax=product_tax))
+            # A SKU without an entered cost has no margin on any day, so its period margin is never a partial sum.
+            product_cogs = _decimal(row.get("cogs")) if sku in costs else None
+            product_daily["margin"] = _money(_product_margin(row, cogs=product_cogs, tax=product_tax))
             product_daily["operation_expenses"] = None
             product["daily"].append(product_daily)
     for sku, product in products.items():
@@ -1240,11 +1245,76 @@ def _sum_known_sources(sources: list[dict[str, Any]], field: str) -> float | Non
 
 
 def _derive_ozon_tax(revenue: Any, tax_rate: Any) -> Decimal | None:
+    """Owner decision (2026-10-25): tax = rate x revenue, signed. A day of net returns lowers the tax instead of
+    counting as zero, so day and SKU taxes both add up to rate x period revenue (sales minus returns)."""
     amount = _decimal(revenue)
     rate = _decimal(tax_rate)
     if amount is None or rate is None:
         return None
-    return max(amount, Decimal("0")) * rate
+    return amount * rate
+
+
+# A SKU's own amounts in the day ledger; removed from the day when the SKU has no catalogue card.
+_UNCATALOGUED_DAY_FIELDS = (
+    "revenue",
+    "commission",
+    "acquiring",
+    "logistics",
+    "penalties",
+    "storage",
+    "ads_spend",
+    "other_expenses",
+    "compensation",
+    "unallocated_amount",
+    *OZON_QUANTITY_FIELDS,
+)
+
+
+def _ozon_catalogue_skus(db: Session, user_id: str) -> set[str]:
+    return {str(row.sku) for row in db.query(OzonProduct.sku).filter(OzonProduct.user_id == user_id).all()}
+
+
+def _uncatalogued_net(product: dict[str, Any]) -> Decimal | None:
+    """What the SKU's own accruals added to the balance: revenue - Ozon charges + compensation + signed unallocated."""
+    net = Decimal("0")
+    for field in ("revenue", "compensation", "unallocated_amount", *_PRODUCT_CHARGE_FIELDS):
+        if field not in product:
+            continue
+        value = _decimal(product.get(field))
+        if value is None:
+            return None
+        net += -value if field in _PRODUCT_CHARGE_FIELDS else value
+    return net
+
+
+def _catalogued_ozon_day(
+    daily_data: dict[str, Any], products_data: Any, catalogue: set[str]
+) -> dict[str, Any]:
+    """Owner decision (2026-10-25): a SKU without a catalogue card (only an Ozon SKU) is left out of reports.
+
+    Its own revenue, charges, units and balance are taken out of the day; not-tied charges stay with the day. With no
+    catalogue at all nothing can be told apart, so the day is kept whole. A SKU amount that is unknown makes the
+    day's field unknown, since the remainder cannot be computed.
+    """
+    result = dict(daily_data)
+    if not catalogue or not isinstance(products_data, list):
+        return result
+    for product in products_data:
+        if not isinstance(product, dict):
+            continue
+        sku = str(product.get("sku") or "").strip()
+        if not sku or sku in catalogue:
+            continue
+        removals: dict[str, Decimal | None] = {
+            field: _decimal(product.get(field)) for field in _UNCATALOGUED_DAY_FIELDS if field in product
+        }
+        removals["marketplace_net"] = _uncatalogued_net(product)
+        for field, amount in removals.items():
+            day_value = _decimal(result.get(field))
+            if day_value is None:
+                continue
+            result[field] = None if amount is None else day_value - amount
+    return result
 
 
 def build_overview(
@@ -1272,6 +1342,7 @@ def build_overview(
     require_wb = marketplace == "all"
     require_ozon = marketplace in {"ozon", "all"}
 
+    catalogue_skus = _ozon_catalogue_skus(db, user_id) if require_ozon else set()
     day_states = (
         db.query(OzonSyncDay)
         .filter(OzonSyncDay.user_id == user_id, OzonSyncDay.day >= date_from, OzonSyncDay.day <= date_to)
@@ -1295,6 +1366,7 @@ def build_overview(
 
     daily: list[dict[str, Any]] = []
     missing_dates: list[str] = []
+    ozon_day_results: dict[date, dict[str, Any]] = {}
     day = date_from
     while day <= date_to:
         state = ozon_state_map.get(cast(date, day))
@@ -1331,8 +1403,13 @@ def build_overview(
         ozon_daily = state.daily_data if state and isinstance(state.daily_data, dict) else None
         ozon_result: dict[str, Any] | None = None
         if require_ozon:
-            ozon_result = dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS})
+            ozon_result = _catalogued_ozon_day(
+                dict(ozon_daily or {field: 0 for field in ZERO_DAY_FIELDS}),
+                state.products_data if state is not None else None,
+                catalogue_skus,
+            )
             ozon_result["date"] = day.isoformat()
+            ozon_day_results[day] = ozon_result
             tax = _derive_ozon_tax(ozon_result.get("revenue"), tax_rate)
             # Entered operating expenses; a day without an entry counts as 0, as in WB.
             expense = expenses_by_date.get(day, Decimal("0"))
@@ -1380,24 +1457,18 @@ def build_overview(
         products.extend(_build_ozon_products(db, user_id=user_id, day_states=day_states, tax_rate=tax_rate))
 
     if require_ozon:
-        # Owner decision (2026-10-25): margin = net − COGS − tax − entered operating expenses, computed over the SKUs
-        # whose cost is known, exactly as WB sums its day. Missing operating expenses count as 0; no confirmation gate.
+        # Owner decision (2026-10-25): margin = balance (net) − COGS of the SKUs whose cost is known − tax − entered
+        # operating expenses, as WB sums its day. Missing operating expenses count as 0; no confirmation gate.
         known_by_day = _known_cost_by_day(products)
         for row in daily:
             day_obj = date.fromisoformat(row["date"])
-            state_row = ozon_state_map.get(day_obj)
-            ozon_not_tied = (
-                state_row.daily_data.get("unallocated_amount")
-                if state_row is not None and isinstance(state_row.daily_data, dict)
-                else None
-            )
             row.update(
                 _day_profit_known(
                     marketplace=marketplace,
                     row=row,
+                    ozon_day=ozon_day_results.get(day_obj),
                     known=known_by_day.get(row["date"]),
                     ozon_expense=expenses_by_date.get(day_obj, Decimal("0")),
-                    ozon_not_tied=ozon_not_tied,
                     wb_row=wb_rows.get(day_obj) if require_wb else None,
                 )
             )
@@ -1571,46 +1642,51 @@ def plan_daily_refresh_for_ready_connections(db: Session, *, today: date) -> lis
 
 
 def _known_cost_by_day(products: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
-    """Per Ozon day, over SKU rows: COGS and revenue of SKUs with a known COGS; margin of SKUs with a margin."""
+    """Per Ozon day, over SKU rows: COGS and revenue of SKUs with a known COGS, and SKU-days whose units are unknown.
+
+    A SKU with known units but no entered cost adds nothing to COGS (as in WB, where a missing cost counts as 0);
+    a SKU whose units are unknown makes the day's COGS unknown.
+    """
     by_day: dict[str, dict[str, float]] = {}
     for product in products:
         if product.get("marketplace") != "ozon":
             continue
         for row in product.get("daily") or []:
-            bucket = by_day.setdefault(
-                row["date"],
-                {"cogs": 0.0, "cogs_count": 0.0, "revenue": 0.0, "margin": 0.0, "margin_count": 0.0},
-            )
+            bucket = by_day.setdefault(row["date"], {"cogs": 0.0, "revenue": 0.0, "units_unknown": 0.0})
             if row.get("cogs") is not None:
-                bucket["cogs_count"] += 1
                 bucket["cogs"] += float(row["cogs"])
                 if row.get("revenue") is not None:
                     bucket["revenue"] += float(row["revenue"])
-            if row.get("margin") is not None:
-                bucket["margin_count"] += 1
-                bucket["margin"] += float(row["margin"])
+            elif row.get("net_quantity") is None:
+                bucket["units_unknown"] += 1
     return by_day
 
 
 def _ozon_day_profit(
-    known: dict[str, float] | None, *, revenue: float, not_tied: float | None, ozon_expense: Decimal
+    known: dict[str, float] | None,
+    *,
+    ozon_day: dict[str, Any],
+    ozon_expense: Decimal,
 ) -> tuple[float | None, float | None, float]:
-    """Owner rule: day margin = sum of SKU margins + not-tied charges (signed) - entered operating expenses.
+    """Owner rule: day margin = balance (Ozon's net for the day) − known COGS − tax − entered operating expenses.
 
-    A day with no SKU rows and no revenue has zero COGS and zero SKU margin; its not-tied charges and expenses still
-    apply. Revenue without SKU rows is unattributed, so its COGS and margin stay unknown. A SKU sum that is missing or
-    unknown makes that part unknown rather than zero.
+    The balance already holds the not-tied charges and compensations. A day without SKU rows has zero COGS unless it
+    has revenue, which then has no SKU behind it and leaves COGS and margin unknown.
     """
+    revenue = _decimal(ozon_day.get("revenue"))
     if known is None:
-        unattributed = revenue != 0
-        cogs: float | None = None if unattributed else 0.0
-        margin_products: float | None = None if unattributed else 0.0
+        cogs: float | None = None if revenue is None or revenue != 0 else 0.0
         known_revenue = 0.0
     else:
-        cogs = known["cogs"] if known["cogs_count"] else None
-        margin_products = known["margin"] if known["margin_count"] else None
+        cogs = None if known["units_unknown"] else known["cogs"]
         known_revenue = known["revenue"]
-    margin = None if margin_products is None or not_tied is None else margin_products + not_tied - float(ozon_expense)
+    net = _decimal(ozon_day.get("marketplace_net"))
+    tax = _decimal(ozon_day.get("tax"))
+    margin = (
+        None
+        if cogs is None or net is None or tax is None
+        else float(net - Decimal(str(cogs)) - tax - ozon_expense)
+    )
     return (
         round(cogs, 2) if cogs is not None else None,
         round(margin, 2) if margin is not None else None,
@@ -1622,23 +1698,18 @@ def _day_profit_known(
     *,
     marketplace: str,
     row: dict[str, Any],
+    ozon_day: dict[str, Any] | None,
     known: dict[str, float] | None,
     ozon_expense: Decimal,
-    ozon_not_tied: Any,
     wb_row: PnlDaily | None,
 ) -> dict[str, float | None]:
     """Day COGS, margin and known-cost revenue; the combined view adds the WB day as saved.
 
-    ozon_not_tied is the Ozon ledger's own not-tied total for the day, which the combined row does not carry.
+    ozon_day is the Ozon ledger's own day (catalogued SKUs only, with its tax), which the combined row does not carry.
     """
-    if row.get("revenue") is None:
+    if row.get("revenue") is None or ozon_day is None:
         return {"cogs": None, "margin": None, "known_cost_revenue": None}
-    cogs, margin, known_revenue = _ozon_day_profit(
-        known,
-        revenue=float(row["revenue"]),
-        not_tied=float(ozon_not_tied) if ozon_not_tied is not None else None,
-        ozon_expense=ozon_expense,
-    )
+    cogs, margin, known_revenue = _ozon_day_profit(known, ozon_day=ozon_day, ozon_expense=ozon_expense)
     if marketplace == "ozon":
         return {"cogs": cogs, "margin": margin, "known_cost_revenue": known_revenue}
     cogs_parts: list[float] = []
