@@ -28,6 +28,7 @@ from app.models.sku_daily import SkuDaily
 from app.models.funnel_daily import FunnelDaily
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.operational_expense import OperationalExpense
+from app.models.wb_orchestrator_state import WbOrchestratorState
 from app.core.security import create_access_token
 from celery_app.tasks import sync_sales, recalculate_pnl
 from app.services.wb_client import fetch_sales
@@ -43,6 +44,7 @@ WB_SALES_ROW_KEYS = {
 # Ожидаемые ключи ответов API (контракт для фронта)
 STATE_KEYS = {
     "has_data",
+    "wb_auth_error",
     "min_date",
     "max_date",
     "has_2025",
@@ -1267,3 +1269,47 @@ def test_real_wb_sales_response_structure():
         assert set(row.keys()) == WB_SALES_ROW_KEYS, f"Структура строки WB не совпадает: {row.keys()}"
         assert row["date"] is not None
         assert "nm_id" in row and "quantity" in row
+
+
+def test_dashboard_state_reports_a_rejected_wb_key_and_does_not_wake_wb_sync(authenticated_client):
+    """
+    Scenario contract: Wildberries answered 401 on the seller's key, so the orchestrator stopped with an error.
+    Opening the dashboard shows that at once (wb_auth_error) and must not kick WB sync again on every visit.
+    """
+    client, session, user_id, token = authenticated_client
+    session.add(WbOrchestratorState(user_id=user_id, status="error", last_step="wb_http_401"))
+    session.commit()
+
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay") as mock_kick:
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json()["wb_auth_error"] == "wb_http_401"
+    assert r.json()["has_data"] is False
+    mock_kick.assert_not_called()
+
+
+def test_dashboard_state_has_no_wb_auth_error_for_other_orchestrator_stops(authenticated_client):
+    client, session, user_id, token = authenticated_client
+    session.add(WbOrchestratorState(user_id=user_id, status="error", last_step="no_wb_api_key"))
+    session.commit()
+
+    with patch("app.routers.dashboard.wb_orchestrator_kick.delay"):
+        r = client.get("/dashboard/state", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json()["wb_auth_error"] is None
+
+
+def test_saving_a_new_wb_key_clears_the_rejected_key_stop(authenticated_client):
+    client, session, user_id, token = authenticated_client
+    session.add(WbOrchestratorState(user_id=user_id, status="error", last_step="wb_http_403"))
+    session.commit()
+
+    r = client.put("/auth/wb-key", json={"wb_api_key": "new-wb-key"}, headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    session.expire_all()
+    state = session.query(WbOrchestratorState).filter_by(user_id=user_id).one()
+    assert state.status == "idle"
+    assert state.last_step is None

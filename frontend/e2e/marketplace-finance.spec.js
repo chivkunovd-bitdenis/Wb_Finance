@@ -65,7 +65,7 @@ const ARTICLES = [
   { nm_id: '43', marketplace: 'ozon', vendor_code: 'ozon-43', name: 'Ozon Charger', subject_name: null, cost_price: null },
 ];
 
-async function mockApplication(page) {
+async function mockApplication(page, { state = { has_data: true, has_2026: true, has_2025: true }, syncRequests = [] } = {}) {
   await page.addInitScript(() => {
     localStorage.setItem('wb_finance_token', 'e2e-access-token');
     localStorage.setItem('wb_finance_active_store_owner_id', '1');
@@ -74,10 +74,14 @@ async function mockApplication(page) {
   await page.route('**/stores', (route) => route.fulfill({ json: { stores: [store] } }));
   await page.route('**/stores/grants', (route) => route.fulfill({ json: { grants: [] } }));
   await page.route('**/billing/status', (route) => route.fulfill({ json: { subscription_status: 'lifetime', is_access_blocked: false } }));
+  await page.route('**/sync/**', (route) => {
+    syncRequests.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: { task_id: 'e2e', message: 'queued' } });
+  });
   await page.route('**/dashboard/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/dashboard/state') {
-      return route.fulfill({ json: { has_data: true, has_2026: true, has_2025: true, finance_backfill: { status: 'complete' } } });
+      return route.fulfill({ json: { finance_backfill: { status: 'complete' }, ...state } });
     }
     if (path === '/dashboard/marketplace/pnl') return route.fulfill({ json: PNL });
     if (path === '/dashboard/marketplace/sku') return route.fulfill({ json: SKU });
@@ -149,5 +153,19 @@ test.describe('Ozon screens shaped like WB', () => {
     const unpriced = table.locator('tbody tr', { hasText: 'Ozon Charger' });
     await expect(unpriced.locator('td').nth(column('СЕБЕС'))).toHaveText('—');
     await expect(unpriced.locator('td').nth(column('МАРЖА'))).toHaveText('—');
+  });
+
+  test('an Ozon store without WB data opens on Ozon, and a rejected WB key shows its error without a new first sync', async ({ page }) => {
+    const syncRequests = [];
+    await mockApplication(page, { state: { has_data: false, wb_auth_error: 'wb_http_401' }, syncRequests });
+    await page.goto('/dashboard');
+
+    await expect(page.getByTestId('marketplace-selector')).toHaveValue('ozon');
+    await expect(page.locator('.kpi-card').filter({ has: page.getByText('Маржа', { exact: true }) })).toBeVisible();
+
+    await page.getByTestId('marketplace-selector').selectOption('wb');
+    await expect(page.getByText('Wildberries отклонил API-ключ (ошибка 401)')).toBeVisible();
+    await expect(page.getByText('Первая синхронизация данных с Wildberries')).toHaveCount(0);
+    expect(syncRequests).toEqual([]);
   });
 });

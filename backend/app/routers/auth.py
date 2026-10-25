@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.user import User
+from app.models.wb_orchestrator_state import WB_AUTH_ERROR_STEPS, WbOrchestratorState
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, UserResponse, UpdateWbApiKeyRequest, TaxSettingsResponse, TaxSettingsUpdate
 from app.core.security import hash_password, verify_password, create_access_token
 from app.dependencies import get_current_user, get_store_context
@@ -164,7 +165,14 @@ def update_wb_key(
     db: Session = Depends(get_db),
 ):
     current_user = store_ctx.store_owner
-    current_user.wb_api_key = body.wb_api_key.strip()
+    new_key = body.wb_api_key.strip()
+    if new_key != (current_user.wb_api_key or ""):
+        # A new key gets a fresh first sync: clear the orchestrator's stop on the old key's 401/403.
+        orchestrator = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(current_user.id)).first()
+        if orchestrator is not None and orchestrator.status == "error" and orchestrator.last_step in WB_AUTH_ERROR_STEPS:
+            orchestrator.status = "idle"
+            orchestrator.last_step = None
+    current_user.wb_api_key = new_key
     start_trial_if_needed(db, current_user)
     db.commit()
     db.refresh(current_user)
