@@ -15,6 +15,7 @@ export default function Settings() {
 
       <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
       <OzonFinancialSettings key={`finance:${activeStoreOwnerId || 'self'}`} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
+      <OzonManualSync key={`sync:${activeStoreOwnerId || 'self'}`} canManage={canManageOzon} />
 
       <TeamAccessSettings canManage={canManageTeam} />
     </div>
@@ -259,6 +260,69 @@ function getOzonConnectionStatus(connection, { loading = false, saving = false, 
 function formatTaxRatePercent(rate) {
   if (rate === null || rate === undefined || !Number.isFinite(Number(rate))) return 'не задана';
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(Number(rate) * 100)}%`;
+}
+
+/** Secondary action only: Ozon data loads automatically from 1 January; this re-reads up to 31 days by hand. */
+function OzonManualSync({ canManage }) {
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!canManage || busy) return;
+    if (!dateFrom || !dateTo || dateTo < dateFrom) {
+      setMessage('Укажите даты: дата окончания не раньше даты начала.');
+      return;
+    }
+    const days = Math.floor((Date.parse(`${dateTo}T00:00:00Z`) - Date.parse(`${dateFrom}T00:00:00Z`)) / 86400000) + 1;
+    if (days > 31) {
+      setMessage('За один раз можно синхронизировать не более 31 дня.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const result = await api.syncMarketplaceFinance(dateFrom, dateTo);
+      setMessage(result?.status ? `Запрос принят: ${result.status}.` : 'Запрос на синхронизацию принят.');
+    } catch (error) {
+      setMessage(error?.message || 'Не удалось запустить синхронизацию Ozon.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="marketplace-settings-card" data-testid="ozon-manual-sync">
+      <div className="marketplace-settings-heading">
+        <div>
+          <h3>Синхронизация Ozon вручную</h3>
+          <p>Данные Ozon загружаются автоматически с 1 января и обновляются каждое утро. Эта кнопка нужна, чтобы перечитать отдельный период до 31 дня.</p>
+        </div>
+      </div>
+      {canManage ? (
+        <form className="marketplace-connection-form" onSubmit={submit}>
+          <label>
+            <span>С</span>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </label>
+          <label>
+            <span>По</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </label>
+          <div className="marketplace-connection-actions">
+            <button className="btn-outline" type="submit" disabled={busy} data-testid="ozon-manual-sync-submit">
+              {busy ? 'Запускаем…' : 'Синхронизировать Ozon'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="marketplace-settings-readonly">Синхронизировать Ozon может владелец магазина.</div>
+      )}
+      {message && <div className="marketplace-notice marketplace-notice-info" role="status">{message}</div>}
+    </section>
+  );
 }
 
 function OzonFinancialSettings({ activeStoreOwnerId, canManage }) {

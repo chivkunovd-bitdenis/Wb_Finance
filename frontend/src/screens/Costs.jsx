@@ -1,6 +1,7 @@
 /* eslint react-hooks/set-state-in-effect: off */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api';
+import { useStore } from '../StoreContext';
 import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 
 function TaxRateBlock({ onTaxRateChange }) {
@@ -101,14 +102,32 @@ function TaxRateBlock({ onTaxRateChange }) {
   );
 }
 
-export default function Costs({ range, refreshTrigger, cache, updateCache, onRefresh, onTaxRateChange }) {
+/** Row identity: WB article numbers as they are; marketplace products by marketplace and id. */
+function rowKeyOf(article, isWb) {
+  return isWb ? String(article.nm_id) : `${article.marketplace || 'wb'}:${article.nm_id}`;
+}
+
+function idHeader(marketplace) {
+  if (marketplace === 'ozon') return 'SKU Ozon';
+  if (marketplace === 'all') return 'ID';
+  return 'NM ID';
+}
+
+/**
+ * The WB cost screen. For Ozon it saves each edited product through the marketplace endpoint, where an empty
+ * field means "not set" (unknown profit) rather than the WB default of zero; the combined view is read-only.
+ */
+export default function Costs({ range, refreshTrigger, cache, updateCache, onRefresh, onTaxRateChange, marketplace = 'wb' }) {
   const storeId = useActiveStoreId();
+  const { isOwnerStore } = useStore();
+  const isWb = marketplace === 'wb';
+  const editable = isWb || (marketplace === 'ozon' && isOwnerStore);
   const [articles, setArticles] = useState(() => (cache?.articles && Array.isArray(cache.articles) ? cache.articles : []));
   const [costs, setCosts] = useState(() => {
     const list = cache?.articles && Array.isArray(cache.articles) ? cache.articles : [];
     const c = {};
     list.forEach((a) => {
-      c[a.nm_id] = a.cost_price != null ? String(a.cost_price) : '';
+      c[rowKeyOf(a, isWb)] = a.cost_price != null ? String(a.cost_price) : '';
     });
     return c;
   });
@@ -119,7 +138,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [funnelRows, setFunnelRows] = useState(() => (cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : []));
-  // nm_id, которые пользователь правит руками: фоновая перечитка списка их не перетирает.
+  // Rows the user edits by hand: a background reload must not overwrite them.
   const dirtyCostsRef = useRef(new Set());
 
   const resetForStore = useCallback(() => {
@@ -140,20 +159,21 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     // При фоновой перечитке (refreshTrigger во время досинхронизации) карточка остаётся на месте,
     // иначе блок налоговой ставки размонтируется и введённое значение пропадает.
     setError('');
-    api
-      .getArticles()
+    const request = isWb ? api.getArticles() : api.getMarketplaceArticles(marketplace);
+    request
       .then((data) => {
         if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setArticles(list);
-        if (typeof updateCache === 'function') updateCache('articles', list, reqStore);
+        if (isWb && typeof updateCache === 'function') updateCache('articles', list, reqStore);
 
         const dirty = dirtyCostsRef.current;
         setCosts((prev) => {
           const c = {};
           list.forEach((a) => {
-            c[a.nm_id] = dirty.has(a.nm_id)
-              ? (prev[a.nm_id] ?? '')
+            const key = rowKeyOf(a, isWb);
+            c[key] = dirty.has(key)
+              ? (prev[key] ?? '')
               : a.cost_price != null ? String(a.cost_price) : '';
           });
           return c;
@@ -165,9 +185,13 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
       .finally(() => {
         if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
       });
-  }, [refreshTrigger, updateCache, storeId]);
+  }, [refreshTrigger, updateCache, storeId, isWb, marketplace]);
 
   useEffect(() => {
+    if (!isWb) {
+      setFunnelRows([]);
+      return;
+    }
     if (!range?.dateFrom || !range?.dateTo) return;
     const reqStore = storeId;
     api
@@ -179,11 +203,11 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
         if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
       .catch(() => {});
-  }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache, storeId]);
+  }, [range?.dateFrom, range?.dateTo, refreshTrigger, updateCache, storeId, isWb]);
 
-  const setCost = (nmId, value) => {
-    dirtyCostsRef.current.add(nmId);
-    setCosts((prev) => ({ ...prev, [nmId]: value }));
+  const setCost = (key, value) => {
+    dirtyCostsRef.current.add(key);
+    setCosts((prev) => ({ ...prev, [key]: value }));
   };
 
   const sellerCodeMap = useMemo(() => {
@@ -202,12 +226,13 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
       const groupKey = String(a.subject_name || 'Без категории');
       return {
         ...a,
+        rowKey: rowKeyOf(a, isWb),
         seller_article: sellerArticle || '—',
         product_name: productName,
         group_key: groupKey,
       };
     });
-  }, [articles, sellerCodeMap]);
+  }, [articles, sellerCodeMap, isWb]);
 
   const filteredArticles = useMemo(() => {
     const s = String(search || '').trim();
@@ -253,18 +278,45 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     });
   };
 
-  const handleSave = async () => {
+  const handleSaveWb = async () => {
     const items = articles.map((a) => ({
       nm_id: a.nm_id,
-      cost_price: parseFloat(costs[a.nm_id]) || 0,
+      cost_price: parseFloat(costs[rowKeyOf(a, true)]) || 0,
     }));
+    await api.saveArticlesCost(items);
+    dirtyCostsRef.current = new Set();
+    if (range?.dateFrom && range?.dateTo) {
+      await api.triggerSyncRecalculate(range.dateFrom, range.dateTo);
+    }
+  };
+
+  const handleSaveMarketplace = async () => {
+    // Only rows the owner changed are sent; an empty field clears the cost, so profit becomes unknown again.
+    const byKey = new Map(articles.map((a) => [rowKeyOf(a, false), a]));
+    for (const key of Array.from(dirtyCostsRef.current)) {
+      const article = byKey.get(key);
+      if (!article) {
+        dirtyCostsRef.current.delete(key);
+        continue;
+      }
+      const raw = String(costs[key] ?? '').trim().replace(',', '.');
+      let value = null;
+      if (raw !== '') {
+        value = Number(raw);
+        if (!Number.isFinite(value) || value < 0) {
+          throw new Error(`Себестоимость товара ${article.nm_id} должна быть неотрицательным числом`);
+        }
+      }
+      await api.saveMarketplaceProductCost(article.nm_id, value);
+      dirtyCostsRef.current.delete(key);
+    }
+  };
+
+  const handleSave = async () => {
     setSaving(true);
     try {
-      await api.saveArticlesCost(items);
-      dirtyCostsRef.current = new Set();
-      if (range?.dateFrom && range?.dateTo) {
-        await api.triggerSyncRecalculate(range.dateFrom, range.dateTo);
-      }
+      if (isWb) await handleSaveWb();
+      else await handleSaveMarketplace();
       if (typeof onRefresh === 'function') onRefresh();
     } catch (e) {
       alert('Ошибка сохранения: ' + (e.message || e));
@@ -290,9 +342,21 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     );
   }
 
+  const showMarketplaceTag = marketplace === 'all';
+
   return (
     <div className="seb-card">
       <TaxRateBlock onTaxRateChange={onTaxRateChange} />
+      {!isWb && !editable && (
+        <div className="marketplace-notice marketplace-notice-info" data-testid="marketplace-cost-viewer-readonly">
+          Себестоимость доступна для просмотра. Изменять её может владелец магазина.
+        </div>
+      )}
+      {marketplace === 'all' && (
+        <div className="marketplace-notice marketplace-notice-info">
+          В общем режиме себестоимость показана для просмотра. Чтобы изменить цену товара Ozon, выберите Ozon отдельно.
+        </div>
+      )}
       <div className="seb-toolbar">
         <h3>Себестоимость</h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -311,9 +375,11 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '...' : 'Сохранить'}
-          </button>
+          {marketplace !== 'all' && (
+            <button className="btn-primary" onClick={handleSave} disabled={saving || !editable}>
+              {saving ? '...' : 'Сохранить'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -321,7 +387,7 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
         <thead>
           <tr>
             <th>Товар</th>
-            <th>NM ID</th>
+            <th>{idHeader(marketplace)}</th>
             <th>Артикул продавца</th>
             <th style={{ textAlign: 'right' }}>Себестоимость, ₽</th>
           </tr>
@@ -360,16 +426,17 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
               const groupItems = !isOpen
                 ? []
                 : group.items.map((a) => (
-                <tr key={a.nm_id}>
+                <tr key={a.rowKey}>
                   <td style={{ color: 'var(--text-tertiary)' }}>{a.product_name}</td>
-                  <td>{a.nm_id}</td>
+                  <td>{showMarketplaceTag ? `${a.marketplace === 'ozon' ? 'Ozon' : 'WB'} · ${a.nm_id}` : a.nm_id}</td>
                   <td>{a.seller_article}</td>
                   <td style={{ textAlign: 'right' }}>
                     <input
                       type="number"
                       className="cost-input"
-                      value={costs[a.nm_id] ?? ''}
-                      onChange={(e) => setCost(a.nm_id, e.target.value)}
+                      value={costs[a.rowKey] ?? ''}
+                      disabled={!isWb && (!editable || marketplace === 'all')}
+                      onChange={(e) => setCost(a.rowKey, e.target.value)}
                     />
                   </td>
                 </tr>
@@ -382,4 +449,3 @@ export default function Costs({ range, refreshTrigger, cache, updateCache, onRef
     </div>
   );
 }
-

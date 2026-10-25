@@ -774,3 +774,44 @@ def test_identical_duplicate_is_counted_once_with_warning():
 
 def test_empty_input_returns_no_invented_day():
     assert normalize_accruals([], []) == {"daily": [], "products": [], "warnings": []}
+
+
+def test_one_posting_without_commission_block_keeps_the_day_revenue_and_marks_only_that_gap():
+    known = posting_accrual(801, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    missing = posting_accrual(802, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="sku-2")
+    del missing["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, missing], [], costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    sku_1 = product_day(normalized, "sku-1")
+    sku_2 = product_day(normalized, "sku-2")
+
+    # The known posting still counts; the day is not blanked because one detail is missing.
+    assert daily["revenue"] == Decimal("200.00")
+    assert daily["commission"] == Decimal("30.00")
+    assert daily["reconciliation_difference"] is None
+    assert daily["profitability_complete"] is False
+    # Units for the SKU with the missing block are unconfirmed, so the day's COGS stays unknown.
+    assert daily["cogs"] is None
+    assert sku_1["revenue"] == Decimal("200.00")
+    assert sku_2["revenue"] is None
+    assert any("блок commission" in warning for warning in normalized["warnings"])
+
+
+def test_product_margin_inputs_stay_known_when_another_sku_on_the_day_has_a_gap():
+    known = posting_accrual(811, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    missing = posting_accrual(812, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="sku-2")
+    del missing["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, missing], [], costs={"sku-1": Decimal("20.00")})
+    sku_1 = product_day(normalized, "sku-1")
+    sku_2 = product_day(normalized, "sku-2")
+
+    # The product's own accrual reconciles and its cost is known, so its net and COGS are computed.
+    assert sku_1["marketplace_net"] == Decimal("166.00")
+    assert sku_1["cogs"] == Decimal("20.00")
+    assert sku_1["profitability_complete"] is True
+    assert sku_2["marketplace_net"] is None
+    assert sku_2["profitability_complete"] is False
+    # The day's revenue is partial, so the known-cost share of that revenue is unknown rather than 100%.
+    assert daily_row(normalized)["cost_known_revenue_share"] is None

@@ -15,11 +15,16 @@ from app.db import get_db
 from app.dependencies import get_store_context
 from app.services.marketplace_finance_service import (
     MarketplaceFinanceError,
+    build_marketplace_article_rows,
+    build_marketplace_pnl_rows,
+    build_marketplace_sku_rows,
     build_overview,
     connection_status,
     enqueue_sync,
     get_marketplace_settings,
+    list_ozon_operational_expenses,
     save_connection,
+    schedule_initial_backfill,
     set_product_cost,
     set_ozon_operational_expense,
     update_marketplace_settings,
@@ -125,6 +130,29 @@ def _translate_service_error(exc: MarketplaceFinanceError) -> HTTPException:
     return HTTPException(status_code=code, detail=safe_message)
 
 
+def _today() -> date:
+    """Calendar date for backfill windows; a function so tests can pin it without patching the module's imports."""
+    return date.today()
+
+
+def _dispatch_sync_run(db: Session, run, *, raise_on_failure: bool = True) -> None:
+    """Hand only the run identifier to Celery; a broker failure ends the queued run visibly."""
+    try:
+        # Only the database run ID enters the broker; credentials are loaded by the worker.
+        ozon_sync_run.delay(str(run.id))
+    except Exception as exc:
+        run.status = "failed"
+        run.error_message = "Очередь синхронизации недоступна; попробуйте позже."
+        db.add(run)
+        db.commit()
+        if not raise_on_failure:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Очередь синхронизации недоступна; попробуйте позже.",
+        ) from exc
+
+
 @router.get("/overview")
 def marketplace_overview(
     marketplace: str = Query(..., pattern="^(ozon|all)$"),
@@ -150,7 +178,7 @@ def get_ozon_connection(
     store: StoreContext = Depends(get_store_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    return connection_status(db=db, user_id=str(store.store_owner.id))
+    return connection_status(db=db, user_id=str(store.store_owner.id), today=_today())
 
 
 @router.get("/settings")
@@ -214,7 +242,79 @@ def put_ozon_connection(
         )
     except MarketplaceFinanceError as exc:
         raise _translate_service_error(exc) from exc
-    return connection_status(db=db, user_id=user_id)
+    # A saved connection starts the year-to-date backfill automatically; the save itself never waits for it.
+    run = schedule_initial_backfill(db=db, user_id=user_id, today=_today())
+    if run is not None:
+        _dispatch_sync_run(db, run, raise_on_failure=False)
+    return connection_status(db=db, user_id=user_id, today=_today())
+
+
+@router.get("/pnl")
+def marketplace_pnl(
+    marketplace: str = Query(..., pattern="^(ozon|all)$"),
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Daily P&L in the WB /dashboard/pnl shape; unknown or uncovered days are null."""
+    try:
+        return build_marketplace_pnl_rows(
+            db=db,
+            store_owner=store.store_owner,
+            marketplace=marketplace,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except MarketplaceFinanceError as exc:
+        raise _translate_service_error(exc) from exc
+
+
+@router.get("/sku")
+def marketplace_sku(
+    marketplace: str = Query(..., pattern="^(ozon|all)$"),
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Per product and day rows in the WB /dashboard/sku shape; the product key is `nm_id` as text."""
+    try:
+        return build_marketplace_sku_rows(
+            db=db,
+            store_owner=store.store_owner,
+            marketplace=marketplace,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except MarketplaceFinanceError as exc:
+        raise _translate_service_error(exc) from exc
+
+
+@router.get("/articles")
+def marketplace_articles(
+    marketplace: str = Query(..., pattern="^(ozon|all)$"),
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Product list with saved costs in the WB /dashboard/articles shape."""
+    return build_marketplace_article_rows(db=db, store_owner=store.store_owner, marketplace=marketplace)
+
+
+@router.get("/expenses")
+def marketplace_expenses(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    store: StoreContext = Depends(get_store_context),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Owner-entered Ozon operating expenses by day; days without a row are absent (unknown), not zero."""
+    return list_ozon_operational_expenses(
+        db=db,
+        user_id=str(store.store_owner.id),
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED)
@@ -231,15 +331,7 @@ def post_ozon_sync(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Синхронизация Ozon уже ожидает запуска или выполняется.") from exc
-    try:
-        # Only the database run ID enters the broker; credentials are loaded by the worker.
-        ozon_sync_run.delay(str(run.id))
-    except Exception as exc:
-        run.status = "failed"
-        run.error_message = "Очередь синхронизации недоступна; попробуйте позже."
-        db.add(run)
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Очередь синхронизации недоступна; попробуйте позже.") from exc
+    _dispatch_sync_run(db, run)
     return {"status": "queued", "run_id": str(run.id)}
 
 
