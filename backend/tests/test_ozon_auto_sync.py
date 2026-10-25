@@ -536,3 +536,166 @@ def test_pnl_row_sums_only_skus_with_known_cost_once_operating_expenses_are_conf
     assert row["cogs"] == 20.0  # only SKU 7001 has a cost
     assert row["margin"] == 134.0  # 166 net − 20 COGS − 12 tax − 0 confirmed operating expenses
     assert row["known_cost_revenue"] == 200.0  # SKU 7002's revenue is unknown, so it is outside this subset
+
+
+def test_real_shaped_product_row_gets_margin_from_its_own_fields_without_allocation_flags(real_db_session):
+    from app.services.marketplace_finance_service import build_overview
+
+    owner_id = _owner(real_db_session, "auto-sync-real-product-shape@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    day = date(2026, 1, 5)
+    # Stored product row exactly as the real-data check showed it (2026-10-25). Its false flags are day-level
+    # attribution gaps; margin must not depend on them.
+    real_product = {
+        "sku": "1504825252",
+        "cogs": "1100.00",
+        "revenue": "4500",
+        "commission": "2340",
+        "logistics": "286",
+        "acquiring": "25.79",
+        "sold_quantity": "1",
+        "returned_quantity": "0",
+        "net_quantity": "1",
+        "margin": None,
+        "tax": None,
+        "profitability_complete": False,
+        "sku_allocation_complete": False,
+        "accrual_classification_complete": True,
+    }
+    real_db_session.add(
+        OzonSyncDay(
+            user_id=owner_id,
+            day=day,
+            status="complete",
+            last_attempt_status="succeeded",
+            daily_data=_day_values(
+                revenue="4500.00",
+                commission="2340.00",
+                logistics="286.00",
+                cogs="1100.00",
+                marketplace_net="1874.00",
+                unallocated_amount="0.00",
+                reconciliation_difference="0.00",
+            ),
+            products_data=[real_product],
+            warnings=[],
+        )
+    )
+    real_db_session.commit()
+
+    result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day)
+
+    sku = result["products"][0]
+    assert sku["sku"] == "1504825252"
+    sku_day = sku["daily"][0]
+    assert sku_day["tax"] == 270.0  # 4500 × 6%
+    # 4500 − 2340 − 286 − 25.79 − 1100 − 270 = 478.21; absent charges are zero, not unknown.
+    assert sku_day["margin"] == 478.21
+    day_row = result["daily"][0]
+    assert day_row["revenue"] == 4500.0
+    assert day_row["cogs"] == 1100.0
+    assert day_row["known_cost_revenue"] == 4500.0
+    assert day_row["margin"] == 478.21  # sum of SKU margins + not-tied 0 − expenses 0
+
+
+def test_complete_day_without_sale_postings_keeps_zero_revenue_and_its_charges(real_db_session):
+    from app.services.marketplace_finance_service import _replace_complete_day, build_overview
+    from app.services.ozon_finance import normalize_accruals
+
+    owner_id = _owner(real_db_session, "auto-sync-empty-sales-day@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    day = date(2026, 1, 1)
+    charge = {
+        "accrual_id": 9101,
+        "date": day.isoformat(),
+        "accrued_category": "NON_ITEM",
+        "total_amount": {"amount": "-97.00", "currency": "RUB"},
+        "non_item_fee": {"type_id": 12, "accrued": {"amount": "-97.00", "currency": "RUB"}},
+    }
+    types = [{"id": 12, "name": "CrossDock", "description": "cross dock"}]
+    normalized = normalize_accruals([charge], types)
+    _replace_complete_day(
+        real_db_session,
+        user_id=owner_id,
+        day=day,
+        accruals=[charge],
+        normalized=normalized,
+        catalogue=[],
+        warnings=normalized["warnings"],
+    )
+
+    result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day)
+
+    assert result["coverage"] == {"complete": True, "missing_dates": []}
+    day_row = result["daily"][0]
+    assert day_row["revenue"] == 0.0  # a complete day with no sales is a known zero, not an unknown
+    assert day_row["logistics"] == 97.0
+    assert day_row["cogs"] == 0.0
+    assert day_row["margin"] == -97.0  # the not-tied charge reduces the day
+    assert day_row["known_cost_revenue"] == 0.0
+    assert result["products"] == []
+
+
+def test_known_not_tied_charge_does_not_blank_sku_margin_and_reduces_only_the_day(real_db_session):
+    from app.services.marketplace_finance_service import _replace_complete_day, build_overview
+    from app.services.ozon_finance import normalize_accruals
+    from tests.test_ozon_finance import posting_accrual
+
+    owner_id = _owner(real_db_session, "auto-sync-not-tied-charge@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    day = date(2026, 1, 2)
+    sale = posting_accrual(9201, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())
+    charge = {
+        "accrual_id": 9202,
+        "date": day.isoformat(),
+        "accrued_category": "NON_ITEM",
+        "total_amount": {"amount": "-97.00", "currency": "RUB"},
+        "non_item_fee": {"type_id": 12, "accrued": {"amount": "-97.00", "currency": "RUB"}},
+    }
+    accruals = [sale, charge]
+    types = [{"id": 12, "name": "CrossDock", "description": "cross dock"}]
+    normalized = normalize_accruals(accruals, types, costs={"7001": Decimal("20.00")})
+    _replace_complete_day(
+        real_db_session,
+        user_id=owner_id,
+        day=day,
+        accruals=accruals,
+        normalized=normalized,
+        catalogue=[],
+        warnings=normalized["warnings"],
+    )
+
+    result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day)
+
+    sku_day = next(row for row in next(p for p in result["products"] if p["sku"] == "7001")["daily"] if row["date"] == day.isoformat())
+    # 200 − 30 − 4 − COGS 20 − tax 12 = 134: the not-tied charge is not spread onto this SKU.
+    assert sku_day["margin"] == 134.0
+    assert result["daily"][0]["margin"] == 37.0  # 134 + not-tied (−97) − expenses 0
+
+
+def test_recompute_script_renormalises_stored_days_of_an_owner_without_provider_calls(real_db_session, monkeypatch):
+    from app.services.marketplace_finance_service import _replace_complete_day
+    from app.services.ozon_finance import normalize_accruals
+    from scripts import recompute_ozon_days as script
+    from tests.test_ozon_finance import posting_accrual
+
+    owner_id = _owner(real_db_session, "auto-sync-recompute-script@example.com")
+    day = date(2026, 1, 9)
+    accrual = posting_accrual(9301, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())
+    normalized = normalize_accruals([accrual], [], costs={"7001": Decimal("20.00")})
+    normalized["accrual_types"] = []
+    _replace_complete_day(
+        real_db_session,
+        user_id=owner_id,
+        day=day,
+        accruals=[accrual],
+        normalized=normalized,
+        catalogue=[],
+        warnings=[],
+    )
+    monkeypatch.setattr(script, "SessionLocal", lambda: real_db_session)
+    monkeypatch.setattr(real_db_session, "close", lambda: None)
+
+    assert script.owners_with_complete_days(real_db_session) == [owner_id]
+    assert script.recompute_owner(real_db_session, owner_id) == 1
+    assert script.main(["--user-id", owner_id]) == 0

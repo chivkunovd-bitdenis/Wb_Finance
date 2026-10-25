@@ -837,3 +837,18 @@ def test_verified_return_posting_nets_its_unit_out_of_cogs_and_does_not_block_th
     assert daily["cogs"] == Decimal("2450.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
     assert product["profitability_complete"] is True
+
+
+def test_complete_day_whose_only_posting_has_delivery_but_no_units_has_zero_revenue_not_unknown():
+    # Real-data shape (2026-10-25): the day has no sale; its only posting carries a delivery charge and no commission
+    # block and declares no units. A sale carries units, so the day revenue is a known zero, not an unknown.
+    charge = posting_accrual(831, total="-97.00", sale="0.00", commission="0.00", delivery="-97.00", quantity=None)
+    del charge["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([charge], [])
+    daily = daily_row(normalized)
+
+    assert daily["revenue"] == Decimal("0")
+    assert daily["sold_quantity"] is None  # units are not declared, so no COGS is claimed
+    assert daily["logistics"] == Decimal("97.00")
+    assert any("блок commission" in warning for warning in normalized["warnings"])

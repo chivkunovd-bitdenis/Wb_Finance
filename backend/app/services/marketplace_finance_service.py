@@ -1061,6 +1061,36 @@ def _friendly_warning(value: str) -> str:
     return value
 
 
+# Charges that reduce a SKU's margin. Absent means no such accrual for the SKU; null means unknown.
+_PRODUCT_CHARGE_FIELDS = ("commission", "logistics", "acquiring", "penalties", "storage", "ads_spend", "other_expenses")
+
+
+def _product_margin(row: dict[str, Any], *, cogs: Decimal | None, tax: Decimal | None) -> Decimal | None:
+    """Owner rule (2026-10-25): SKU margin = revenue - Ozon charges - COGS - tax (+ compensation), for one day.
+
+    Uses only the SKU's own fields and its known cost; sku-allocation and profitability flags are not required.
+    Not-tied charges and operating expenses belong to the day, not to the SKU.
+    """
+    revenue = _decimal(row.get("revenue"))
+    if revenue is None or cogs is None or tax is None or row.get("accrual_classification_complete") is not True:
+        return None
+    charges = Decimal("0")
+    for field in _PRODUCT_CHARGE_FIELDS:
+        if field not in row:
+            continue
+        value = _decimal(row.get(field))
+        if value is None:
+            return None
+        charges += value
+    compensation = Decimal("0")
+    if "compensation" in row:
+        value = _decimal(row.get("compensation"))
+        if value is None:
+            return None
+        compensation = value
+    return revenue - charges + compensation - cogs - tax
+
+
 def _build_ozon_products(
     db: Session,
     *,
@@ -1104,21 +1134,7 @@ def _build_ozon_products(
             }
             product_tax = _derive_ozon_tax(row.get("revenue"), tax_rate)
             product_daily["tax"] = _money(product_tax)
-            # The product row already requires its own classification, SKU allocation, accrual reconciliation,
-            # quantities and cost. A different SKU's gap or the day's total mismatch must not hide this margin.
-            profitability_complete = row.get("profitability_complete") is True
-            product_net = _decimal(row.get("marketplace_net"))
-            product_cogs = _decimal(row.get("cogs"))
-            product_daily["margin"] = (
-                _money(product_net - product_cogs - product_tax)
-                if (
-                    profitability_complete
-                    and product_net is not None
-                    and product_cogs is not None
-                    and product_tax is not None
-                )
-                else None
-            )
+            product_daily["margin"] = _money(_product_margin(row, cogs=_decimal(row.get("cogs")), tax=product_tax))
             product_daily["operation_expenses"] = None
             product["daily"].append(product_daily)
     for sku, product in products.items():
@@ -1369,12 +1385,19 @@ def build_overview(
         known_by_day = _known_cost_by_day(products)
         for row in daily:
             day_obj = date.fromisoformat(row["date"])
+            state_row = ozon_state_map.get(day_obj)
+            ozon_not_tied = (
+                state_row.daily_data.get("unallocated_amount")
+                if state_row is not None and isinstance(state_row.daily_data, dict)
+                else None
+            )
             row.update(
                 _day_profit_known(
                     marketplace=marketplace,
                     row=row,
                     known=known_by_day.get(row["date"]),
                     ozon_expense=expenses_by_date.get(day_obj, Decimal("0")),
+                    ozon_not_tied=ozon_not_tied,
                     wb_row=wb_rows.get(day_obj) if require_wb else None,
                 )
             )
@@ -1548,19 +1571,51 @@ def plan_daily_refresh_for_ready_connections(db: Session, *, today: date) -> lis
 
 
 def _known_cost_by_day(products: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
-    """Ozon SKUs whose margin is computable on a day: their COGS, margin and revenue, summed per day."""
+    """Per Ozon day, over SKU rows: COGS and revenue of SKUs with a known COGS; margin of SKUs with a margin."""
     by_day: dict[str, dict[str, float]] = {}
     for product in products:
         if product.get("marketplace") != "ozon":
             continue
         for row in product.get("daily") or []:
-            if row.get("revenue") is None or row.get("cogs") is None or row.get("margin") is None:
-                continue
-            bucket = by_day.setdefault(row["date"], {"cogs": 0.0, "margin": 0.0, "revenue": 0.0})
-            bucket["cogs"] += float(row["cogs"])
-            bucket["margin"] += float(row["margin"])
-            bucket["revenue"] += float(row["revenue"])
+            bucket = by_day.setdefault(
+                row["date"],
+                {"cogs": 0.0, "cogs_count": 0.0, "revenue": 0.0, "margin": 0.0, "margin_count": 0.0},
+            )
+            if row.get("cogs") is not None:
+                bucket["cogs_count"] += 1
+                bucket["cogs"] += float(row["cogs"])
+                if row.get("revenue") is not None:
+                    bucket["revenue"] += float(row["revenue"])
+            if row.get("margin") is not None:
+                bucket["margin_count"] += 1
+                bucket["margin"] += float(row["margin"])
     return by_day
+
+
+def _ozon_day_profit(
+    known: dict[str, float] | None, *, revenue: float, not_tied: float | None, ozon_expense: Decimal
+) -> tuple[float | None, float | None, float]:
+    """Owner rule: day margin = sum of SKU margins + not-tied charges (signed) - entered operating expenses.
+
+    A day with no SKU rows and no revenue has zero COGS and zero SKU margin; its not-tied charges and expenses still
+    apply. Revenue without SKU rows is unattributed, so its COGS and margin stay unknown. A SKU sum that is missing or
+    unknown makes that part unknown rather than zero.
+    """
+    if known is None:
+        unattributed = revenue != 0
+        cogs: float | None = None if unattributed else 0.0
+        margin_products: float | None = None if unattributed else 0.0
+        known_revenue = 0.0
+    else:
+        cogs = known["cogs"] if known["cogs_count"] else None
+        margin_products = known["margin"] if known["margin_count"] else None
+        known_revenue = known["revenue"]
+    margin = None if margin_products is None or not_tied is None else margin_products + not_tied - float(ozon_expense)
+    return (
+        round(cogs, 2) if cogs is not None else None,
+        round(margin, 2) if margin is not None else None,
+        round(known_revenue, 2),
+    )
 
 
 def _day_profit_known(
@@ -1569,21 +1624,26 @@ def _day_profit_known(
     row: dict[str, Any],
     known: dict[str, float] | None,
     ozon_expense: Decimal,
+    ozon_not_tied: Any,
     wb_row: PnlDaily | None,
 ) -> dict[str, float | None]:
-    """WB-style day profit over the Ozon SKUs whose cost is known; the combined view adds the WB day as saved."""
+    """Day COGS, margin and known-cost revenue; the combined view adds the WB day as saved.
+
+    ozon_not_tied is the Ozon ledger's own not-tied total for the day, which the combined row does not carry.
+    """
     if row.get("revenue") is None:
         return {"cogs": None, "margin": None, "known_cost_revenue": None}
-    ozon_margin = known["margin"] - float(ozon_expense) if known else None
+    cogs, margin, known_revenue = _ozon_day_profit(
+        known,
+        revenue=float(row["revenue"]),
+        not_tied=float(ozon_not_tied) if ozon_not_tied is not None else None,
+        ozon_expense=ozon_expense,
+    )
     if marketplace == "ozon":
-        return {
-            "cogs": round(known["cogs"], 2) if known else None,
-            "margin": round(ozon_margin, 2) if ozon_margin is not None else None,
-            "known_cost_revenue": round(known["revenue"], 2) if known else 0.0,
-        }
+        return {"cogs": cogs, "margin": margin, "known_cost_revenue": known_revenue}
     cogs_parts: list[float] = []
     margin_parts: list[float] = []
-    revenue_parts: list[float] = []
+    revenue_parts: list[float] = [known_revenue]
     if wb_row is not None:
         if wb_row.cogs is not None:
             cogs_parts.append(float(wb_row.cogs))
@@ -1591,15 +1651,14 @@ def _day_profit_known(
             margin_parts.append(float(wb_row.margin))
         if wb_row.revenue is not None:
             revenue_parts.append(float(wb_row.revenue))
-    if known:
-        cogs_parts.append(known["cogs"])
-        revenue_parts.append(known["revenue"])
-    if ozon_margin is not None:
-        margin_parts.append(ozon_margin)
+    if cogs is not None:
+        cogs_parts.append(cogs)
+    if margin is not None:
+        margin_parts.append(margin)
     return {
         "cogs": round(sum(cogs_parts), 2) if cogs_parts else None,
         "margin": round(sum(margin_parts), 2) if margin_parts else None,
-        "known_cost_revenue": round(sum(revenue_parts), 2) if revenue_parts else 0.0,
+        "known_cost_revenue": round(sum(revenue_parts), 2),
     }
 
 
