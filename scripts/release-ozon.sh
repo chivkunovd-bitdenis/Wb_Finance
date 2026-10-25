@@ -73,6 +73,18 @@ while IFS= read -r -d '' source_file; do
   fi
 done < <(find "$SOURCE_DIR/frontend/dist" -type f -print0)
 
+# Building the release image unpacks large browser layers into Docker's data directory. A full disk
+# mid-build fails late, so require free space before any backup, image tag, or service change.
+MIN_FREE_GB="${WB_FINANCE_MIN_FREE_GB:-4}"
+[[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || fail "WB_FINANCE_MIN_FREE_GB must be a whole number of gigabytes"
+DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')" || fail "cannot determine the Docker data directory"
+[[ -d "$DOCKER_ROOT" ]] || fail "Docker data directory $DOCKER_ROOT is not visible to this script"
+free_kb="$(df -Pk "$DOCKER_ROOT" | awk 'NR == 2 { print $4 }')"
+[[ "$free_kb" =~ ^[0-9]+$ ]] || fail "cannot read free disk space for $DOCKER_ROOT"
+if (( free_kb < MIN_FREE_GB * 1024 * 1024 )); then
+  fail "only $((free_kb / 1024)) MB free for Docker at $DOCKER_ROOT; the release image build needs at least ${MIN_FREE_GB} GB. Nothing was backed up, built, or stopped"
+fi
+
 compose() {
   local override="$1"
   shift
@@ -297,7 +309,11 @@ rollback_after_failure() {
 }
 trap rollback_after_failure EXIT
 
-compose "$DEPLOY_OVERRIDE" build --build-arg "VCS_REF=$EXPECTED_SHA" api celery_worker celery_beat
+# The three services share one Dockerfile and context. Build the image once and tag it for the workers:
+# a parallel Compose build of all three unpacks the browser layers three times and can fill the disk.
+compose "$DEPLOY_OVERRIDE" build --build-arg "VCS_REF=$EXPECTED_SHA" api
+docker image tag "wb-finance-api:${EXPECTED_SHA}-${RUN_ID}" "wb-finance-worker:${EXPECTED_SHA}-${RUN_ID}"
+docker image tag "wb-finance-api:${EXPECTED_SHA}-${RUN_ID}" "wb-finance-beat:${EXPECTED_SHA}-${RUN_ID}"
 for service in api celery_worker celery_beat; do
   image="wb-finance-${service#celery_}:${EXPECTED_SHA}-${RUN_ID}"
   case "$service" in
@@ -333,14 +349,14 @@ chmod 600 "$PROBE_LOG"
 
 SERVICES_STOPPED=1
 compose "$DEPLOY_OVERRIDE" stop -t 60 celery_worker celery_beat api
-compose "$DEPLOY_OVERRIDE" up -d --no-deps api
+compose "$DEPLOY_OVERRIDE" up -d --no-deps --no-build api
 health_timeout="${WB_FINANCE_HEALTH_TIMEOUT_SECONDS:-180}"
 deadline=$((SECONDS + health_timeout))
 until curl -fsS --max-time 5 http://127.0.0.1:8000/health >/dev/null 2>&1; do
   (( SECONDS < deadline )) || fail "new API did not become healthy"
   sleep 5
 done
-compose "$DEPLOY_OVERRIDE" up -d --no-deps celery_worker celery_beat
+compose "$DEPLOY_OVERRIDE" up -d --no-deps --no-build celery_worker celery_beat
 
 # Keep existing hashed assets for clients with cached HTML; publish the new index last.
 while IFS= read -r -d '' source_file; do
