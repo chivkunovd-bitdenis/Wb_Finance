@@ -342,7 +342,7 @@ def test_article_rows_keep_an_unset_cost_null_and_use_catalogue_names(real_db_se
     assert rows["7002"]["name"] is None
 
 
-def test_article_rows_leave_out_skus_without_a_catalogue_card_unless_a_cost_is_saved(real_db_session):
+def test_costs_list_leaves_out_skus_without_a_catalogue_card_unless_a_cost_is_saved(real_db_session):
     owner_id = _owner(real_db_session, "auto-sync-articles-uncatalogued@example.com")
     owner = real_db_session.query(User).filter_by(id=owner_id).one()
     real_db_session.add_all(
@@ -363,7 +363,8 @@ def test_article_rows_leave_out_skus_without_a_catalogue_card_unless_a_cost_is_s
 
     rows = {row["nm_id"] for row in build_marketplace_article_rows(db=real_db_session, store_owner=owner, marketplace="ozon")}
 
-    # 7999 appears only as an Ozon SKU in the accruals: owner decision (2026-10-25) leaves it out of the screens.
+    # The costs list keeps only carded SKUs and SKUs with a saved cost; 7999 (no card, no cost) is still reported in
+    # Articles and in the totals from the SKU rows, see the uncatalogued-SKU overview test.
     assert rows == {"7001", "7998"}
 
 
@@ -708,7 +709,7 @@ def test_known_not_tied_charge_does_not_blank_sku_margin_and_reduces_only_the_da
     assert result["daily"][0]["margin"] == 37.0  # balance 69 − COGS 20 − tax 12 − expenses 0
 
 
-def test_sku_without_catalogue_card_is_left_out_of_products_and_day_totals(real_db_session):
+def test_sku_without_catalogue_card_stays_in_day_totals_and_is_its_own_product(real_db_session):
     from app.services.marketplace_finance_service import _replace_complete_day, build_overview
     from app.services.ozon_finance import normalize_accruals
     from tests.test_ozon_finance import posting_accrual
@@ -741,16 +742,33 @@ def test_sku_without_catalogue_card_is_left_out_of_products_and_day_totals(real_
 
     result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day)
 
-    # Owner decision (2026-10-25): SKU 7999 has no catalogue card, so neither its row nor its money is reported.
-    assert [product["sku"] for product in result["products"]] == ["7001"]
+    # SKU 7999 has no catalogue card, but its money is Ozon's money: it stays in the day totals and is reported as
+    # its own product with no COGS or margin (no cost entered). The exclusion of 2026-10-25 is reverted.
+    products = {product["sku"]: product for product in result["products"]}
+    assert set(products) == {"7001", "7999"}
+    assert products["7001"]["name"] == "Carded product"
+    assert products["7999"]["name"] == "SKU 7999 (нет карточки)"
+    assert products["7999"]["offer_id"] is None
+    bare_day = products["7999"]["daily"][0]
+    assert bare_day["revenue"] == 50.0
+    assert bare_day["tax"] == 3.0
+    assert bare_day["cogs"] is None
+    assert bare_day["margin"] is None
     day_row = result["daily"][0]
-    assert day_row["revenue"] == 200.0
-    assert day_row["commission"] == 30.0
-    assert day_row["logistics"] == 14.0  # SKU 7001 delivery 4 + the not-tied cross-dock 10 stays with the day
-    assert day_row["sold_quantity"] == 1.0
-    assert day_row["marketplace_net"] == 156.0  # 199 from Ozon − SKU 7999's own 43
-    assert day_row["tax"] == 12.0
-    assert day_row["margin"] == 124.0  # 156 − COGS 20 − tax 12
+    assert day_row["revenue"] == 250.0
+    assert day_row["commission"] == 35.0
+    assert day_row["logistics"] == 16.0  # deliveries 4 + 2 and the not-tied cross-dock 10
+    assert day_row["sold_quantity"] == 2.0
+    assert day_row["marketplace_net"] == 199.0  # everything Ozon put on the balance
+    assert day_row["tax"] == 15.0  # 6% of 250
+    assert day_row["cogs"] == 20.0  # SKU 7999 without a cost adds 0, as in WB
+    assert day_row["margin"] == 164.0  # 199 − COGS 20 − tax 15
+
+    sku_rows = build_marketplace_sku_rows(
+        db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day
+    )
+    assert {row["nm_id"]: row["name"] for row in sku_rows} == {"7001": "Carded product", "7999": "SKU 7999 (нет карточки)"}
+    assert sum(row["revenue"] for row in sku_rows) == day_row["revenue"]
 
 
 def test_day_of_net_returns_has_negative_tax_so_taxes_add_up_to_rate_times_period_revenue(real_db_session):

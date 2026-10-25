@@ -55,7 +55,8 @@ function aggregateSku(rows, unknownAsNull) {
     if (!map[key]) {
       // WB sums start from zero; marketplaces sum the known days only (see addKnown).
       const start = unknownAsNull ? null : 0;
-      map[key] = { key, nm_id: r.nm_id, marketplace: r.marketplace || 'wb', name: null, details: [] };
+      // Marketplace rows carry the product name, e.g. «SKU … (нет карточки)» for an Ozon SKU without a card.
+      map[key] = { key, nm_id: r.nm_id, marketplace: r.marketplace || 'wb', name: r.name || null, details: [] };
       for (const field of SUM_FIELDS) map[key][field] = start;
     }
     const item = map[key];

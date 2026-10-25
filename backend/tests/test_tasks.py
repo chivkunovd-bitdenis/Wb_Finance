@@ -345,3 +345,64 @@ def test_build_desc_month_chunk_caps_to_year_start():
     start, end = _build_desc_month_chunk(cursor=date(2026, 1, 5), year_start=date(2026, 1, 3))
     assert start == date(2026, 1, 3)
     assert end == date(2026, 1, 5)
+
+
+def _return_only_day_db(user_id: str):
+    """Мок-сессия: за день только возврат одной единицы (себестоимость 100), без рекламы и опер. расходов."""
+    raw_return = SimpleNamespace(
+        nm_id=999,
+        quantity=1,
+        retail_price=1000,
+        ppvz_for_pay=850,
+        doc_type="Возврат",
+        delivery_rub=50,
+        penalty=0,
+        additional_payment=0,
+        storage_fee=0,
+        date=date(2025, 3, 21),
+    )
+    db = MagicMock()
+    db.get.return_value = SimpleNamespace(id=user_id, tax_rate=0.06)
+
+    def _query_side_effect(model):
+        q = MagicMock()
+        if model.__name__ == "Article":
+            q.filter.return_value.all.return_value = [SimpleNamespace(nm_id=999, cost_price=100)]
+        elif model.__name__ == "OperationalExpense":
+            q.filter.return_value.all.return_value = []
+        elif model.__name__ == "RawSale":
+            q.filter.return_value = [raw_return]
+        else:
+            q.filter.return_value = []
+        return q
+
+    db.query.side_effect = _query_side_effect
+    return db
+
+
+@patch("celery_app.tasks.SessionLocal")
+def test_recalculate_pnl_day_of_net_returns_has_negative_tax(mock_session_local):
+    """Налог WB = ставка × выручка со знаком (решение владельца 25.10.2026): возвраты уменьшают налог, а не дают 0."""
+    db = _return_only_day_db("user-1")
+    mock_session_local.return_value = db
+
+    assert recalculate_pnl("user-1", "2025-03-21", "2025-03-21") == {"ok": True, "count": 1}
+
+    row = db.add.call_args_list[0][0][0]
+    assert float(row.revenue) == -1000.0
+    assert float(row.tax) == -60.0
+    # −1000 − комиссия (−150) − логистика 50 − себестоимость (−100) − налог (−60) = −740
+    assert float(row.margin) == -740.0
+
+
+@patch("celery_app.tasks.SessionLocal")
+def test_recalculate_sku_daily_day_of_net_returns_has_negative_tax(mock_session_local):
+    db = _return_only_day_db("user-1")
+    mock_session_local.return_value = db
+
+    assert recalculate_sku_daily("user-1", "2025-03-21", "2025-03-21") == {"ok": True, "count": 1}
+
+    row = db.add.call_args_list[0][0][0]
+    assert float(row.revenue) == -1000.0
+    assert float(row.tax) == -60.0
+    assert float(row.margin) == -740.0

@@ -3,6 +3,7 @@
  * Реальный бэкенд и учётка не нужны: все запросы к API подменяются в браузере.
  * Числа подобраны по правилам сверки (решения владельца 2026-10-25): маржа дня = пришло на баланс − себестоимость −
  * налог, налог со знаком (в день возвратов он отрицательный), у товара без себестоимости нет себестоимости и маржи.
+ * SKU без карточки каталога — отдельная строка «SKU … (нет карточки)» (исключение таких SKU отменено 2026-10-25).
  */
 import { test, expect } from '@playwright/test';
 
@@ -58,6 +59,8 @@ const SKU = [
   skuRow('2026-10-10', '42', { revenue: 1000, commission: 300, logistics: 60, cogs: 200, tax: 60, margin: 380 }),
   skuRow('2026-10-11', '42', { revenue: -500, commission: -60, cogs: -100, tax: -30, margin: -310 }),
   skuRow('2026-10-10', '43', { revenue: 0, logistics: 15, tax: 0 }),
+  // A SKU without a catalogue card: not in the articles list, its name comes with the SKU row.
+  skuRow('2026-10-10', '44', { name: 'SKU 44 (нет карточки)', revenue: 50, logistics: 2, tax: 3 }),
 ];
 
 const ARTICLES = [
@@ -140,7 +143,7 @@ test.describe('Ozon screens shaped like WB', () => {
     await expect(total.locator('td').nth(column('МАРЖА'))).toHaveText('70');
   });
 
-  test('articles show no cost and no margin for a product without an entered cost', async ({ page }) => {
+  test('articles show no cost and no margin for a product without an entered cost or without a card', async ({ page }) => {
     await mockApplication(page);
     await openOzon(page, '/articles');
 
@@ -153,6 +156,10 @@ test.describe('Ozon screens shaped like WB', () => {
     const unpriced = table.locator('tbody tr', { hasText: 'Ozon Charger' });
     await expect(unpriced.locator('td').nth(column('СЕБЕС'))).toHaveText('—');
     await expect(unpriced.locator('td').nth(column('МАРЖА'))).toHaveText('—');
+    const uncarded = table.locator('tbody tr', { hasText: 'SKU 44 (нет карточки)' });
+    await expect(uncarded.locator('td').nth(column('ВЫРУЧКА'))).toHaveText('50');
+    await expect(uncarded.locator('td').nth(column('СЕБЕС'))).toHaveText('—');
+    await expect(uncarded.locator('td').nth(column('МАРЖА'))).toHaveText('—');
   });
 
   test('an Ozon store without WB data opens on Ozon, and a rejected WB key shows its error without a new first sync', async ({ page }) => {
