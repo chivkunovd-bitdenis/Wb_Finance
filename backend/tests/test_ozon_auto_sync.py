@@ -473,9 +473,10 @@ def test_overview_keeps_day_revenue_and_computes_product_margin_despite_another_
     owner = real_db_session.query(User).filter_by(id=owner_id).one()
     day, next_day = date(2026, 2, 3), date(2026, 2, 4)
     known = posting_accrual(901, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())
-    missing = posting_accrual(902, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="7002", day=day.isoformat())
+    missing = posting_accrual(902, total="-4.00", sale="0.00", commission="0.00", delivery="-4.00", sku="7002", day=day.isoformat())
     del missing["posting"]["products"][0]["commission"]
     clean_next_day = posting_accrual(903, total="86.00", sale="100.00", commission="-10.00", delivery="-4.00", sku="7001", day=next_day.isoformat())
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="7001", cost_price=Decimal("20.00")))
     for accruals, target in (([known, missing], day), ([clean_next_day], next_day)):
         normalized = normalize_accruals(accruals, [], costs={"7001": Decimal("20.00")})
         _replace_complete_day(
@@ -492,7 +493,7 @@ def test_overview_keeps_day_revenue_and_computes_product_margin_despite_another_
 
     gap_day, clean_day = result["daily"]
     assert gap_day["revenue"] == 200.0  # the known posting still counts
-    assert gap_day["cost_known_revenue_share"] is None  # the day's revenue is partial, so no share is claimed
+    assert gap_day["cost_known_revenue_share"] == 1.0  # every rouble of revenue has a known cost; SKU 7002 sold nothing
     assert clean_day["revenue"] == 100.0
     assert clean_day["cost_known_revenue_share"] == 1.0  # every rouble of this day's revenue has a known SKU cost
     products = {product["sku"]: product for product in result["products"]}
@@ -501,7 +502,11 @@ def test_overview_keeps_day_revenue_and_computes_product_margin_despite_another_
     assert sku_day["marketplace_net"] == 166.0
     assert sku_day["tax"] == 12.0  # revenue × the owner's WB tax rate
     assert sku_day["margin"] == 134.0  # net − COGS − tax, per product and day
-    assert products["7002"]["daily"][0]["margin"] is None  # no cost and an incomplete posting
+    # SKU 7002 has no entered cost, so it has no margin at all (as in the reference workbook), though its charge
+    # still reduces the day: 166 − 4 − COGS 20 − tax 12 = 130.
+    assert products["7002"]["daily"][0]["margin"] is None
+    assert products["7002"]["daily"][0]["logistics"] == 4.0
+    assert gap_day["margin"] == 130.0
 
 
 def test_pnl_row_sums_only_skus_with_known_cost_once_operating_expenses_are_confirmed(real_db_session):
@@ -516,7 +521,7 @@ def test_pnl_row_sums_only_skus_with_known_cost_once_operating_expenses_are_conf
     real_db_session.commit()
     day = date(2026, 2, 3)
     known = posting_accrual(921, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())
-    missing = posting_accrual(922, total="50.00", sale="60.00", commission="-6.00", delivery="-4.00", sku="7002", day=day.isoformat())
+    missing = posting_accrual(922, total="-4.00", sale="0.00", commission="0.00", delivery="-4.00", sku="7002", day=day.isoformat())
     del missing["posting"]["products"][0]["commission"]
     accruals = [known, missing]
     normalized = normalize_accruals(accruals, [], costs={"7001": Decimal("20.00")})
@@ -534,7 +539,7 @@ def test_pnl_row_sums_only_skus_with_known_cost_once_operating_expenses_are_conf
 
     assert row["revenue"] == 200.0  # the known posting; the gap posting does not blank the day
     assert row["cogs"] == 20.0  # only SKU 7001 has a cost
-    assert row["margin"] == 134.0  # 166 net − 20 COGS − 12 tax − 0 confirmed operating expenses
+    assert row["margin"] == 130.0  # SKU 7001 134 + SKU 7002 delivery line −4 − 0 expenses
     assert row["known_cost_revenue"] == 200.0  # SKU 7002's revenue is unknown, so it is outside this subset
 
 
@@ -562,6 +567,7 @@ def test_real_shaped_product_row_gets_margin_from_its_own_fields_without_allocat
         "sku_allocation_complete": False,
         "accrual_classification_complete": True,
     }
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="1504825252", cost_price=Decimal("1100.00")))
     real_db_session.add(
         OzonSyncDay(
             user_id=owner_id,
@@ -572,8 +578,9 @@ def test_real_shaped_product_row_gets_margin_from_its_own_fields_without_allocat
                 revenue="4500.00",
                 commission="2340.00",
                 logistics="286.00",
+                acquiring="25.79",
                 cogs="1100.00",
-                marketplace_net="1874.00",
+                marketplace_net="1848.21",
                 unallocated_amount="0.00",
                 reconciliation_difference="0.00",
             ),
@@ -595,7 +602,7 @@ def test_real_shaped_product_row_gets_margin_from_its_own_fields_without_allocat
     assert day_row["revenue"] == 4500.0
     assert day_row["cogs"] == 1100.0
     assert day_row["known_cost_revenue"] == 4500.0
-    assert day_row["margin"] == 478.21  # sum of SKU margins + not-tied 0 − expenses 0
+    assert day_row["margin"] == 478.21  # balance 1848.21 − COGS 1100 − tax 270 − expenses 0
 
 
 def test_complete_day_without_sale_postings_keeps_zero_revenue_and_its_charges(real_db_session):
@@ -654,6 +661,7 @@ def test_known_not_tied_charge_does_not_blank_sku_margin_and_reduces_only_the_da
     }
     accruals = [sale, charge]
     types = [{"id": 12, "name": "CrossDock", "description": "cross dock"}]
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="7001", cost_price=Decimal("20.00")))
     normalized = normalize_accruals(accruals, types, costs={"7001": Decimal("20.00")})
     _replace_complete_day(
         real_db_session,
@@ -670,7 +678,89 @@ def test_known_not_tied_charge_does_not_blank_sku_margin_and_reduces_only_the_da
     sku_day = next(row for row in next(p for p in result["products"] if p["sku"] == "7001")["daily"] if row["date"] == day.isoformat())
     # 200 − 30 − 4 − COGS 20 − tax 12 = 134: the not-tied charge is not spread onto this SKU.
     assert sku_day["margin"] == 134.0
-    assert result["daily"][0]["margin"] == 37.0  # 134 + not-tied (−97) − expenses 0
+    assert result["daily"][0]["margin"] == 37.0  # balance 69 − COGS 20 − tax 12 − expenses 0
+
+
+def test_sku_without_catalogue_card_is_left_out_of_products_and_day_totals(real_db_session):
+    from app.services.marketplace_finance_service import _replace_complete_day, build_overview
+    from app.services.ozon_finance import normalize_accruals
+    from tests.test_ozon_finance import posting_accrual
+
+    owner_id = _owner(real_db_session, "auto-sync-uncatalogued-sku@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    day = date(2026, 1, 6)
+    carded = posting_accrual(9301, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=day.isoformat())
+    bare = posting_accrual(9302, total="43.00", sale="50.00", commission="-5.00", delivery="-2.00", sku="7999", day=day.isoformat())
+    charge = {
+        "accrual_id": 9303,
+        "date": day.isoformat(),
+        "accrued_category": "NON_ITEM",
+        "total_amount": {"amount": "-10.00", "currency": "RUB"},
+        "non_item_fee": {"type_id": 12, "accrued": {"amount": "-10.00", "currency": "RUB"}},
+    }
+    accruals = [carded, bare, charge]
+    types = [{"id": 12, "name": "CrossDock", "description": "cross dock"}]
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="7001", cost_price=Decimal("20.00")))
+    normalized = normalize_accruals(accruals, types, costs={"7001": Decimal("20.00")})
+    _replace_complete_day(
+        real_db_session,
+        user_id=owner_id,
+        day=day,
+        accruals=accruals,
+        normalized=normalized,
+        catalogue=[{"sku": "7001", "offer_id": "offer-7001", "name": "Carded product"}],
+        warnings=normalized["warnings"],
+    )
+
+    result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=day, date_to=day)
+
+    # Owner decision (2026-10-25): SKU 7999 has no catalogue card, so neither its row nor its money is reported.
+    assert [product["sku"] for product in result["products"]] == ["7001"]
+    day_row = result["daily"][0]
+    assert day_row["revenue"] == 200.0
+    assert day_row["commission"] == 30.0
+    assert day_row["logistics"] == 14.0  # SKU 7001 delivery 4 + the not-tied cross-dock 10 stays with the day
+    assert day_row["sold_quantity"] == 1.0
+    assert day_row["marketplace_net"] == 156.0  # 199 from Ozon − SKU 7999's own 43
+    assert day_row["tax"] == 12.0
+    assert day_row["margin"] == 124.0  # 156 − COGS 20 − tax 12
+
+
+def test_day_of_net_returns_has_negative_tax_so_taxes_add_up_to_rate_times_period_revenue(real_db_session):
+    from app.services.marketplace_finance_service import _replace_complete_day, build_overview
+    from app.services.ozon_finance import normalize_accruals
+    from tests.test_ozon_finance import posting_accrual
+
+    owner_id = _owner(real_db_session, "auto-sync-signed-tax@example.com")
+    owner = real_db_session.query(User).filter_by(id=owner_id).one()
+    sale_day, return_day = date(2026, 1, 7), date(2026, 1, 8)
+    sale = posting_accrual(9401, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="7001", day=sale_day.isoformat())
+    refund = posting_accrual(9402, total="-85.00", sale="-100.00", commission="15.00", delivery="0.00", sku="7001", day=return_day.isoformat())
+    refund["posting"]["products"][0]["delivery"] = None  # real return postings carry a null delivery block
+    real_db_session.add(OzonProductCost(user_id=owner_id, sku="7001", cost_price=Decimal("20.00")))
+    for accruals, target in (([sale], sale_day), ([refund], return_day)):
+        normalized = normalize_accruals(accruals, [], costs={"7001": Decimal("20.00")})
+        _replace_complete_day(
+            real_db_session,
+            user_id=owner_id,
+            day=target,
+            accruals=accruals,
+            normalized=normalized,
+            catalogue=[],
+            warnings=normalized["warnings"],
+        )
+
+    result = build_overview(db=real_db_session, store_owner=owner, marketplace="ozon", date_from=sale_day, date_to=return_day)
+
+    first, second = result["daily"]
+    assert first["tax"] == 12.0
+    assert second["tax"] == -6.0  # owner decision (2026-10-25): returns lower the tax, no zeroing of the day
+    assert second["cogs"] == -20.0  # the returned unit goes back to stock
+    assert second["logistics"] == 0.0
+    assert second["margin"] == -59.0  # balance −85 − COGS (−20) − tax (−6)
+    sku_days = result["products"][0]["daily"]
+    assert sum(row["tax"] for row in sku_days) == 6.0  # 6% of period revenue 100
+    assert [row["margin"] for row in sku_days] == [134.0, -59.0]
 
 
 def test_recompute_script_renormalises_stored_days_of_an_owner_without_provider_calls(real_db_session, monkeypatch):
