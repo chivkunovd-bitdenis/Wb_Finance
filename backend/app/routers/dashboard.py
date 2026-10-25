@@ -28,7 +28,7 @@ from app.models.monthly_plan import MonthlyPlan
 from app.models.base import uuid_gen
 import logging
 
-from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick, wb_orchestrator_tick
+from celery_app.tasks import sync_funnel_ytd_step, wb_orchestrator_kick
 from app.models.finance_missing_sync_state import FinanceMissingSyncState
 from app.services.finance_missing_tail import compute_missing_tail_range, compute_missing_ranges_in_window
 from app.services.funnel_tail_repair import funnel_days_needing_repair, funnel_rolling_window
@@ -222,7 +222,8 @@ def _kick_finance_range_with_funnel_tail(user_id: str, date_from: date_type, dat
 
 def _clear_funnel_tail_intent(db: Session, user_id: str) -> None:
     """Снять залипший intent funnel_tail, когда rolling-окно уже закрыто."""
-    orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id).first()
+    orch = (db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == user_id)
+            .populate_existing().with_for_update().first())
     if not orch or not isinstance(orch.intents, dict):
         return
     high = dict(orch.intents.get("high") or {})
@@ -257,7 +258,6 @@ def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type)
     orch = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(user.id)).first()
     high = orch.intents.get("high", {}) if orch and isinstance(orch.intents, dict) else {}
     has_pending_funnel_tail = isinstance(high, dict) and high.get("funnel_tail") is True
-    is_idle_or_scheduled = orch is not None and orch.status in {"idle", "scheduled"}
 
     if not missing_days:
         if has_pending_funnel_tail:
@@ -265,12 +265,7 @@ def _maybe_start_funnel_tail_repair(db: Session, user: User, through: date_type)
         return False
 
     if has_pending_funnel_tail:
-        if is_idle_or_scheduled:
-            try:
-                wb_orchestrator_tick.delay(str(user.id))
-                return True
-            except Exception as exc:
-                logger.exception("Celery delay failed (wb_orchestrator_tick funnel_tail wake): %s", exc)
+        # Durable scheduler owns wakeups; repeated reads must never create more ticks.
         return False
 
     try:

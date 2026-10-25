@@ -22,6 +22,9 @@ celery_app.conf.result_serializer = "json"
 celery_app.conf.accept_content = ["json"]
 celery_app.conf.timezone = "Europe/Moscow"
 celery_app.conf.enable_utc = True
+# Defense in depth for other legacy ETA tasks: bound in-memory reservation.
+celery_app.conf.worker_prefetch_multiplier = 1
+celery_app.conf.worker_eta_task_limit = 32
 
 _DAILY_BRIEF_ENABLED = (os.getenv("DAILY_BRIEF_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 _ARCHIVE_BACKFILL_ENABLED = (os.getenv("ARCHIVE_BACKFILL_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -33,6 +36,11 @@ _AI_REVIEW_REPLIES_BEAT_ENABLED = (
 )
 
 beat_schedule: dict = {
+    "wb-orchestrator-dispatch": {
+        "task": "wb_orchestrator_dispatch",
+        "schedule": 15.0,
+        "options": {"expires": 15},
+    },
     # Ежедневные напоминания о платёжке.
     "billing-send-reminders-daily": {
         "task": "billing_send_reminders",
