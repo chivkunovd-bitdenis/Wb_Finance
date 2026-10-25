@@ -4,6 +4,9 @@ import * as api from '../api';
 import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
 import ChartCard from '../components/ChartCard';
 import KpiCard from '../components/KpiCard';
+import TableExpandButton from '../components/TableExpandButton';
+import useFullscreenCard from '../components/useFullscreenCard';
+import { addKnown, isKnown, percentOf, sumKnown, toNumber } from '../marketplaceValues';
 
 function computeCogsFromShare(revenue, sharePct) {
   const rev = Number(revenue);
@@ -44,10 +47,20 @@ function formatNum(n) {
   return Math.round(Number(n)).toLocaleString('ru');
 }
 
-export default function Dashboard({ range, refreshTrigger, cache, updateCache }) {
+/**
+ * The same daily dashboard for WB, Ozon and the combined view.
+ * WB reads /dashboard/pnl and /dashboard/funnel. Other marketplaces read the marketplace endpoints and
+ * report unknown values as null, which renders as a dash: they never show a zero that was not measured.
+ */
+export default function Dashboard({ range, refreshTrigger, cache, updateCache, marketplace = 'wb' }) {
   const { dateFrom, dateTo } = range || {};
   const storeId = useActiveStoreId();
+  const detailsTable = useFullscreenCard();
+  const isWb = marketplace === 'wb';
+  const unknownAsNull = !isWb;
   const [planFactEnabled, setPlanFactEnabled] = useState(false);
+  // Plans are stored per store and compared with WB facts only; other marketplaces do not offer plan-fact yet.
+  const planFactOn = isWb && planFactEnabled;
   const [planFactEdit, setPlanFactEdit] = useState(false);
   const [planFactMonths, setPlanFactMonths] = useState([]);
   const [planFactLoading, setPlanFactLoading] = useState(false);
@@ -88,13 +101,16 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
     const reqStore = storeId;
     setLoading(true);
     setError('');
-    api
-      .getPnl(dateFrom, dateTo)
+    const request = isWb
+      ? api.getPnl(dateFrom, dateTo)
+      : api.getMarketplacePnl(marketplace, dateFrom, dateTo);
+    request
       .then((data) => {
         if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setPnl(list);
-        if (typeof updateCache === 'function') updateCache('pnl', list, reqStore);
+        // The WB cache is keyed by store only; marketplace rows must never be cached under it.
+        if (isWb && typeof updateCache === 'function') updateCache('pnl', list, reqStore);
       })
       .catch((e) => {
         if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
@@ -102,10 +118,10 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       .finally(() => {
         if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
       });
-  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId, isWb, marketplace]);
 
   useEffect(() => {
-    if (!planFactEnabled) return;
+    if (!planFactOn) return;
     if (!dateFrom || !dateTo) return;
     setPlanFactLoading(true);
     setPlanFactError('');
@@ -137,9 +153,16 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       })
       .catch((e) => setPlanFactError(e.message || 'Ошибка загрузки планов'))
       .finally(() => setPlanFactLoading(false));
-  }, [planFactEnabled, dateFrom, dateTo, refreshTrigger]);
+  }, [planFactOn, dateFrom, dateTo, refreshTrigger]);
 
   useEffect(() => {
+    // The funnel is WB-only (orders come from WB analytics), so other marketplaces show unknown order sums.
+    if (!isWb) {
+      setFunnelRows([]);
+      setErrorFunnel('');
+      setLoadingFunnel(false);
+      return;
+    }
     if (!dateFrom || !dateTo) return;
     const reqStore = storeId;
     setLoadingFunnel(true);
@@ -158,7 +181,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       .finally(() => {
         if (!isStaleStoreResponse(reqStore, storeId)) setLoadingFunnel(false);
       });
-  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId, isWb]);
 
   const filtered = useMemo(() => {
     if (!dateFrom || !dateTo) return [];
@@ -170,25 +193,28 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
     return buildDateRange(dateFrom, dateTo).map((d) => {
       const row = pnlByDate.get(d);
       if (row) return row;
+      // A day without saved data is unknown for marketplaces, not a zero day.
+      const fill = unknownAsNull ? null : 0;
       return {
         date: d,
-        revenue: 0,
-        commission: 0,
-        logistics: 0,
-        penalties: 0,
-        storage: 0,
-        ads_spend: 0,
-        cogs: 0,
-        tax: 0,
-        operation_expenses: 0,
-        margin: 0,
+        revenue: fill,
+        commission: fill,
+        logistics: fill,
+        penalties: fill,
+        storage: fill,
+        ads_spend: fill,
+        cogs: fill,
+        tax: fill,
+        operation_expenses: fill,
+        margin: fill,
       };
     });
-  }, [pnl, dateFrom, dateTo]);
+  }, [pnl, dateFrom, dateTo, unknownAsNull]);
 
   // Воронка может догружаться в фоне (429/ретраи WB). Это не должно блокировать весь дашборд,
   // если P&L уже доступен — иначе получаем «вечный лоадер».
-  const showFullLoader = loading && filtered.length === 0;
+  // Marketplace days are unknown until the response arrives, so they must not render as dashes while loading.
+  const showFullLoader = loading && (unknownAsNull ? pnl.length === 0 : filtered.length === 0);
 
   const planFactByMonth = useMemo(() => {
     const map = new Map();
@@ -200,7 +226,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   }, [planFactMonths]);
 
   const monthSections = useMemo(() => {
-    if (!planFactEnabled) return [{ month: null, rows: filtered }];
+    if (!planFactOn) return [{ month: null, rows: filtered }];
     const groups = new Map();
     for (const r of filtered || []) {
       const month = (r?.date || '').slice(0, 7) ? `${(r?.date || '').slice(0, 7)}-01` : null;
@@ -211,7 +237,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       .filter(([m]) => m)
       .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
       .map(([month, rows]) => ({ month, rows }));
-  }, [filtered, planFactEnabled]);
+  }, [filtered, planFactOn]);
 
   const STORAGE_KEY = 'wb_finance_dashboard_columns_v1';
 
@@ -397,23 +423,42 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   }
 
   const totals = useMemo(() => {
+    // WB starts from zero (its days are zero-filled). Marketplaces sum the known parts only: a missing day or a
+    // component without data is skipped, and a total is unknown only when nothing in the period is known.
+    const start = unknownAsNull ? null : 0;
     return (filtered || []).reduce(
       (acc, r) => {
-        acc.revenue += Number(r.revenue) || 0;
-        acc.commission += Number(r.commission) || 0;
-        acc.logistics += Number(r.logistics) || 0;
-        acc.penalties += Number(r.penalties) || 0;
-        acc.storage += Number(r.storage) || 0;
-        acc.ads += Number(r.ads_spend) || 0;
-        acc.cogs += Number(r.cogs) || 0;
-        acc.tax += Number(r.tax) || 0;
-        acc.operation_expenses += Number(r.operation_expenses) || 0;
-        acc.margin += Number(r.margin) || 0;
+        acc.revenue = addKnown(acc.revenue, toNumber(r.revenue, unknownAsNull));
+        acc.commission = addKnown(acc.commission, toNumber(r.commission, unknownAsNull));
+        acc.logistics = addKnown(acc.logistics, toNumber(r.logistics, unknownAsNull));
+        acc.penalties = addKnown(acc.penalties, toNumber(r.penalties, unknownAsNull));
+        acc.storage = addKnown(acc.storage, toNumber(r.storage, unknownAsNull));
+        acc.ads = addKnown(acc.ads, toNumber(r.ads_spend, unknownAsNull));
+        acc.cogs = addKnown(acc.cogs, toNumber(r.cogs, unknownAsNull));
+        acc.tax = addKnown(acc.tax, toNumber(r.tax, unknownAsNull));
+        acc.operation_expenses = addKnown(acc.operation_expenses, toNumber(r.operation_expenses, unknownAsNull));
+        acc.margin = addKnown(acc.margin, toNumber(r.margin, unknownAsNull));
+        acc.knownCostRevenue = addKnown(acc.knownCostRevenue, toNumber(r.known_cost_revenue, unknownAsNull));
         return acc;
       },
-      { revenue: 0, commission: 0, logistics: 0, penalties: 0, storage: 0, ads: 0, cogs: 0, tax: 0, operation_expenses: 0, margin: 0 },
+      {
+        revenue: start,
+        commission: start,
+        logistics: start,
+        penalties: start,
+        storage: start,
+        ads: start,
+        cogs: start,
+        tax: start,
+        operation_expenses: start,
+        margin: start,
+        knownCostRevenue: start,
+      },
     );
-  }, [filtered]);
+  }, [filtered, unknownAsNull]);
+
+  // Days with no saved data at all (not a partial day): the KPI captions say how many are left out.
+  const missingDays = unknownAsNull ? filtered.filter((r) => r.revenue == null).length : 0;
 
   const ordersByDate = useMemo(() => {
     const map = {};
@@ -428,13 +473,22 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
   }, [funnelRows, dateFrom, dateTo]);
 
   const labels = filtered.map((r) => formatDate(r.date));
-  const revenueSeries = filtered.map((r) => Number(r.revenue) || 0);
+  // An unknown day is a gap in the line, not a point at zero.
+  const revenueSeries = filtered.map((r) => toNumber(r.revenue, unknownAsNull));
 
-  const marginPercentOfRevenue = totals.revenue > 0 ? (totals.margin / totals.revenue) * 100 : 0;
-  const marginIsPositive = totals.margin >= 0;
+  const marginKnown = isKnown(totals.margin) && isKnown(totals.revenue);
+  const marginPercentOfRevenue = marginKnown ? (percentOf(totals.margin, totals.revenue) ?? 0) : 0;
+  const marginIsPositive = marginKnown ? totals.margin >= 0 : true;
 
-  const roiPercent = totals.cogs > 0 ? (totals.margin / totals.cogs) * 100 : 0;
-  const roiAvailable = totals.cogs > 0;
+  const roiKnown = isKnown(totals.cogs) && isKnown(totals.margin);
+  const roiPercent = roiKnown && totals.cogs > 0 ? (totals.margin / totals.cogs) * 100 : 0;
+  const roiAvailable = roiKnown && totals.cogs > 0;
+
+  const moneyKpi = (value) => (isKnown(value) ? `${formatNum(value)} ₽` : '—');
+  // Share of the period's revenue that is covered by SKUs with a known cost (marketplace caption).
+  const knownSharePct = isKnown(totals.knownCostRevenue) && totals.revenue > 0
+    ? Math.round((totals.knownCostRevenue / totals.revenue) * 100)
+    : null;
 
   return (
     <>
@@ -453,30 +507,34 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
       <div className="kpi-grid">
         <KpiCard
           label="Выручка"
-          value={`${formatNum(totals.revenue)} ₽`}
-          delta="за период"
+          value={moneyKpi(totals.revenue)}
+          delta={unknownAsNull && missingDays > 0 ? `без учёта ${missingDays} дн.` : 'за период'}
           valueClassName=""
           bar={{ widthPct: 100, background: '#7c6ff7', opacity: 0.3 }}
         />
         <KpiCard
           label="Маржа"
-          value={`${formatNum(totals.margin)} ₽`}
-          delta={`${
+          value={moneyKpi(totals.margin)}
+          delta={unknownAsNull
+            ? (marginKnown ? `пришло на баланс − себестоимость − налог${knownSharePct != null ? `; себестоимость известна для ${knownSharePct}% выручки` : ''}; опер. расходы: ${formatNum(totals.operation_expenses || 0)} ₽ внесено` : 'Прибыль пока неизвестна')
+            : (marginKnown ? `${
             marginIsPositive ? '▲' : '▼'
-          } ${Math.abs(marginPercentOfRevenue).toFixed(1)}% от выручки`}
+          } ${Math.abs(marginPercentOfRevenue).toFixed(1)}% от выручки` : 'Прибыль пока неизвестна')}
           valueClassName=""
-          deltaColor={marginIsPositive ? 'var(--green)' : 'var(--red)'}
-          valueStyle={{ color: marginIsPositive ? 'var(--green)' : 'var(--red)' }}
+          deltaColor={marginKnown ? (marginIsPositive ? 'var(--green)' : 'var(--red)') : undefined}
+          valueStyle={marginKnown ? { color: marginIsPositive ? 'var(--green)' : 'var(--red)' } : undefined}
           bar={{
-            widthPct: marginPercentOfRevenue > 0 ? marginPercentOfRevenue : 0,
+            widthPct: marginKnown && marginPercentOfRevenue > 0 ? marginPercentOfRevenue : 0,
             background: marginIsPositive ? 'var(--green)' : 'var(--red)',
             opacity: 0.5,
           }}
         />
         <KpiCard
           label="ROI"
-          value={roiAvailable ? `${Math.round(roiPercent)}%` : '0%'}
-          delta={roiAvailable ? 'за период' : 'Данные не внесены'}
+          value={roiKnown ? (roiAvailable ? `${Math.round(roiPercent)}%` : '0%') : '—'}
+          delta={unknownAsNull
+            ? (roiKnown ? 'маржа ÷ известная себестоимость' : 'Себестоимость неизвестна')
+            : (roiKnown ? (roiAvailable ? 'за период' : 'Данные не внесены') : 'Себестоимость неизвестна')}
           valueStyle={{ color: 'var(--text-tertiary)' }}
           deltaColor="var(--text-tertiary)"
         />
@@ -484,10 +542,11 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
       <ChartCard title="Продажи, ₽" badge="сумма за день" labels={labels} data={revenueSeries} borderColor="#14b8a6" />
 
-      <div className="table-card">
+      <div className={detailsTable.cardClassName}>
         <div className="table-head-row">
           <h3>Детализация по дням</h3>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <TableExpandButton expanded={detailsTable.expanded} onToggle={detailsTable.toggle} />
             <div className="columns-menu" ref={columnsMenuRef}>
               <button
                 type="button"
@@ -506,7 +565,9 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                     <label className="columns-menu-item">
                       <input
                         type="checkbox"
-                        checked={planFactEnabled}
+                        checked={planFactOn}
+                        disabled={!isWb}
+                        title={isWb ? undefined : 'План-факт пока доступен только для Wildberries'}
                         onChange={(e) => {
                           const checked = Boolean(e.target.checked);
                           setPlanFactEnabled(checked);
@@ -541,7 +602,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                 </div>
               )}
             </div>
-            {planFactEnabled && (
+            {planFactOn &&(
               <button
                 className="btn btn-sm btn-outline-primary"
                 onClick={async () => {
@@ -601,7 +662,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                   for (const section of monthSections) {
                     const rows = section.rows || [];
 
-                    if (planFactEnabled && section.month) {
+                    if (planFactOn &&section.month) {
                       dayRows.push(
                         <tr key={`sep-days-${section.month}`} style={{ background: 'var(--bg-secondary)' }}>
                           <td className="left" colSpan={1 + cols.length} style={{ fontWeight: 700 }}>
@@ -612,25 +673,26 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                     }
 
                     for (const r of rows) {
-                      const revenue = Number(r.revenue) || 0;
-                      const orders = ordersByDate[r.date] || 0;
-                      const commission = Number(r.commission) || 0;
-                      const logistics = Number(r.logistics) || 0;
-                      const penalties = Number(r.penalties) || 0;
-                      const ads = Number(r.ads_spend) || 0;
-                      const storage = Number(r.storage) || 0;
-                      const opExp = Number(r.operation_expenses) || 0;
-                      const cogs = Number(r.cogs) || 0;
-                      const tax = Number(r.tax) || 0;
-                      const margin = Number(r.margin) || 0;
+                      const revenue = toNumber(r.revenue, unknownAsNull);
+                      // Orders come from the WB funnel only; other marketplaces have no order sums.
+                      const orders = isWb ? (ordersByDate[r.date] || 0) : null;
+                      const commission = toNumber(r.commission, unknownAsNull);
+                      const logistics = toNumber(r.logistics, unknownAsNull);
+                      const penalties = toNumber(r.penalties, unknownAsNull);
+                      const ads = toNumber(r.ads_spend, unknownAsNull);
+                      const storage = toNumber(r.storage, unknownAsNull);
+                      const opExp = toNumber(r.operation_expenses, unknownAsNull);
+                      const cogs = toNumber(r.cogs, unknownAsNull);
+                      const tax = toNumber(r.tax, unknownAsNull);
+                      const margin = toNumber(r.margin, unknownAsNull);
 
-                      const neg = margin < 0;
-                      const comPct = revenue > 0 ? ((commission / revenue) * 100) : 0;
-                      const logPct = revenue > 0 ? ((logistics / revenue) * 100) : 0;
-                      const reklPct = revenue > 0 ? ((ads / revenue) * 100) : 0;
-                      const storPct = revenue > 0 ? ((storage / revenue) * 100) : 0;
-                      const marginPct = revenue > 0 ? ((margin / revenue) * 100) : 0;
-                      const roi = cogs > 0 ? (margin / cogs) * 100 : 0;
+                      const neg = margin != null && margin < 0;
+                      const comPct = percentOf(commission, revenue);
+                      const logPct = percentOf(logistics, revenue);
+                      const reklPct = percentOf(ads, revenue);
+                      const storPct = percentOf(storage, revenue);
+                      const marginPct = percentOf(margin, revenue);
+                      const roi = cogs == null || margin == null ? null : (cogs > 0 ? (margin / cogs) * 100 : 0);
 
                       const valueByKey = {
                         revenue,
@@ -641,13 +703,13 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                         logistics_pct: logPct,
                         penalties,
                         cogs,
-                        cogs_share: revenue > 0 ? (cogs / revenue) * 100 : 0,
+                        cogs_share: percentOf(cogs, revenue),
                         tax,
                         ads_spend: ads,
                         ads_pct: reklPct,
                         storage,
                         storage_pct: storPct,
-                        wb_expenses_share: revenue > 0 ? ((storage + commission + ads + logistics + penalties) / revenue) * 100 : 0,
+                        wb_expenses_share: percentOf(sumKnown([storage, commission, ads, logistics, penalties]), revenue),
                         operation_expenses: opExp,
                         margin,
                         margin_pct: marginPct,
@@ -659,6 +721,10 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                           <td className="left">{formatDate(r.date)}</td>
                           {cols.map((c) => {
                             const v = valueByKey[c.key];
+                            if (v == null) {
+                              // Unknown for a marketplace; WB values are always numbers here.
+                              return <td key={c.key}>—</td>;
+                            }
                             if (c.key === 'operation_expenses') {
                               return (
                                 <td key={c.key} style={{ color: 'var(--red)', fontWeight: 600 }}>
@@ -693,7 +759,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                       );
                     }
 
-                    if (planFactEnabled && section.month) {
+                    if (planFactOn &&section.month) {
                       const monthData = planFactByMonth.get(section.month);
                       const metrics = Array.isArray(monthData?.metrics) ? monthData.metrics : [];
                       const byKey = new Map(metrics.map((x) => [x.metric_key, x]));
@@ -812,33 +878,35 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                     <tr key="totals" style={{ fontWeight: 500, background: 'var(--bg-secondary)' }}>
                       <td className="left">ИТОГО</td>
                       {cols.map((c) => {
-                        const totalOrders = Object.values(ordersByDate).reduce((a, b) => a + (Number(b) || 0), 0);
-                        const revenue = totals.revenue || 0;
+                        const totalOrders = isWb ? Object.values(ordersByDate).reduce((a, b) => a + (Number(b) || 0), 0) : null;
                         const vByKey = {
                           revenue: totals.revenue,
                           orders_sum: totalOrders,
                           commission: totals.commission,
-                          commission_pct: revenue > 0 ? (totals.commission / revenue) * 100 : 0,
+                          commission_pct: percentOf(totals.commission, totals.revenue),
                           logistics: totals.logistics,
-                          logistics_pct: revenue > 0 ? (totals.logistics / revenue) * 100 : 0,
+                          logistics_pct: percentOf(totals.logistics, totals.revenue),
                           penalties: totals.penalties,
                           cogs: totals.cogs,
-                          cogs_share: revenue > 0 ? (totals.cogs / revenue) * 100 : 0,
+                          cogs_share: percentOf(totals.cogs, totals.revenue),
                           tax: totals.tax,
                           ads_spend: totals.ads,
-                          ads_pct: revenue > 0 ? (totals.ads / revenue) * 100 : 0,
+                          ads_pct: percentOf(totals.ads, totals.revenue),
                           storage: totals.storage,
-                          storage_pct: revenue > 0 ? (totals.storage / revenue) * 100 : 0,
-                          wb_expenses_share:
-                            revenue > 0
-                              ? ((totals.storage + totals.commission + totals.ads + totals.logistics + totals.penalties) / revenue) * 100
-                              : 0,
+                          storage_pct: percentOf(totals.storage, totals.revenue),
+                          wb_expenses_share: percentOf(
+                            sumKnown([totals.storage, totals.commission, totals.ads, totals.logistics, totals.penalties]),
+                            totals.revenue,
+                          ),
                           operation_expenses: totals.operation_expenses,
                           margin: totals.margin,
-                          margin_pct: revenue > 0 ? (totals.margin / revenue) * 100 : 0,
-                          roi: totals.cogs > 0 ? (totals.margin / totals.cogs) * 100 : 0,
+                          margin_pct: percentOf(totals.margin, totals.revenue),
+                          roi: roiKnown ? (totals.cogs > 0 ? (totals.margin / totals.cogs) * 100 : 0) : null,
                         };
                         const v = vByKey[c.key];
+                        if (v == null) {
+                          return <td key={c.key}>—</td>;
+                        }
                         if (c.key === 'operation_expenses') {
                           return (
                             <td key={c.key} style={{ color: 'var(--red)', fontWeight: 600 }}>
@@ -871,7 +939,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
                     </tr>
                   );
 
-                  if (!planFactEnabled) {
+                  if (!planFactOn) {
                     // Old behavior: day rows already include everything; planRows is empty.
                     return (
                       <>
@@ -893,10 +961,10 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache })
 
             </tbody>
           </table>
-          {planFactEnabled && planFactLoading && (
+          {planFactOn &&planFactLoading && (
             <div style={{ padding: 10, color: 'var(--text-tertiary)' }}>Загрузка план-факт...</div>
           )}
-          {planFactEnabled && planFactError && (
+          {planFactOn &&planFactError && (
             <div className="alert alert-danger" style={{ marginTop: 10 }}>{planFactError}</div>
           )}
         </div>

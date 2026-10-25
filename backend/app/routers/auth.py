@@ -10,7 +10,18 @@ from app.core.feature_flags import (
     is_ai_module_enabled_for_user,
     is_ai_module_product_gen_enabled_for_user,
 )
-from app.services.store_access_service import StoreContext
+from app.services.store_access_service import (
+    StoreAccessDeniedError,
+    StoreAccessInvalidInputError,
+    StoreAccessNotFoundError,
+    StoreContext,
+    utc_now,
+)
+from app.services.store_invite_service import (
+    StoreInviteExpiredError,
+    consume_invite_no_commit,
+    validate_invite_for_registration,
+)
 from app.services.billing_service import redeem_promo_code, start_trial_if_needed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -41,6 +52,20 @@ def _user_response(user: User) -> UserResponse:
     )
 
 
+def _validate_invite_for_register(db: Session, token: str, *, email: str):
+    """Перевести ошибки приглашения в HTTP-коды до создания пользователя."""
+    try:
+        return validate_invite_for_registration(db, token, email=email, now=utc_now())
+    except StoreInviteExpiredError as exc:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
+    except StoreAccessDeniedError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except StoreAccessInvalidInputError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except StoreAccessNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.post("/register", response_model=UserResponse)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     try:
@@ -50,11 +75,14 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пользователь с таким email уже существует",
             )
+        email = body.email.lower().strip()
+        invite_token = (body.invite_token or "").strip()
+        invite = _validate_invite_for_register(db, invite_token, email=email) if invite_token else None
         promo = body.promo_code.upper().strip() if body.promo_code else None
 
         pwd = _password_72(body.password)
         user = User(
-            email=body.email.lower().strip(),
+            email=email,
             password_hash=hash_password(pwd),
             wb_api_key=body.wb_api_key.strip() if body.wb_api_key else None,
             is_admin=False,
@@ -62,6 +90,11 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         )
         db.add(user)
         db.flush()  # чтобы получить user.id до commit
+
+        if invite is not None:
+            # Приглашённому сотруднику WB-ключ не нужен: доступ к кабинету селлера выдаётся
+            # в той же транзакции, что и создание пользователя.
+            consume_invite_no_commit(db, invite=invite, viewer=user, now=utc_now())
 
         if promo:
             try:

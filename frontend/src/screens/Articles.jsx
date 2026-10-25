@@ -3,6 +3,9 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as api from '../api';
 import DataTable from '../components/DataTable';
 import { isStaleStoreResponse, useActiveStoreId, useResetOnStoreChange } from '../storeDataGuard';
+import { addKnown, isKnown, toNumber } from '../marketplaceValues';
+
+const SUM_FIELDS = ['revenue', 'commission', 'logistics', 'penalties', 'ads_spend', 'cogs', 'tax', 'margin', 'order_sum'];
 
 function formatNum(n) {
   if (n == null || n === '') return '—';
@@ -15,55 +18,81 @@ function formatDate(iso) {
   return parts.length >= 2 ? `${parts[2]}.${parts[1]}` : iso;
 }
 
-function aggregateSku(rows) {
-  const map = {};
-  for (const r of rows || []) {
-    const nm = r.nm_id;
-    if (!map[nm]) {
-      map[nm] = {
-        nm_id: nm,
-        name: null,
-        revenue: 0,
-        commission: 0,
-        logistics: 0,
-        penalties: 0,
-        ads_spend: 0,
-        cogs: 0,
-        tax: 0,
-        margin: 0,
-        order_sum: 0,
-        details: [],
-      };
-    }
-    const rev = Number(r.revenue) || 0;
-    map[nm].revenue += rev;
-    map[nm].commission += Number(r.commission) || 0;
-    map[nm].logistics += Number(r.logistics) || 0;
-    map[nm].penalties += Number(r.penalties) || 0;
-    map[nm].ads_spend += Number(r.ads_spend) || 0;
-    map[nm].cogs += Number(r.cogs) || 0;
-    map[nm].tax += Number(r.tax) || 0;
-    map[nm].margin += Number(r.margin) || 0;
-    map[nm].order_sum += Number(r.order_sum) || 0;
-    map[nm].details.push({
-      date: r.date,
-      revenue: rev,
-      commission: Number(r.commission) || 0,
-      logistics: Number(r.logistics) || 0,
-      penalties: Number(r.penalties) || 0,
-      cogs: Number(r.cogs) || 0,
-      ads_spend: Number(r.ads_spend) || 0,
-      tax: Number(r.tax) || 0,
-      margin: Number(r.margin) || 0,
-      order_sum: Number(r.order_sum) || 0,
-    });
-  }
-  return Object.values(map).sort((a, b) => b.revenue - a.revenue);
+/**
+ * Percent of revenue as printed in the table. Main rows print a bare "0%" without positive revenue (WB layout);
+ * expanded day rows print the fixed-point zero. Unknown values are a dash for marketplaces.
+ */
+function percentLabel(part, base, digits, { unknownAsNull, bareZero }) {
+  if (unknownAsNull && (!isKnown(part) || !isKnown(base))) return '—';
+  if (base > 0) return `${((part / base) * 100).toFixed(digits)}%`;
+  return bareZero ? '0%' : `${(0).toFixed(digits)}%`;
 }
 
-export default function Articles({ range, refreshTrigger, cache, updateCache }) {
+function roiLabel(margin, cogs, unknownAsNull) {
+  if (unknownAsNull && (!isKnown(margin) || !isKnown(cogs))) return '—';
+  return cogs > 0 ? `${Math.round((margin / cogs) * 100)}%` : '0%';
+}
+
+/** Activity for the row filter: an unknown value keeps a marketplace row visible (with dashes); a known zero does not. */
+function isActiveValue(value, unknownAsNull) {
+  if (!isKnown(value)) return unknownAsNull;
+  return Number(value) !== 0;
+}
+
+/** Row key: WB article numbers stay as they are; marketplace products are identified by marketplace and id. */
+function productKey(row, unknownAsNull) {
+  return unknownAsNull ? `${row.marketplace || 'wb'}:${row.nm_id}` : row.nm_id;
+}
+
+function sortValue(value) {
+  return isKnown(value) ? Number(value) : -Infinity;
+}
+
+function aggregateSku(rows, unknownAsNull) {
+  const map = {};
+  for (const r of rows || []) {
+    const key = productKey(r, unknownAsNull);
+    if (!map[key]) {
+      // WB sums start from zero; marketplaces sum the known days only (see addKnown).
+      const start = unknownAsNull ? null : 0;
+      map[key] = { key, nm_id: r.nm_id, marketplace: r.marketplace || 'wb', name: null, details: [] };
+      for (const field of SUM_FIELDS) map[key][field] = start;
+    }
+    const item = map[key];
+    for (const field of SUM_FIELDS) {
+      item[field] = addKnown(item[field], toNumber(r[field], unknownAsNull));
+    }
+    item.details.push({
+      date: r.date,
+      revenue: toNumber(r.revenue, unknownAsNull),
+      commission: toNumber(r.commission, unknownAsNull),
+      logistics: toNumber(r.logistics, unknownAsNull),
+      penalties: toNumber(r.penalties, unknownAsNull),
+      cogs: toNumber(r.cogs, unknownAsNull),
+      ads_spend: toNumber(r.ads_spend, unknownAsNull),
+      tax: toNumber(r.tax, unknownAsNull),
+      margin: toNumber(r.margin, unknownAsNull),
+      order_sum: toNumber(r.order_sum, unknownAsNull),
+    });
+  }
+  return Object.values(map).sort((a, b) => sortValue(b.revenue) - sortValue(a.revenue));
+}
+
+function idHeader(marketplace) {
+  if (marketplace === 'ozon') return 'SKU Ozon';
+  if (marketplace === 'all') return 'Артикул';
+  return 'Артикул ВБ';
+}
+
+/**
+ * The WB articles table. For Ozon and the combined view it shows the same columns from the marketplace
+ * endpoints; orders come from the WB funnel only, so they are unknown elsewhere.
+ */
+export default function Articles({ range, refreshTrigger, cache, updateCache, marketplace = 'wb' }) {
   const { dateFrom, dateTo } = range || {};
   const storeId = useActiveStoreId();
+  const isWb = marketplace === 'wb';
+  const unknownAsNull = !isWb;
 
   const [sku, setSku] = useState(() => (cache?.sku && Array.isArray(cache.sku) ? cache.sku : []));
   const [articles, setArticles] = useState([]);
@@ -85,8 +114,8 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
 
   useEffect(() => {
     const reqStore = storeId;
-    api
-      .getArticles()
+    const request = isWb ? api.getArticles() : api.getMarketplaceArticles(marketplace);
+    request
       .then((data) => {
         if (isStaleStoreResponse(reqStore, storeId)) return;
         setArticles(Array.isArray(data) ? data : []);
@@ -94,20 +123,20 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
       .catch(() => {
         if (!isStaleStoreResponse(reqStore, storeId)) setArticles([]);
       });
-  }, [refreshTrigger, storeId]);
+  }, [refreshTrigger, storeId, isWb, marketplace]);
 
   useEffect(() => {
     if (!dateFrom || !dateTo) return;
     const reqStore = storeId;
     setLoading(true);
     setError('');
-    api
-      .getSku(dateFrom, dateTo)
+    const request = isWb ? api.getSku(dateFrom, dateTo) : api.getMarketplaceSku(marketplace, dateFrom, dateTo);
+    request
       .then((data) => {
         if (isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setSku(list);
-        if (typeof updateCache === 'function') updateCache('sku', list, reqStore);
+        if (isWb && typeof updateCache === 'function') updateCache('sku', list, reqStore);
       })
       .catch((e) => {
         if (!isStaleStoreResponse(reqStore, storeId)) setError(e.message || 'Ошибка загрузки');
@@ -115,10 +144,14 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
       .finally(() => {
         if (!isStaleStoreResponse(reqStore, storeId)) setLoading(false);
       });
-  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId, isWb, marketplace]);
 
   // vendor_code берём из воронки (funnel_daily.vendor_code), потому что в `articles` он часто пустой
   useEffect(() => {
+    if (!isWb) {
+      setFunnelRows([]);
+      return;
+    }
     if (!dateFrom || !dateTo) return;
     const reqStore = storeId;
     api
@@ -130,7 +163,7 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
         if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
       .catch(() => {});
-  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId]);
+  }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId, isWb]);
 
   // Не мигать при смене дат — показывать старые данные, пока новые не пришли
   const showFullLoader = loading && sku.length === 0;
@@ -138,13 +171,13 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
   const articleMap = useMemo(() => {
     const map = {};
     articles.forEach((a) => {
-      map[a.nm_id] = {
+      map[productKey(a, unknownAsNull)] = {
         vendor_code: a.vendor_code || null,
         name: a.name || null,
       };
     });
     return map;
-  }, [articles]);
+  }, [articles, unknownAsNull]);
 
   const sellerCodeMap = useMemo(() => {
     const map = {};
@@ -161,54 +194,36 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
   }, [sku, dateFrom, dateTo]);
 
   const aggregated = useMemo(() => {
-    const toActive = (x) => {
-      return (
-        Number(x.revenue) !== 0 ||
-        Number(x.order_sum) !== 0 ||
-        Number(x.commission) !== 0 ||
-        Number(x.logistics) !== 0 ||
-        Number(x.penalties) !== 0 ||
-        Number(x.cogs) !== 0 ||
-        Number(x.ads_spend) !== 0 ||
-        Number(x.margin) !== 0
-      );
-    };
+    // WB keeps its original activity rule; marketplaces do not count orders, which are unknown there.
+    const activeFields = isWb
+      ? ['revenue', 'order_sum', 'commission', 'logistics', 'penalties', 'cogs', 'ads_spend', 'margin']
+      : ['revenue', 'commission', 'logistics', 'penalties', 'cogs', 'ads_spend', 'margin'];
+    const toActive = (x) => activeFields.some((field) => isActiveValue(x[field], unknownAsNull));
 
-    const daysActive = (details) =>
-      (details || []).filter((dd) =>
-        toActive({
-          revenue: dd.revenue,
-          order_sum: dd.order_sum,
-          commission: dd.commission,
-          logistics: dd.logistics,
-          penalties: dd.penalties,
-          cogs: dd.cogs,
-          ads_spend: dd.ads_spend,
-          margin: dd.margin,
-        }),
-      );
+    const daysActive = (details) => (details || []).filter((dd) => toActive(dd));
 
-    return aggregateSku(filtered)
+    return aggregateSku(filtered, unknownAsNull)
       .map((i) => {
         const details = daysActive(i.details);
         const itemActive = toActive(i);
         if (!itemActive) return null;
+        const info = articleMap[i.key] || {};
         return {
           ...i,
           details,
-          vendor_code: articleMap[i.nm_id]?.vendor_code || sellerCodeMap[i.nm_id] || null,
-          name: articleMap[i.nm_id]?.name || i.name || '—',
+          vendor_code: info.vendor_code || (isWb ? sellerCodeMap[i.nm_id] : null) || null,
+          name: info.name || i.name || '—',
         };
       })
       .filter(Boolean)
-      .sort((a, b) => Number(b.margin) - Number(a.margin));
-  }, [filtered, articleMap, sellerCodeMap]);
+      .sort((a, b) => sortValue(b.margin) - sortValue(a.margin));
+  }, [filtered, articleMap, sellerCodeMap, isWb, unknownAsNull]);
 
-  const toggle = (nmId) => {
+  const toggle = (rowKey) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(nmId)) next.delete(nmId);
-      else next.add(nmId);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
       return next;
     });
   };
@@ -230,12 +245,18 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
     );
   }
 
+  const showMarketplaceTag = marketplace === 'all';
+  const marginColor = (value) => {
+    if (!isKnown(value)) return undefined;
+    return value >= 0 ? 'var(--green)' : 'var(--red)';
+  };
+
   return (
     <DataTable title="Артикулы" tag={`${aggregated.length} артикулов`}>
       <table>
         <thead>
           <tr>
-            <th className="left">Артикул ВБ</th>
+            <th className="left">{idHeader(marketplace)}</th>
             <th className="left">Артикул</th>
             <th className="left">Товар</th>
             <th>Выручка</th>
@@ -265,10 +286,10 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
             </tr>
           ) : (
             aggregated.map((i) => (
-              <Fragment key={i.nm_id}>
+              <Fragment key={i.key}>
                 <tr>
                   <td className="left art-name" style={{ fontWeight: 500 }}>
-                    {i.nm_id}
+                    {showMarketplaceTag ? `${i.marketplace === 'ozon' ? 'Ozon' : 'WB'} · ${i.nm_id}` : i.nm_id}
                   </td>
                   <td className="left" style={{ color: 'var(--text-secondary)' }}>
                     {(() => {
@@ -281,64 +302,59 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
                     {i.name && i.name !== '—' ? <span title={i.name}>{i.name}</span> : <span title="—">—</span>}
                   </td>
                   <td>{formatNum(i.revenue)}</td>
-                  <td>{formatNum(i.order_sum)}</td>
+                  <td>{isWb ? formatNum(i.order_sum) : '—'}</td>
                   <td>{formatNum(i.commission)}</td>
-                  <td>{i.revenue > 0 ? ((i.commission / i.revenue) * 100).toFixed(0) : 0}%</td>
+                  <td>{percentLabel(i.commission, i.revenue, 0, { unknownAsNull, bareZero: true })}</td>
                   <td>{formatNum(i.logistics)}</td>
-                  <td>{i.revenue > 0 ? ((i.logistics / i.revenue) * 100).toFixed(0) : 0}%</td>
+                  <td>{percentLabel(i.logistics, i.revenue, 0, { unknownAsNull, bareZero: true })}</td>
                   <td>{formatNum(i.penalties)}</td>
                   <td>{formatNum(i.cogs)}</td>
-                  <td>{i.revenue > 0 ? ((i.cogs / i.revenue) * 100).toFixed(1) : 0}%</td>
+                  <td>{percentLabel(i.cogs, i.revenue, 1, { unknownAsNull, bareZero: true })}</td>
                   <td style={{ color: 'var(--text-secondary)' }}>{formatNum(i.tax)}</td>
                   <td>{formatNum(i.ads_spend)}</td>
-                  <td>{i.revenue > 0 ? ((i.ads_spend / i.revenue) * 100).toFixed(0) : 0}%</td>
-                  <td style={{ color: i.margin >= 0 ? 'var(--green)' : 'var(--red)' }}>{formatNum(i.margin)}</td>
-                  <td>{i.revenue > 0 ? ((i.margin / i.revenue) * 100).toFixed(0) : 0}%</td>
-                  <td>{i.cogs > 0 ? Math.round((i.margin / i.cogs) * 100) : 0}%</td>
+                  <td>{percentLabel(i.ads_spend, i.revenue, 0, { unknownAsNull, bareZero: true })}</td>
+                  <td style={{ color: marginColor(i.margin) }}>{formatNum(i.margin)}</td>
+                  <td>{percentLabel(i.margin, i.revenue, 0, { unknownAsNull, bareZero: true })}</td>
+                  <td>{roiLabel(i.margin, i.cogs, unknownAsNull)}</td>
                   <td style={{ width: 1, whiteSpace: 'nowrap' }}>
                     {i.details.length > 0 ? (
-                      <span className="expand-btn" onClick={() => toggle(i.nm_id)}>
-                        {expanded.has(i.nm_id) ? '▲' : '▼'}
+                      <span className="expand-btn" onClick={() => toggle(i.key)}>
+                        {expanded.has(i.key) ? '▲' : '▼'}
                       </span>
                     ) : null}
                   </td>
                 </tr>
 
-                {expanded.has(i.nm_id) &&
+                {expanded.has(i.key) &&
                   i.details.length > 0 &&
                   i.details.map((dd) => {
-                    const comPct = dd.revenue > 0 ? (dd.commission / dd.revenue) * 100 : 0;
-                    const logPct = dd.revenue > 0 ? (dd.logistics / dd.revenue) * 100 : 0;
-                    const cogsPct = dd.revenue > 0 ? (dd.cogs / dd.revenue) * 100 : 0;
-                    const adsPct = dd.revenue > 0 ? (dd.ads_spend / dd.revenue) * 100 : 0;
-                    const marginPct = dd.revenue > 0 ? (dd.margin / dd.revenue) * 100 : 0;
-                    const roi = dd.cogs > 0 ? Math.round((dd.margin / dd.cogs) * 100) : 0;
+                    const detailKey = `${i.key}|${dd.date}`;
                     return (
-                      <tr key={dd.date} className="articles-sub-row">
+                      <tr key={detailKey} className="articles-sub-row">
                         <td className="left" style={{ paddingLeft: 28, color: 'var(--text-tertiary)', fontSize: 11 }}>
                           {formatDate(dd.date)}
                         </td>
                         <td style={{ background: 'var(--bg-secondary)' }} />
                         <td style={{ background: 'var(--bg-secondary)' }} />
                         <td style={{ fontSize: 11 }}>{formatNum(dd.revenue)}</td>
-                        <td style={{ fontSize: 11 }}>{formatNum(dd.order_sum)}</td>
+                        <td style={{ fontSize: 11 }}>{isWb ? formatNum(dd.order_sum) : '—'}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.commission)}</td>
-                        <td style={{ fontSize: 11 }}>{comPct.toFixed(0)}%</td>
+                        <td style={{ fontSize: 11 }}>{percentLabel(dd.commission, dd.revenue, 0, { unknownAsNull, bareZero: false })}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.logistics)}</td>
-                        <td style={{ fontSize: 11 }}>{logPct.toFixed(0)}%</td>
+                        <td style={{ fontSize: 11 }}>{percentLabel(dd.logistics, dd.revenue, 0, { unknownAsNull, bareZero: false })}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.penalties)}</td>
                         <td style={{ fontSize: 11 }}>{formatNum(dd.cogs)}</td>
-                        <td style={{ fontSize: 11 }}>{cogsPct.toFixed(1)}%</td>
+                        <td style={{ fontSize: 11 }}>{percentLabel(dd.cogs, dd.revenue, 1, { unknownAsNull, bareZero: false })}</td>
                         <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{formatNum(dd.tax)}</td>
                         <td style={{ fontSize: 11 }}>
-                          {formatNum(dd.ads_spend)} ₽
+                          {formatNum(dd.ads_spend)} {isKnown(dd.ads_spend) ? '₽' : ''}
                         </td>
-                        <td style={{ fontSize: 11 }}>{adsPct.toFixed(1)}%</td>
-                        <td style={{ fontSize: 11, fontWeight: 700, color: dd.margin >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                        <td style={{ fontSize: 11 }}>{percentLabel(dd.ads_spend, dd.revenue, 1, { unknownAsNull, bareZero: false })}</td>
+                        <td style={{ fontSize: 11, fontWeight: 700, color: marginColor(dd.margin) }}>
                           {formatNum(dd.margin)}
                         </td>
-                        <td style={{ fontSize: 11 }}>{marginPct.toFixed(1)}%</td>
-                        <td style={{ fontSize: 11 }}>{roi}%</td>
+                        <td style={{ fontSize: 11 }}>{percentLabel(dd.margin, dd.revenue, 1, { unknownAsNull, bareZero: false })}</td>
+                        <td style={{ fontSize: 11 }}>{roiLabel(dd.margin, dd.cogs, unknownAsNull)}</td>
                         <td style={{ fontSize: 11 }} />
                       </tr>
                     );
@@ -351,4 +367,3 @@ export default function Articles({ range, refreshTrigger, cache, updateCache }) 
     </DataTable>
   );
 }
-

@@ -1,43 +1,13 @@
 /* eslint react-hooks/set-state-in-effect: off */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../api';
 import { useStore } from '../StoreContext';
 
 export default function Settings() {
-  const { refreshStores, activeStore, activeStoreOwnerId, isOwnerStore } = useStore();
-  const [email, setEmail] = useState('');
-  const [lockedEmail, setLockedEmail] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const isGranted = Boolean(lockedEmail);
+  const { activeStore, activeStoreOwnerId, isOwnerStore } = useStore();
   const canManageOzon = Boolean(activeStore && isOwnerStore);
-  const value = isGranted ? lockedEmail : email;
-
-  const loadExisting = useCallback(async () => {
-    setError('');
-    try {
-      const data = await api.getOutgoingStoreGrants();
-      const grants = Array.isArray(data?.grants) ? data.grants : [];
-      const active = grants.find((g) => g.status === 'active' && !g.revoked_at) || null;
-      if (active?.viewer_email) {
-        setLockedEmail(String(active.viewer_email));
-      } else {
-        setLockedEmail('');
-      }
-    } catch (e) {
-      setError(e?.message || 'Не удалось загрузить настройки доступа');
-    }
-  }, []);
-
-  useEffect(() => {
-    loadExisting();
-  }, [loadExisting]);
-
-  const helperText = useMemo(() => {
-    if (isGranted) return 'Доступ выдан. Можно отключить в любой момент.';
-    return 'Введите e-mail селлера (существующего в системе), которому вы хотите выдать доступ к своему магазину.';
-  }, [isGranted]);
+  // Сотрудников приглашает только владелец магазина: в чужом кабинете блок скрыт.
+  const canManageTeam = Boolean(activeStore && isOwnerStore);
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -45,97 +15,227 @@ export default function Settings() {
 
       <OzonConnectionSettings key={activeStoreOwnerId || 'self'} activeStore={activeStore} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
       <OzonFinancialSettings key={`finance:${activeStoreOwnerId || 'self'}`} activeStoreOwnerId={activeStoreOwnerId} canManage={canManageOzon} />
+      <OzonManualSync key={`sync:${activeStoreOwnerId || 'self'}`} canManage={canManageOzon} />
 
-      <div
-        style={{
-          padding: 14,
-          border: '1px solid rgba(0,0,0,0.12)',
-          borderRadius: 12,
-          background: 'white',
-        }}
-      >
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Выдать доступ к магазину</div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>{helperText}</div>
+      <TeamAccessSettings canManage={canManageTeam} />
+    </div>
+  );
+}
 
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={value}
-            disabled={loading || isGranted}
-            placeholder="seller@example.com"
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ minWidth: 260, flex: '1 1 260px' }}
-          />
+const teamRowStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 10,
+  padding: '8px 0',
+  borderBottom: '1px solid rgba(0,0,0,0.06)',
+  fontSize: 13,
+};
 
-          {!isGranted ? (
-            <button
-              className="btn-primary"
-              disabled={loading || !String(email).trim()}
-              onClick={async () => {
-                setLoading(true);
-                setError('');
-                try {
-                  const target = String(email).trim();
-                  await api.grantStoreAccess(target);
-                  setLockedEmail(target);
-                  setEmail('');
-                  await refreshStores();
-                } catch (e) {
-                  setError(e?.message || 'Не удалось выдать доступ');
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              {loading ? '...' : 'Выдать доступ'}
-            </button>
-          ) : (
-            <button
-              className="btn-danger"
-              disabled={loading}
-              onClick={async () => {
-                const ok = window.confirm('Отключить доступ селлеру к вашему магазину?');
-                if (!ok) return;
-                setLoading(true);
-                setError('');
-                try {
-                  await api.revokeStoreAccess(String(lockedEmail));
-                  setLockedEmail('');
-                  await refreshStores();
-                } catch (e) {
-                  setError(e?.message || 'Не удалось отключить доступ');
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              {loading ? '...' : 'Отключить доступ'}
-            </button>
-          )}
-        </div>
+function formatInviteDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('ru');
+}
 
-        {isGranted && (
-          <div
-            style={{
-              marginTop: 10,
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: '#e8f4ec',
-              color: '#155724',
-              border: '1px solid #c3e6cb',
-              fontSize: 13,
-            }}
-          >
-            Доступ активен для: <strong>{lockedEmail}</strong>
-          </div>
-        )}
+function TeamAccessSettings({ canManage }) {
+  const [managers, setManagers] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
 
-        {error && (
-          <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
-            {error}
-          </div>
-        )}
+  const reload = useCallback(async () => {
+    try {
+      const data = await api.getStoreTeam();
+      setManagers(Array.isArray(data?.managers) ? data.managers : []);
+      setInvites(Array.isArray(data?.invites) ? data.invites : []);
+      setLoadError('');
+    } catch (e) {
+      setLoadError(e?.message || 'Не удалось загрузить список сотрудников');
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canManage) reload();
+  }, [canManage, reload]);
+
+  if (!canManage) return null;
+
+  async function handleInvite() {
+    const target = String(email).trim();
+    if (!target) return;
+    setBusy(true);
+    setError('');
+    setCopied(false);
+    try {
+      const data = await api.createStoreInvite(target);
+      setCreated({
+        email: String(data.email),
+        link: `${window.location.origin}${data.invite_url_path}`,
+        expiresAt: data.expires_at,
+      });
+      setEmail('');
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось создать приглашение');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!created) return;
+    setError('');
+    try {
+      await navigator.clipboard.writeText(created.link);
+      setCopied(true);
+    } catch {
+      setError('Не удалось скопировать автоматически. Выделите ссылку и скопируйте вручную.');
+    }
+  }
+
+  async function handleRevokeManager(managerEmail) {
+    const ok = window.confirm('Отключить доступ сотруднику к вашему кабинету?');
+    if (!ok) return;
+    setBusy(true);
+    setError('');
+    try {
+      await api.revokeStoreAccess(String(managerEmail));
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось отключить доступ');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRevokeInvite(inviteId) {
+    setBusy(true);
+    setError('');
+    try {
+      await api.revokeStoreInvite(inviteId);
+      await reload();
+    } catch (e) {
+      setError(e?.message || 'Не удалось отозвать приглашение');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 14,
+        border: '1px solid rgba(0,0,0,0.12)',
+        borderRadius: 12,
+        background: 'white',
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Сотрудники</div>
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>
+        Пригласите сотрудника по email. Он зарегистрируется по ссылке и увидит ваш кабинет.
       </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          type="email"
+          value={email}
+          disabled={busy}
+          placeholder="employee@example.com"
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ minWidth: 260, flex: '1 1 260px' }}
+        />
+        <button className="btn-primary" disabled={busy || !String(email).trim()} onClick={handleInvite}>
+          {busy ? '...' : 'Пригласить'}
+        </button>
+      </div>
+
+      {created && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: '#e8f4ec',
+            color: '#155724',
+            border: '1px solid #c3e6cb',
+            fontSize: 13,
+          }}
+        >
+          <div>
+            Приглашение для <strong>{created.email}</strong> готово. Действует до {formatInviteDate(created.expiresAt)}.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              readOnly
+              value={created.link}
+              onFocus={(e) => e.target.select()}
+              style={{ flex: '1 1 260px', minWidth: 200 }}
+            />
+            <button className="btn-primary" onClick={handleCopy}>
+              {copied ? 'Скопировано' : 'Скопировать'}
+            </button>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Отправьте ссылку сотруднику — по ней он зарегистрируется и увидит ваш кабинет
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, fontWeight: 600, fontSize: 13 }}>Сотрудники с доступом</div>
+      {!loaded ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Загрузка…</div>
+      ) : managers.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Пока никого нет</div>
+      ) : (
+        managers.map((m) => (
+          <div key={m.viewer_user_id} style={teamRowStyle}>
+            <span>{m.email}</span>
+            <button className="btn-danger" disabled={busy} onClick={() => handleRevokeManager(m.email)}>
+              Отключить
+            </button>
+          </div>
+        ))
+      )}
+
+      <div style={{ marginTop: 16, fontWeight: 600, fontSize: 13 }}>Приглашения</div>
+      {!loaded ? null : invites.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 6 }}>Нет активных приглашений</div>
+      ) : (
+        invites.map((i) => (
+          <div key={i.id} style={teamRowStyle}>
+            <span>
+              {i.email}{' '}
+              <span style={{ color: i.status === 'expired' ? 'var(--red)' : 'var(--text-tertiary)' }}>
+                {i.status === 'expired' ? '· срок истёк' : `· действует до ${formatInviteDate(i.expires_at)}`}
+              </span>
+            </span>
+            <button className="btn-danger" disabled={busy} onClick={() => handleRevokeInvite(i.id)}>
+              Отозвать
+            </button>
+          </div>
+        ))
+      )}
+
+      {loadError && (
+        <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
+          {loadError}
+        </div>
+      )}
+      {error && (
+        <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -162,127 +262,101 @@ function formatTaxRatePercent(rate) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 4 }).format(Number(rate) * 100)}%`;
 }
 
-function OzonFinancialSettings({ activeStoreOwnerId, canManage }) {
-  const [settings, setSettings] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [expensesConfirmedDraft, setExpensesConfirmedDraft] = useState(false);
-  const [error, setError] = useState('');
-  const [saved, setSaved] = useState(false);
-  const requestGeneration = useRef(0);
-  const originalTaxRate = settings?.tax_rate == null ? null : Number(settings.tax_rate);
-  const originalExpensesConfirmed = settings?.operation_expenses_confirmed === true;
-  const isDirty = settings !== null && expensesConfirmedDraft !== originalExpensesConfirmed;
+/** Secondary action only: Ozon data loads automatically from 1 January; this re-reads up to 31 days by hand. */
+function OzonManualSync({ canManage }) {
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const generation = ++requestGeneration.current;
-    setLoading(true);
-    setSettings(null);
-    setExpensesConfirmedDraft(false);
-    setError('');
-    setSaved(false);
-
-    api.getMarketplaceSettings({ signal: controller.signal })
-      .then((result) => {
-        if (generation !== requestGeneration.current) return;
-        setSettings(result);
-        setExpensesConfirmedDraft(result?.operation_expenses_confirmed === true);
-      })
-      .catch((loadError) => {
-        if (generation !== requestGeneration.current || controller.signal.aborted) return;
-        setError(loadError?.message || 'Не удалось загрузить налоговые и расходные настройки Ozon.');
-      })
-      .finally(() => {
-        if (generation === requestGeneration.current && !controller.signal.aborted) setLoading(false);
-      });
-
-    return () => {
-      controller.abort();
-      if (generation === requestGeneration.current) requestGeneration.current += 1;
-    };
-  }, [activeStoreOwnerId]);
-
-  const reset = () => {
-    setExpensesConfirmedDraft(originalExpensesConfirmed);
-    setError('');
-    setSaved(false);
-  };
-
-  const save = async (event) => {
+  const submit = async (event) => {
     event.preventDefault();
-    if (!canManage || saving) return;
-    const payload = {
-      operation_expenses_confirmed: expensesConfirmedDraft,
-    };
-    setSaving(true);
-    setError('');
-    setSaved(false);
+    if (!canManage || busy) return;
+    if (!dateFrom || !dateTo || dateTo < dateFrom) {
+      setMessage('Укажите даты: дата окончания не раньше даты начала.');
+      return;
+    }
+    const days = Math.floor((Date.parse(`${dateTo}T00:00:00Z`) - Date.parse(`${dateFrom}T00:00:00Z`)) / 86400000) + 1;
+    if (days > 31) {
+      setMessage('За один раз можно синхронизировать не более 31 дня.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
     try {
-      const result = await api.saveMarketplaceSettings(payload);
-      const next = {
-        tax_rate: result?.tax_rate === undefined ? originalTaxRate : result.tax_rate,
-        tax_rate_source: result?.tax_rate_source === undefined ? settings?.tax_rate_source : result.tax_rate_source,
-        operation_expenses_confirmed: result?.operation_expenses_confirmed === undefined
-          ? payload.operation_expenses_confirmed
-          : result.operation_expenses_confirmed,
-      };
-      setSettings(next);
-      setExpensesConfirmedDraft(next.operation_expenses_confirmed === true);
-      setSaved(true);
-    } catch (saveError) {
-      setError(saveError?.message || 'Не удалось сохранить настройки Ozon.');
+      const result = await api.syncMarketplaceFinance(dateFrom, dateTo);
+      setMessage(result?.status ? `Запрос принят: ${result.status}.` : 'Запрос на синхронизацию принят.');
+    } catch (error) {
+      setMessage(error?.message || 'Не удалось запустить синхронизацию Ozon.');
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  const expensesConfirmedLabel = originalExpensesConfirmed ? 'Подтверждены' : 'Не подтверждены';
+  return (
+    <section className="marketplace-settings-card" data-testid="ozon-manual-sync">
+      <div className="marketplace-settings-heading">
+        <div>
+          <h3>Синхронизация Ozon вручную</h3>
+          <p>Данные Ozon загружаются автоматически с 1 января и обновляются каждое утро. Эта кнопка нужна, чтобы перечитать отдельный период до 31 дня.</p>
+        </div>
+      </div>
+      {canManage ? (
+        <form className="marketplace-connection-form" onSubmit={submit}>
+          <label>
+            <span>С</span>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          </label>
+          <label>
+            <span>По</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          </label>
+          <div className="marketplace-connection-actions">
+            <button className="btn-outline" type="submit" disabled={busy} data-testid="ozon-manual-sync-submit">
+              {busy ? 'Запускаем…' : 'Синхронизировать Ozon'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="marketplace-settings-readonly">Синхронизировать Ozon может владелец магазина.</div>
+      )}
+      {message && <div className="marketplace-notice marketplace-notice-info" role="status">{message}</div>}
+    </section>
+  );
+}
 
+/** Tax comes from the WB setting; operating expenses are entered per day as in WB, with no confirmation gate. */
+function OzonFinancialSettings({ activeStoreOwnerId }) {
+  const [taxRate, setTaxRate] = useState(null);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .getMarketplaceSettings({ signal: controller.signal })
+      .then((data) => {
+        setTaxRate(data?.tax_rate ?? null);
+        setLoadError('');
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setLoadError(error?.message || 'Не удалось загрузить налоговую ставку.');
+      });
+    return () => controller.abort();
+  }, [activeStoreOwnerId]);
+
+  const taxText = formatTaxRatePercent(taxRate);
   return (
     <section className="marketplace-settings-card" data-testid="ozon-financial-settings">
       <div className="marketplace-settings-heading">
         <div>
-          <h3>Налог и общие расходы Ozon</h3>
-          <p>Ставка налога берётся из настроек Wildberries; отдельно здесь настраивается только полнота собственных расходов Ozon.</p>
+          <h3>Налог и расходы Ozon</h3>
+          <p>
+            Ставка налога берётся из настроек Wildberries: {taxText}. Операционные расходы вносятся по дням в разделе
+            «Опер. расходы»; день без записи считается нулём, как в WB.
+          </p>
         </div>
-        <span className="tag tag-gray" data-testid="ozon-financial-settings-status">
-          {loading || saving ? 'Проверяем' : error ? 'Ошибка' : 'Настроено'}
-        </span>
       </div>
-
-      {error && <div className="marketplace-notice marketplace-notice-error" role="alert" data-testid="ozon-financial-settings-error">{error}</div>}
-      {loading ? (
-        <div className="marketplace-settings-note">Загружаем настройки магазина…</div>
-      ) : canManage ? (
-        <form className="marketplace-connection-form" onSubmit={save}>
-          <div className="marketplace-settings-note" data-testid="ozon-tax-rate-readonly">
-            Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Измените её в общих настройках учёта Wildberries.
-          </div>
-          <label className="marketplace-confirmation-label">
-            <input
-              type="checkbox"
-              checked={expensesConfirmedDraft}
-              onChange={(event) => { setExpensesConfirmedDraft(event.target.checked); setSaved(false); }}
-              disabled={saving}
-              data-testid="ozon-opex-confirm"
-            />
-            <span>Подтверждаю, что все общие операционные расходы Ozon внесены.</span>
-          </label>
-          <div className="marketplace-settings-note">Если подтверждение включено, день без отдельной суммы считается днём с расходами 0 ₽. Пока оно выключено, незаполненная сумма остаётся неизвестной.</div>
-          <div className="marketplace-connection-actions">
-            <button className="btn-primary" type="submit" disabled={saving || !isDirty} data-testid="ozon-financial-settings-save">
-              {saving ? 'Сохраняем…' : 'Сохранить настройки'}
-            </button>
-            <button className="btn-outline" type="button" disabled={saving || !isDirty} onClick={reset}>Сбросить</button>
-          </div>
-        </form>
-      ) : (
-        <div className="marketplace-settings-readonly" data-testid="ozon-financial-settings-viewer-readonly">
-          Ставка налога из настроек WB: {formatTaxRatePercent(originalTaxRate)}. Общие расходы: {expensesConfirmedLabel.toLowerCase()}.
-        </div>
-      )}
-      {saved && <div className="marketplace-notice marketplace-notice-success" role="status" data-testid="ozon-financial-settings-saved">Настройки сохранены.</div>}
+      {loadError && <div className="marketplace-notice marketplace-notice-error" role="alert">{loadError}</div>}
     </section>
   );
 }

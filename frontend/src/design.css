@@ -432,6 +432,56 @@ body {
   max-height: 780px;
 }
 
+/* Кнопка «Развернуть» в шапке дневной таблицы и растянутая карточка (useFullscreenCard). */
+.table-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  flex: 0 0 auto;
+}
+
+.table-expand-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* left и top выставляет хук по фактической границе бокового меню, поэтому здесь их нет. */
+.table-card-expanded {
+  position: fixed;
+  z-index: 60;
+  right: 0;
+  bottom: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  overscroll-behavior: contain;
+}
+
+.table-card-expanded .table-head-row {
+  flex: 0 0 auto;
+}
+
+.table-card-expanded .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+@media (max-width: 560px) {
+  .table-expand-btn {
+    gap: 0;
+    padding: 4px 6px;
+  }
+
+  .table-expand-label {
+    display: none;
+  }
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -109,7 +109,7 @@ def test_normalizes_real_shaped_posting_with_product_delivery_and_positive_expen
     assert "дубли" not in " ".join(normalized["warnings"])
 
 
-def test_returns_preserve_signed_income_and_expense_reversals_and_net_zero_still_has_unknown_cogs():
+def test_returns_preserve_signed_income_and_expense_reversals_and_returned_units_net_out_of_cogs():
     sale = posting_accrual(
         201,
         total="81.00",
@@ -133,19 +133,45 @@ def test_returns_preserve_signed_income_and_expense_reversals_and_net_zero_still
     assert daily["commission"] == Decimal("0.00")
     assert daily["logistics"] == Decimal("0.00")
     assert daily["marketplace_net"] == Decimal("0.00")
-    assert daily["cogs"] is None
-    assert product["cogs"] is None
+    # The returned unit went back to stock and was resold, so the sold and returned units net to zero at cost.
     assert daily["sold_quantity"] == Decimal("1")
-    assert daily["returned_quantity"] is None
-    assert daily["net_quantity"] is None
+    assert daily["returned_quantity"] == Decimal("1")
+    assert daily["net_quantity"] == Decimal("0")
+    assert daily["cogs"] == Decimal("0")
+    assert product["cogs"] == Decimal("0")
     assert daily["reconciliation_difference"] == Decimal("0.00")
+
+
+@pytest.mark.parametrize("total, logistics_known", [("-85.00", True), ("-90.00", False)])
+def test_return_posting_with_null_delivery_block_has_no_delivery_charge_only_when_the_total_agrees(
+    total, logistics_known
+):
+    # Real data (2026-10-25): Ozon return postings carry "delivery": null. With the total equal to sale + commission
+    # there is no delivery charge; a total that differs means the null block hid an amount, which stays unknown.
+    source = posting_accrual(230, total=total, sale="-100.00", commission="15.00", delivery="0.00")
+    source["posting"]["products"][0]["delivery"] = None
+
+    normalized = normalize_accruals([source], [], costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert product["revenue"] == Decimal("-100.00")
+    assert product["returned_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("-20.00")
+    if logistics_known:
+        assert product["logistics"] == Decimal("0")
+        assert daily["reconciliation_difference"] == Decimal("0.00")
+        assert product["accrual_classification_complete"] is True
+    else:
+        assert product["logistics"] is None
+        assert daily["reconciliation_difference"] is None
+        assert product["accrual_classification_complete"] is False
 
 
 @pytest.mark.parametrize("return_fee_first", [False, True])
 @pytest.mark.parametrize("same_sku", [False, True])
-def test_return_related_item_fee_blocks_only_affected_sku_profitability_in_either_order(
-    return_fee_first, same_sku
-):
+def test_return_related_item_fee_is_money_and_never_blocks_units_or_cogs(return_fee_first, same_sku):
+    # Owner decision (2026-10-25): returned units come only from return postings; a return fee is a charge.
     sale_sku = "sku-1"
     return_sku = sale_sku if same_sku else "sku-return"
     sale = posting_accrual(
@@ -185,24 +211,19 @@ def test_return_related_item_fee_blocks_only_affected_sku_profitability_in_eithe
     assert daily["marketplace_net"] == Decimal("77.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
     assert daily["sold_quantity"] == Decimal("1")
-    assert daily["returned_quantity"] is None
-    assert daily["net_quantity"] is None
-    assert daily["cogs"] is None
-    assert daily["profitability_complete"] is False
-    assert return_product["returned_quantity"] is None
-    assert return_product["net_quantity"] is None
-    assert return_product["cogs"] is None
-    assert return_product["profitability_complete"] is False
-    if same_sku:
-        assert sale_product["cogs"] is None
-        assert sale_product["profitability_complete"] is False
-    else:
-        assert sale_product["cogs"] == Decimal("20.00")
-        assert sale_product["profitability_complete"] is True
+    assert daily["returned_quantity"] == Decimal("0")
+    assert daily["net_quantity"] == Decimal("1")
+    sale_cost = Decimal("30.00") if same_sku else Decimal("20.00")  # the costs map above shares one key when same
+    assert daily["cogs"] == sale_cost
+    assert sale_product["cogs"] == sale_cost
+    assert return_product["logistics"] == (Decimal("8.00") if same_sku else Decimal("4.00"))
+    if not same_sku:
+        assert return_product["returned_quantity"] == Decimal("0")
+        assert return_product["cogs"] == Decimal("0")
 
 
 @pytest.mark.parametrize("include_subtotal", [False, True])
-def test_return_related_delivery_service_blocks_profit_and_preserves_nested_totals(include_subtotal):
+def test_return_related_delivery_service_keeps_units_and_preserves_nested_totals(include_subtotal):
     sale = posting_accrual(
         222,
         total="81.00",
@@ -229,15 +250,13 @@ def test_return_related_delivery_service_blocks_profit_and_preserves_nested_tota
     assert daily["logistics"] == Decimal("4.00")
     assert daily["marketplace_net"] == Decimal("81.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
-    assert daily["net_quantity"] is None
-    assert daily["cogs"] is None
-    assert daily["profitability_complete"] is False
-    assert product["net_quantity"] is None
-    assert product["cogs"] is None
-    assert product["profitability_complete"] is False
+    assert daily["net_quantity"] == Decimal("1")
+    assert daily["cogs"] == Decimal("20.00")
+    assert product["net_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("20.00")
 
 
-def test_unscoped_return_related_fee_invalidates_product_cogs_even_if_sale_is_elsewhere_in_day():
+def test_unscoped_return_related_fee_stays_with_the_day_and_keeps_product_cogs():
     sale = posting_accrual(
         223,
         total="81.00",
@@ -264,16 +283,15 @@ def test_unscoped_return_related_fee_invalidates_product_cogs_even_if_sale_is_el
     assert daily["logistics"] == Decimal("8.00")
     assert daily["marketplace_net"] == Decimal("77.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
-    assert daily["net_quantity"] is None
-    assert daily["cogs"] is None
-    assert daily["profitability_complete"] is False
-    assert product["net_quantity"] is None
-    assert product["cogs"] is None
-    assert product["marketplace_net"] is None
-    assert product["profitability_complete"] is False
+    assert daily["unallocated_amount"] == Decimal("-4.00")
+    assert daily["net_quantity"] == Decimal("1")
+    assert daily["cogs"] == Decimal("20.00")
+    assert product["logistics"] == Decimal("4.00")
+    assert product["net_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("20.00")
 
 
-def test_missing_return_fee_amount_still_invalidates_affected_sku_quantity_and_cogs():
+def test_missing_return_fee_amount_blanks_the_charge_but_not_units_or_cogs():
     sale = posting_accrual(
         225,
         total="81.00",
@@ -300,18 +318,18 @@ def test_missing_return_fee_amount_still_invalidates_affected_sku_quantity_and_c
     product = product_day(normalized)
 
     assert daily["sold_quantity"] == Decimal("1")
-    assert daily["returned_quantity"] is None
-    assert daily["net_quantity"] is None
-    assert daily["cogs"] is None
+    assert daily["returned_quantity"] == Decimal("0")
+    assert daily["net_quantity"] == Decimal("1")
+    assert daily["cogs"] == Decimal("20.00")
+    assert daily["logistics"] is None
     assert daily["profitability_complete"] is False
-    assert product["sold_quantity"] == Decimal("1")
-    assert product["returned_quantity"] is None
-    assert product["net_quantity"] is None
-    assert product["cogs"] is None
+    assert product["net_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("20.00")
+    assert product["logistics"] is None
     assert product["profitability_complete"] is False
 
 
-def test_malformed_earlier_delivery_service_does_not_hide_later_return_service():
+def test_malformed_delivery_service_keeps_units_and_known_delivery_subtotal():
     sale = posting_accrual(
         227,
         total="81.00",
@@ -335,12 +353,10 @@ def test_malformed_earlier_delivery_service_does_not_hide_later_return_service()
     assert daily["logistics"] == Decimal("4.00")
     assert daily["marketplace_net"] == Decimal("81.00")
     assert daily["reconciliation_difference"] == Decimal("0.00")
-    assert daily["net_quantity"] is None
-    assert daily["cogs"] is None
-    assert daily["profitability_complete"] is False
-    assert product["net_quantity"] is None
-    assert product["cogs"] is None
-    assert product["profitability_complete"] is False
+    assert daily["net_quantity"] == Decimal("1")
+    assert daily["cogs"] == Decimal("20.00")
+    assert product["net_quantity"] == Decimal("1")
+    assert product["cogs"] == Decimal("20.00")
 
 
 @pytest.mark.parametrize("quantity", [None, 0, -1, "NaN"])
@@ -545,7 +561,8 @@ def test_unscoped_unknown_fee_invalidates_affected_product_day_columns_even_when
     assert product["penalties"] is None
     assert product["acquiring"] is None
     assert product["commission"] is None
-    assert product["other_expenses"] is None
+    # The not-tied amount itself stays with the day (unallocated), never in a SKU's own other expenses.
+    assert product["other_expenses"] == Decimal("0")
     assert product["marketplace_net"] is None
     assert product["profitability_complete"] is False
 
@@ -774,3 +791,75 @@ def test_identical_duplicate_is_counted_once_with_warning():
 
 def test_empty_input_returns_no_invented_day():
     assert normalize_accruals([], []) == {"daily": [], "products": [], "warnings": []}
+
+
+
+def test_delivery_only_posting_line_adds_no_sale_and_leaves_the_day_revenue_known():
+    # Real shape (2026-10-25): a posting line without a commission block is a delivery line; its total is its delivery.
+    known = posting_accrual(801, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    delivery_only = posting_accrual(802, total="-4.00", sale="0.00", commission="0.00", delivery="-4.00", sku="sku-2")
+    del delivery_only["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, delivery_only], [], costs={"sku-1": Decimal("20.00")})
+    daily = daily_row(normalized)
+    sku_2 = product_day(normalized, "sku-2")
+
+    assert daily["revenue"] == Decimal("200.00")
+    assert daily["commission"] == Decimal("30.00")
+    assert daily["logistics"] == Decimal("8.00")
+    assert daily["reconciliation_difference"] == Decimal("0.00")
+    assert daily["cogs"] == Decimal("20.00")  # SKU 1 only; SKU 2 sold nothing
+    assert sku_2["revenue"] == Decimal("0")
+    assert sku_2["cogs"] == Decimal("0")
+    assert not any("блок commission" in warning for warning in normalized["warnings"])
+
+
+
+def test_sku_margin_inputs_stay_known_next_to_a_delivery_only_line():
+    known = posting_accrual(811, total="166.00", sale="200.00", commission="-30.00", delivery="-4.00", sku="sku-1")
+    delivery_only = posting_accrual(812, total="-4.00", sale="0.00", commission="0.00", delivery="-4.00", sku="sku-2")
+    del delivery_only["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([known, delivery_only], [], costs={"sku-1": Decimal("20.00")})
+    sku_1 = product_day(normalized, "sku-1")
+
+    assert sku_1["marketplace_net"] == Decimal("166.00")
+    assert sku_1["cogs"] == Decimal("20.00")
+    assert sku_1["profitability_complete"] is True
+    assert product_day(normalized, "sku-2")["cogs"] == Decimal("0")
+    assert daily_row(normalized)["cost_known_revenue_share"] == Decimal("1.0000")
+
+
+def test_verified_return_posting_nets_its_unit_out_of_cogs_and_does_not_block_the_day():
+    # Shape of a real return accrual (owner-verified 2026-10-25): seller_price -4900, sale commission +2548 refunded,
+    # total -2352, quantity 1, FBO. Two units were sold the same day.
+    sale = posting_accrual(831, total="4165.00", sale="4900.00", commission="-735.00", delivery="0.00", sku="sku-1", quantity=2)
+    returned = posting_accrual(832, total="-2352.00", sale="-4900.00", commission="2548.00", delivery="0.00", sku="sku-1", quantity=1)
+    returned["posting"]["products"][0]["commission"]["seller_price"] = money("-4900.00")
+
+    normalized = normalize_accruals([sale, returned], [], costs={"sku-1": Decimal("2450.00")})
+    daily = daily_row(normalized)
+    product = product_day(normalized)
+
+    assert daily["sold_quantity"] == Decimal("2")
+    assert daily["returned_quantity"] == Decimal("1")
+    assert daily["net_quantity"] == Decimal("1")
+    # The returned unit goes back to stock and is resold, so COGS is cost × (2 sold − 1 returned).
+    assert product["cogs"] == Decimal("2450.00")
+    assert daily["cogs"] == Decimal("2450.00")
+    assert daily["reconciliation_difference"] == Decimal("0.00")
+    assert product["profitability_complete"] is True
+
+
+
+def test_delivery_only_day_has_zero_revenue_and_zero_units_not_unknown():
+    charge = posting_accrual(831, total="-97.00", sale="0.00", commission="0.00", delivery="-97.00", quantity=None)
+    del charge["posting"]["products"][0]["commission"]
+
+    normalized = normalize_accruals([charge], [])
+    daily = daily_row(normalized)
+
+    assert daily["revenue"] == Decimal("0")
+    assert daily["sold_quantity"] == Decimal("0")  # no sale line, so no units are claimed either way
+    assert daily["logistics"] == Decimal("97.00")
+    assert daily["reconciliation_difference"] == Decimal("0.00")

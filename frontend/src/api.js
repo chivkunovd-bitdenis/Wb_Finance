@@ -105,7 +105,7 @@ function getErrorMsg(data, fallback) {
   return fallback;
 }
 
-export async function register(email, password, wb_api_key, promo_code) {
+export async function register(email, password, wb_api_key, promo_code, invite_token) {
   const res = await apiFetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: headers(false),
@@ -114,6 +114,7 @@ export async function register(email, password, wb_api_key, promo_code) {
       password,
       wb_api_key: wb_api_key || null,
       promo_code: promo_code || null,
+      invite_token: invite_token || null,
     }),
   });
   const data = await res.json().catch(() => ({}));
@@ -533,6 +534,69 @@ export async function getBillingReminders() {
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// ── Billing: реквизиты покупателя и счета на оплату ──
+
+async function billingRequest(path, init = {}) {
+  const res = await apiFetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...headers(), ...(init.headers || {}) },
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Реквизиты покупателя для счёта или null, если ещё не сохранены. */
+export function getBillingRequisites() {
+  return billingRequest('/billing/requisites');
+}
+
+export function saveBillingRequisites(requisites) {
+  return billingRequest('/billing/requisites', { method: 'PUT', body: JSON.stringify(requisites) });
+}
+
+/** Период и сумма счёта без выпуска. marketplaces — массив кодов: ['wb'], ['ozon'] или ['wb', 'ozon']. */
+export function getBillingInvoicePreview(marketplaces) {
+  const query = new URLSearchParams({ marketplaces: marketplaces.join(',') });
+  return billingRequest(`/billing/invoices/preview?${query}`);
+}
+
+export function createBillingInvoice(marketplaces) {
+  return billingRequest('/billing/invoices', { method: 'POST', body: JSON.stringify({ marketplaces }) });
+}
+
+export function listBillingInvoices() {
+  return billingRequest('/billing/invoices');
+}
+
+/** Скачать PDF счёта: возвращает blob и имя файла из Content-Disposition. */
+export async function downloadBillingInvoicePdf(invoiceId) {
+  const res = await apiFetch(
+    `${API_BASE}/billing/invoices/${encodeURIComponent(invoiceId)}/pdf`,
+    { headers: headers() },
+  );
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  let filename = '';
+  if (m) {
+    try {
+      filename = decodeURIComponent(m[1].trim());
+    } catch {
+      filename = '';
+    }
+  }
+  const blob = await res.blob();
+  return { blob, filename };
 }
 
 // ── AI module (tasks + hypotheses) ────────────────────────────────────────────
@@ -1094,6 +1158,30 @@ export async function saveMarketplaceProductCost(sku, costPrice) {
   });
 }
 
+/** Daily P&L rows in the WB /dashboard/pnl shape for ozon or all; unknown days are null. */
+export async function getMarketplacePnl(marketplace, dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace, date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/pnl?${query}`, { signal });
+}
+
+/** Per product and day rows in the WB /dashboard/sku shape; `nm_id` is text and `marketplace` says whose product it is. */
+export async function getMarketplaceSku(marketplace, dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace, date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/sku?${query}`, { signal });
+}
+
+/** Product list with saved costs in the WB /dashboard/articles shape. */
+export async function getMarketplaceArticles(marketplace, { signal } = {}) {
+  const query = new URLSearchParams({ marketplace });
+  return marketplaceRequest(`/dashboard/marketplace/articles?${query}`, { signal });
+}
+
+/** Owner-entered Ozon operating expenses by day; days without a saved amount are absent. */
+export async function getMarketplaceExpenses(dateFrom, dateTo, { signal } = {}) {
+  const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+  return marketplaceRequest(`/dashboard/marketplace/expenses?${query}`, { signal });
+}
+
 // ── Stores (access + switching) ──────────────────────────────────────────────
 
 export async function getStores() {
@@ -1135,6 +1223,75 @@ export async function revokeStoreAccess(granteeEmail) {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({ grantee_email: granteeEmail }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+// ── Сотрудники: приглашения по ссылке ─────────────────────────────────────────
+
+/** Команда владельца: активные сотрудники и приглашения. Возвращает { managers, invites }. */
+export async function getStoreTeam() {
+  const res = await apiFetch(`${API_BASE}/stores/team`, { headers: headers() });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Создать приглашение. В ответе invite_url_path со ссылкой; токен виден только в этом ответе. */
+export async function createStoreInvite(email) {
+  const res = await apiFetch(`${API_BASE}/stores/invites`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ email }),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+export async function revokeStoreInvite(inviteId) {
+  const res = await apiFetch(`${API_BASE}/stores/invites/${encodeURIComponent(inviteId)}/revoke`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new Error('unauthorized');
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Публичная проверка приглашения по токену (вход не нужен). */
+export async function lookupStoreInvite(token) {
+  const res = await apiFetch(
+    `${API_BASE}/stores/invites/lookup?token=${encodeURIComponent(token)}`,
+    { headers: headers(false) },
+  );
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(parseApiErrorText(raw, res.status));
+  }
+  return res.json();
+}
+
+/** Принять приглашение текущим пользователем. Возвращает { owner_user_id, owner_email, status }. */
+export async function acceptStoreInvite(token) {
+  const res = await apiFetch(`${API_BASE}/stores/invites/accept`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ token }),
   });
   if (res.status === 401) throw new Error('unauthorized');
   if (!res.ok) {

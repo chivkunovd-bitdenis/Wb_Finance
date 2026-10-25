@@ -6,6 +6,9 @@ class RegisterRequest(BaseModel):
     password: str
     wb_api_key: str | None = None
     promo_code: str | None = None
+    # Токен приглашения сотрудника: если передан, email должен совпасть с приглашением,
+    # а доступ к кабинету селлера выдаётся в той же транзакции.
+    invite_token: str | None = None
 
 
 class LoginRequest(BaseModel):

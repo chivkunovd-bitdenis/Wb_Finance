@@ -15,14 +15,16 @@ import Billing from './screens/Billing';
 import Settings from './screens/Settings';
 import AiModule from './screens/AiModule';
 import AiChat from './screens/AiChat';
-import MarketplaceFinance, { WbOnlyNotice } from './screens/MarketplaceFinance';
+import MarketplaceNotices, { WbOnlyNotice } from './components/MarketplaceNotices';
 import { useStore } from './StoreContext';
 import { isFinanceMissingSyncActive, isFunnelTailSyncActive, syncProgressSignature } from './storeDataGuard';
 
 export default function Layout() {
   const { logout: authLogout } = useAuth();
   const { cache, updateCache, clearCache } = useCache();
-  const { activeStoreOwnerId, activeStoreLabel } = useStore();
+  const { activeStoreOwnerId, activeStoreLabel, stores, storesError } = useStore();
+  // Статус доступа зависит от активного магазина, поэтому запрашиваем его, когда список магазинов уже загружен.
+  const storesReady = stores.length > 0 || Boolean(storesError);
   const logout = useCallback(() => {
     clearCache();
     authLogout();
@@ -61,6 +63,8 @@ export default function Layout() {
   const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
   const [marketplace, setMarketplace] = useState('wb');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Marketplace sync progress asks the shared screens to reread, as the WB sync banners do.
+  const requestScreenRefresh = useCallback(() => setRefreshTrigger((t) => t + 1), []);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialTriggered, setInitialTriggered] = useState(false);
   const [waitForFunnelAfterInitial, setWaitForFunnelAfterInitial] = useState(false);
@@ -89,10 +93,13 @@ export default function Layout() {
   const financeStatus2025 = financeBackfill2025?.status || 'idle';
   const financeMissingActive = isFinanceMissingSyncActive(financeMissingSync);
   const funnelTailActive = isFunnelTailSyncActive(funnelTailSync);
+  const billingRequestRef = useRef(0);
   const loadBillingStatus = useCallback(async () => {
+    const requestId = ++billingRequestRef.current;
     try {
       const data = await api.getBillingStatus();
-      setBillingStatus(data);
+      // Ответ запроса, опередившего смену магазина, не должен перекрывать текущий статус доступа.
+      if (requestId === billingRequestRef.current) setBillingStatus(data);
     } catch (e) {
       if (e?.message === 'unauthorized') {
         clearCache();
@@ -329,13 +336,17 @@ export default function Layout() {
     return 'Дашборд';
   }, [location.pathname]);
 
-  /** Ошибка первичной синхронизации не должна блокировать «Подписку» и оплату. */
+  /** Синхронизация (загрузка или ошибка) не должна блокировать «Подписку» и «Настройки»: там меняют ключи и оплачивают. */
   const isBillingPath = (location.pathname || '').startsWith('/billing');
-  const blockContentForSyncError = Boolean(initialError) && !isBillingPath && marketplace === 'wb';
+  const isSettingsPath = (location.pathname || '').startsWith('/settings');
+  const isSyncExemptPath = isBillingPath || isSettingsPath;
+  const blockContentForSyncLoading = initialLoading && !isSyncExemptPath && marketplace === 'wb';
+  const blockContentForSyncError = Boolean(initialError) && !isSyncExemptPath && marketplace === 'wb';
 
   useEffect(() => {
+    if (!storesReady) return;
     loadBillingStatus();
-  }, [loadBillingStatus, location.pathname]);
+  }, [loadBillingStatus, location.pathname, activeStoreOwnerId, storesReady]);
 
   return (
     <div className={`layout ${marketplace === 'wb' ? '' : 'marketplace-mode'}`.trim()}>
@@ -362,7 +373,7 @@ export default function Layout() {
         />
 
         <div className="content">
-          {initialLoading && marketplace === 'wb' ? (
+          {blockContentForSyncLoading ? (
             <div className="loader-center">
               <div className="loader-spinner" />
               <p style={{ fontWeight: 700 }}>Первая синхронизация данных с Wildberries...</p>
@@ -378,14 +389,14 @@ export default function Layout() {
                 Быстрый чек: открой <code>{`${window.location.origin}/docs`}</code> и попробуй <code>POST /sync/initial</code>.
               </div>
               <div style={{ marginTop: 12, fontSize: 13 }}>
-                Раздел <strong>Подписка</strong> в боковом меню открывается даже при этой ошибке — можно оплатить доступ.
+                Разделы <strong>Подписка</strong> и <strong>Настройки</strong> в боковом меню открываются даже при этой ошибке — можно сменить ключ или оплатить доступ.
               </div>
             </div>
           ) : (
             <>
               {marketplace === 'wb' && (
                 <>
-              {initialError && isBillingPath && (
+              {initialError && isSyncExemptPath && (
                 <div
                   role="alert"
                   style={{
@@ -536,14 +547,30 @@ export default function Layout() {
               )}
 
               {billingStatus?.subscription_status !== 'lifetime' && billingStatus?.days_left <= 3 && (
-                <div className="alert alert-danger" style={{ marginBottom: 12 }}>
-                  Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
-                </div>
+                billingStatus?.access_source === 'granted' ? (
+                  <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+                    Доступ к магазину по подписке владельца: осталось дней {billingStatus.days_left}. Оплачивает владелец магазина.
+                  </div>
+                ) : (
+                  <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+                    Срок подписки/демо скоро закончится. Осталось дней: {billingStatus.days_left}. Перейди в раздел "Подписка".
+                  </div>
+                )
               )}
               {marketplace === 'wb' && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
                 <div className="marketplace-notice marketplace-notice-warning" data-testid="wb-profit-basis-note">
                   <strong>Маржа WB — предварительная оценка.</strong> В сохранённых данных нет полной детализации удержаний и оснований доплат, поэтому итог не сверён со всеми статьями финансового отчёта. Текущая себестоимость применяется к прошлым продажам; незаполненная себестоимость в прежнем расчёте считается нулевой.
                 </div>
+              )}
+              {marketplace !== 'wb'
+                && !billingStatus?.is_access_blocked
+                && ['/dashboard', '/articles', '/costs', '/operational-expenses'].includes(location.pathname) && (
+                <MarketplaceNotices
+                  marketplace={marketplace}
+                  range={range}
+                  refreshTrigger={refreshTrigger}
+                  onProgress={requestScreenRefresh}
+                />
               )}
               <Routes>
                 {billingStatus?.is_access_blocked ? (
@@ -560,13 +587,13 @@ export default function Layout() {
                   path="/dashboard"
                   element={marketplace === 'wb'
                     ? <Dashboard range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
-                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="dashboard" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                    : <Dashboard key={`${activeStoreOwnerId}:${marketplace}`} marketplace={marketplace} range={range} refreshTrigger={refreshTrigger} />}
                 />
                 <Route
                   path="/articles"
                   element={marketplace === 'wb'
                     ? <Articles range={range} refreshTrigger={refreshTrigger} cache={cache} updateCache={updateCache} />
-                    : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="articles" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                    : <Articles key={`${activeStoreOwnerId}:${marketplace}`} marketplace={marketplace} range={range} refreshTrigger={refreshTrigger} />}
                 />
                 <Route
                   path="/funnel"
@@ -584,7 +611,15 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="costs" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                  ) : (
+                    <Costs
+                      key={`${activeStoreOwnerId}:${marketplace}`}
+                      marketplace={marketplace}
+                      range={range}
+                      refreshTrigger={refreshTrigger}
+                      onRefresh={() => setRefreshTrigger((t) => t + 1)}
+                    />
+                  )}
                 />
                 <Route
                   path="/operational-expenses"
@@ -596,7 +631,15 @@ export default function Layout() {
                       updateCache={updateCache}
                       onRefresh={() => setRefreshTrigger((t) => t + 1)}
                     />
-                  ) : <MarketplaceFinance key={`${activeStoreOwnerId}:${marketplace}:${range.dateFrom}:${range.dateTo}`} view="expenses" marketplace={marketplace} range={range} refreshTrigger={0} />}
+                  ) : (
+                    <OperationalExpenses
+                      key={`${activeStoreOwnerId}:${marketplace}`}
+                      marketplace={marketplace}
+                      range={range}
+                      refreshTrigger={refreshTrigger}
+                      onRefresh={() => setRefreshTrigger((t) => t + 1)}
+                    />
+                  )}
                 />
                 <Route
                   path="/billing"

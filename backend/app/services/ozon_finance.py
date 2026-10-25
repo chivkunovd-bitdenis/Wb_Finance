@@ -178,6 +178,8 @@ def normalize_accruals(
     daily_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     products_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     seen_currencies: set[str] = set()
+    # Per accrual: does its total equal the sum of its complete details? Products rely on their own accruals only.
+    accrual_reconciled: dict[str, bool] = {}
 
     for accrual in unique:
         accrual_id = str(accrual["accrual_id"])
@@ -210,12 +212,14 @@ def normalize_accruals(
             # Sum magnitudes so failures cannot cancel within a day or across
             # days in the UI. Direction remains in the per-accrual warning.
             _sum(row, "reconciliation_difference", abs(difference))
+            accrual_reconciled[accrual_id] = difference == 0
             if difference != 0:
                 warnings.append(
                     f"{day}: начисление {accrual_id} не сверяется: total_amount отличается "
                     f"от суммы деталей на {difference} {currency}"
                 )
         else:
+            accrual_reconciled[accrual_id] = False
             row["reconciliation_difference"] = None
             row["_reconciliation_incomplete"] = True
 
@@ -228,34 +232,44 @@ def normalize_accruals(
     for key in sorted(daily_by_key):
         row = daily_by_key[key]
         day = row["date"]
+        day_gap_fields = _resolve_gap_fields(row)
         if row.pop("_reconciliation_incomplete", False):
             row["reconciliation_difference"] = None
             warnings.append(f"{day}: сверка недоступна, так как детали начислений неполные")
         sale_activity = row.pop("_has_sale_activity", False)
         quantity_complete = row.pop("_quantity_complete", True)
         quantity_sku_complete = row.pop("_quantity_sku_complete", True)
-        return_activity = row.pop("_return_activity", False)
+        row.pop("_return_activity", None)  # a return fee is money; it no longer gates units (owner, 2026-10-25)
         unscoped_return_activity = row.pop("_unscoped_return_activity", False)
         missing_sku_cost = False
         cogs = Decimal("0")
+        known_cost_revenue = Decimal("0")
+        cost_share_unknown = False
         for product_key, product in products_by_key.items():
             if product_key[0] != key[0] or product_key[2] != key[1]:
                 continue
             product.pop("_has_sale_activity", None)
             product_quantity_complete = product.pop("_quantity_complete", True)
-            product_return = product.pop("_return_activity", False) or unscoped_return_activity
             sold_quantity = product.get("sold_quantity")
-            product["returned_quantity"] = None if product_return or not product_quantity_complete else Decimal("0")
-            product["net_quantity"] = (
-                sold_quantity
-                if product_quantity_complete and not product_return and sold_quantity is not None
+            returned_quantity = product.get("returned_quantity")
+            if not product_quantity_complete:
+                product["returned_quantity"] = None
+                returned_quantity = None
+            # Owner decision (2026-10-25): units of a return posting go back to stock and are resold, so they
+            # net out of COGS. Return-related fees never block units; only a missing quantity makes units unknown.
+            return_blocked = False
+            net_quantity = (
+                sold_quantity - returned_quantity
+                if product_quantity_complete
+                and not return_blocked
+                and sold_quantity is not None
+                and returned_quantity is not None
                 else None
             )
-            if product_return or not product_quantity_complete:
+            product["net_quantity"] = net_quantity
+            if net_quantity is None:
                 product["cogs"] = None
-            elif sold_quantity is None:
-                product["cogs"] = None
-            elif sold_quantity == 0:
+            elif net_quantity == 0:
                 product["cogs"] = Decimal("0")
             else:
                 cost = _valid_cost((costs or {}).get(product_key[1]))
@@ -263,21 +277,40 @@ def normalize_accruals(
                     product["cogs"] = None
                     missing_sku_cost = True
                 else:
-                    product["cogs"] = cost * sold_quantity
+                    product["cogs"] = cost * net_quantity
                     cogs += product["cogs"]
+            # Revenue of SKUs whose COGS is known, to report how much of the day's revenue has a cost behind it.
+            if product.get("cogs") is not None:
+                product_revenue = product.get("revenue")
+                if product_revenue is None:
+                    cost_share_unknown = True
+                else:
+                    known_cost_revenue += product_revenue
 
         sold_quantity = row.get("sold_quantity")
-        row["returned_quantity"] = None if return_activity or not quantity_complete else Decimal("0")
+        returned_quantity = row.get("returned_quantity")
+        if not quantity_complete:
+            row["returned_quantity"] = None
+            returned_quantity = None
+        # Return-related fees never block units: returned units come only from return postings (owner, 2026-10-25),
+        # and a return fee is money, not a unit count. Real-data reconciliation: fee-based blocks cost 1.39M of COGS.
+        return_blocked = False
         row["net_quantity"] = (
-            sold_quantity if quantity_complete and not return_activity and sold_quantity is not None else None
+            sold_quantity - returned_quantity
+            if quantity_complete
+            and not return_blocked
+            and sold_quantity is not None
+            and returned_quantity is not None
+            else None
         )
-        if not sale_activity and quantity_complete:
+        if not sale_activity and quantity_complete and returned_quantity == 0:
             row["cogs"] = Decimal("0")
         elif (
             quantity_complete
             and quantity_sku_complete
-            and not return_activity
+            and not return_blocked
             and sold_quantity is not None
+            and returned_quantity is not None
             and not missing_sku_cost
         ):
             row["cogs"] = cogs
@@ -289,6 +322,14 @@ def normalize_accruals(
         row["tax"] = None
         row["operation_expenses"] = None
         row["margin"] = None
+        day_revenue = row.get("revenue")
+        # A partial day revenue (a posting's sale is missing) cannot anchor a share.
+        if cost_share_unknown or "revenue" in day_gap_fields or day_revenue is None or day_revenue == 0:
+            row["cost_known_revenue_share"] = None
+        else:
+            row["cost_known_revenue_share"] = min(
+                (known_cost_revenue / day_revenue).quantize(Decimal("0.0001")), Decimal("1")
+            )
         product_day_unknown_fields[key] = set(row.get("_unallocated_product_fields", set()))
         product_day_unknown_fields[key].update(row.get("_unscoped_uncertain_fields", set()))
         row.pop("_uncertain_fields", None)
@@ -305,7 +346,7 @@ def normalize_accruals(
             and reconciliation_matches
             and quantity_complete
             and quantity_sku_complete
-            and not return_activity
+            and not return_blocked
             and row.get("cogs") is not None
             and row.get("compensation") == 0
         )
@@ -326,6 +367,7 @@ def normalize_accruals(
 
     products_grouped: dict[str, dict[str, Any]] = {}
     for (day, sku, currency), row in sorted(products_by_key.items()):
+        _resolve_gap_fields(row)
         product_quantity_complete = row.pop("_quantity_complete", True)
         product_return_activity = row.pop("_return_activity", False)
         row.pop("_has_sale_activity", None)
@@ -340,12 +382,16 @@ def normalize_accruals(
         row.pop("_unallocated_product_fields", None)
         quality = daily_quality.get((day, currency), {})
         product_return_activity = product_return_activity or quality.get("unscoped_return_activity", False)
-        if product_return_activity:
-            row["returned_quantity"] = None
-            row["net_quantity"] = None
-            row["cogs"] = None
+        # A return signal blocks profit only when no return posting quantity explains it; COGS was decided above.
+        product_returned = row.get("returned_quantity")
+        product_return_blocked = product_return_activity and not (product_returned is not None and product_returned > 0)
         unknown_sku_posting = quality.get("unknown_sku_posting", False)
-        classification_complete = classification_complete and quality.get("accrual_classification_complete", False)
+        # A product's profit depends on its own postings and on the reconciliation of its own accruals.
+        # Another SKU's missing detail or a mismatched accrual on the same day must not hide this margin.
+        product_source_accruals = row["source_accrual_ids"]
+        product_reconciled = bool(product_source_accruals) and all(
+            accrual_reconciled.get(accrual_id, False) for accrual_id in product_source_accruals
+        )
         sku_allocation_complete = sku_allocation_complete and quality.get("sku_allocation_complete", False)
         if unknown_sku_posting:
             row["sold_quantity"] = None
@@ -365,7 +411,7 @@ def normalize_accruals(
             if (
                 sku_allocation_complete
                 and classification_complete
-                and quality.get("reconciliation_matches", False)
+                and product_reconciled
                 and not uncertain
             )
             else None
@@ -378,9 +424,9 @@ def normalize_accruals(
         row["profitability_complete"] = bool(
             classification_complete
             and sku_allocation_complete
-            and quality.get("reconciliation_matches", False)
+            and product_reconciled
             and product_quantity_complete
-            and not product_return_activity
+            and not product_return_blocked
             and not unknown_sku_posting
             and row.get("marketplace_net") is not None
             and row.get("cogs") is not None
@@ -477,6 +523,9 @@ def _empty_daily(day: str, currency: str) -> dict[str, Any]:
             "source_accrual_ids": [],
             "source_categories": [],
             "_uncertain_fields": set(),
+            # Known contributions per field and fields with a missing posting detail; see _mark_component_gap.
+            "_contributions": {},
+            "_gap_fields": set(),
             "_quantity_complete": True,
             "_quantity_sku_complete": True,
             "_unknown_sku_posting": False,
@@ -502,6 +551,8 @@ def _empty_product(day: str, sku: str, currency: str) -> dict[str, Any]:
             "currency": currency,
             "source_accrual_ids": [],
             "_uncertain_fields": set(),
+            "_contributions": {},
+            "_gap_fields": set(),
             "_has_sale_activity": False,
             "_quantity_complete": True,
             "_return_activity": False,
@@ -557,15 +608,42 @@ def _mark_unknown(
         )
         assert product is not None
         product["_classification_complete"] = False
-        product[field] = None
-        product["_uncertain_fields"].add(field)
+        if field != "other_expenses":  # the unclassified amount keeps its value in the SKU's other expenses
+            product[field] = None
+            product["_uncertain_fields"].add(field)
     else:
+        # Not-tied: the unclassified amount belongs to the day (unallocated), never to a particular SKU.
         daily["_unscoped_uncertain_fields"].add(field)
+
+
+def _mark_component_gap(
+    daily: dict[str, Any],
+    products: dict[tuple[str, str, str], dict[str, Any]],
+    field: str,
+    sku: str | None,
+    *,
+    day: str,
+    currency: str,
+    accrual_id: str,
+) -> None:
+    """One posting detail is missing: keep the sum of the components that are known.
+
+    Unlike _mark_unknown, the day and product amounts are not nulled. The missing detail
+    only invalidates classification (so profit stays unknown) for the affected SKU, or for
+    the whole day when the posting has no SKU identity.
+    """
+    daily["_classification_complete"] = False
+    daily["_gap_fields"].add(field)
+    if sku is None:
+        daily["_sku_allocation_complete"] = False
         for key, product in products.items():
             if key[0] == day and key[2] == currency:
                 product["_classification_complete"] = False
-                product[field] = None
-                product["_uncertain_fields"].add(field)
+    else:
+        product = _product(products, day=day, sku=sku, currency=currency, accrual_id=accrual_id)
+        assert product is not None
+        product["_classification_complete"] = False
+        product["_gap_fields"].add(field)
 
 
 def _metric_amount(field: str, source_amount: Decimal) -> Decimal:
@@ -646,14 +724,13 @@ def _add_component(
     accrual_id: str,
 ) -> None:
     if sku is None:
+        # Not-tied amounts belong to the day (unallocated_amount), not to any SKU (contract: non-item charges are
+        # not distributed to articles). Only the unknown bucket (other_expenses) may belong to any SKU, so it alone
+        # blanks that field for the SKUs of the day; a known charge such as logistics stays at day level.
         daily["_sku_allocation_complete"] = False
-        daily["_unallocated_product_fields"].add(field)
-        for key, existing in products.items():
-            if key[0] == day and key[2] == currency:
-                existing[field] = None
-                existing["_uncertain_fields"].add(field)
     metric_amount = _metric_amount(field, source_amount)
     _sum(daily, field, metric_amount)
+    _record_contribution(daily, field)
     product = _product(
         products,
         day=day,
@@ -667,6 +744,25 @@ def _add_component(
         _sum(daily, "unallocated_amount", source_amount)
     else:
         _sum(product, field, metric_amount)
+        _record_contribution(product, field)
+
+
+def _record_contribution(row: dict[str, Any], field: str) -> None:
+    contributions = row.setdefault("_contributions", {})
+    contributions[field] = contributions.get(field, 0) + 1
+
+
+def _resolve_gap_fields(row: dict[str, Any]) -> set[str]:
+    """A field with a missing posting detail keeps the sum of known details; with none known it is unknown.
+
+    Returns the fields that had a gap, so callers can tell when a total is only a partial sum.
+    """
+    contributions = row.pop("_contributions", {})
+    gap_fields = set(row.pop("_gap_fields", set()))
+    for field in gap_fields:
+        if not contributions.get(field):
+            row[field] = None
+    return gap_fields
 
 
 def _mark_return_activity(
@@ -680,9 +776,8 @@ def _mark_return_activity(
 ) -> None:
     daily["_return_activity"] = True
     if sku is None:
-        # A return-like fee without a SKU may affect any product's COGS.
+        # A return fee is money: units come only from return postings (owner, 2026-10-25), so it never blocks COGS.
         daily["_unscoped_return_activity"] = True
-        daily["_quantity_sku_complete"] = False
         return
     product = _product(
         products,
@@ -721,7 +816,7 @@ def _mark_return_fee_type(
     )
     warnings.append(
         f"{day}: начисление содержит тип логистики возврата ({name}); "
-        "количество, себестоимость возврата и прибыль не подтверждены"
+        "сумма учтена в расходах, возвращённые штуки берутся только из отправлений возврата"
     )
 
 
@@ -833,7 +928,7 @@ def _mark_return_delivery_service(
     )
     warnings.append(
         f"{day}: начисление содержит услугу логистики возврата ({name}); "
-        "количество, себестоимость возврата и прибыль не подтверждены"
+        "сумма учтена в расходах, возвращённые штуки берутся только из отправлений возврата"
     )
 
 
@@ -859,7 +954,7 @@ def _normalize_accrual(
             amount, component_currency = _parse_money(value, source)
         except OzonContractError:
             complete = False
-            _mark_unknown(
+            _mark_component_gap(
                 daily,
                 products,
                 field,
@@ -960,6 +1055,7 @@ def _normalize_accrual(
             warnings.append(f"{day}: в начислении {accrual_id} отсутствуют товары posting")
             return raw_total, False
 
+        null_delivery_skus: list[str | None] = []
         for detail in posting_products:
             if not isinstance(detail, dict):
                 complete = False
@@ -975,11 +1071,10 @@ def _normalize_accrual(
                 daily["_unknown_sku_posting"] = True
             commission = detail.get("commission")
             if not isinstance(commission, dict):
-                complete = False
-                for field in ("revenue", "commission", "cogs"):
-                    _mark_unknown(daily, products, field, sku, day=day, currency=currency, accrual_id=accrual_id)
-                _mark_quantity_unknown(daily, products, sku, day=day, currency=currency, accrual_id=accrual_id)
-                warnings.append(f"{day}: в начислении {accrual_id} отсутствует блок commission товара")
+                # A posting detail without a commission block is a delivery or service line, not a sale: sales carry
+                # sale_amount inside the commission block. Its units are neither sold nor returned, so they neither
+                # move COGS nor block it; its delivery charges are still counted below. Real-data check, 2026-10-25.
+                pass
             else:
                 sale = parse_component(commission.get("sale_amount"), "revenue", sku, "sale_amount")
                 if sale is not None:
@@ -1002,13 +1097,14 @@ def _normalize_accrual(
                         elif product is not None:
                             _sum(product, "sold_quantity", quantity)
                     elif sale <= 0 and quantity is not None:
-                        daily["_return_activity"] = True
-                        if product is not None:
-                            product["_return_activity"] = True
-                        warnings.append(
-                            f"{day}: начисление {accrual_id} содержит sale_amount <= 0; "
-                            "направление количества и себестоимость не подтверждены"
-                        )
+                        # Owner decision (2026-10-25): a return posting's units go back to the warehouse and are
+                        # resold, so the explicit posting quantity nets out of COGS for this SKU and day.
+                        _sum(daily, "returned_quantity", quantity)
+                        if sku is None:
+                            daily["_quantity_sku_complete"] = False
+                            daily["_sku_allocation_complete"] = False
+                        elif product is not None:
+                            _sum(product, "returned_quantity", quantity)
                     else:
                         _mark_quantity_unknown(
                             daily,
@@ -1044,9 +1140,14 @@ def _normalize_accrual(
                 parse_component(commission.get("commission"), "commission", sku, "commission")
 
             delivery = detail.get("delivery")
+            if delivery is None:
+                # A null delivery block (real data: return postings) carries no delivery charge. That holds only if
+                # the accrual total equals its other details, which is checked once the posting is parsed (below).
+                null_delivery_skus.append(sku)
+                continue
             if not isinstance(delivery, dict):
                 complete = False
-                _mark_unknown(daily, products, "logistics", sku, day=day, currency=currency, accrual_id=accrual_id)
+                _mark_component_gap(daily, products, "logistics", sku, day=day, currency=currency, accrual_id=accrual_id)
                 warnings.append(f"{day}: в начислении {accrual_id} отсутствует блок delivery товара")
                 continue
             delivery_total = delivery.get("total_accrued")
@@ -1106,6 +1207,13 @@ def _normalize_accrual(
                 complete = False
                 _mark_unknown(daily, products, "logistics", sku, day=day, currency=currency, accrual_id=accrual_id)
                 warnings.append(f"{day}: в начислении {accrual_id} нет суммы или списка услуг доставки")
+
+        if null_delivery_skus and (not complete or raw_total != authoritative_total):
+            # The total cannot be shown to equal the other details, so the null block may hide a charge.
+            complete = False
+            for sku in null_delivery_skus:
+                _mark_component_gap(daily, products, "logistics", sku, day=day, currency=currency, accrual_id=accrual_id)
+            warnings.append(f"{day}: в начислении {accrual_id} отсутствует блок delivery товара")
 
     elif category == "ITEM":
         item_fees = accrual.get("item_fees")

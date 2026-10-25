@@ -120,6 +120,52 @@ def list_outgoing_grants(db: Session, *, owner: User) -> list[StoreAccessGrant]:
     )
 
 
+def activate_grant_no_commit(
+    db: Session,
+    *,
+    owner_user_id: str,
+    viewer_user_id: str,
+    actor_user_id: str,
+    now: datetime,
+) -> StoreAccessGrant:
+    """
+    Создать или реактивировать доступ viewer к магазину owner и записать audit 'grant'.
+
+    Не делает commit: вызывающий код сам фиксирует транзакцию. Нужно, чтобы регистрация
+    по приглашению создавала пользователя и доступ одной транзакцией.
+    """
+    grant = (
+        db.query(StoreAccessGrant)
+        .filter(
+            StoreAccessGrant.store_owner_user_id == owner_user_id,
+            StoreAccessGrant.viewer_user_id == viewer_user_id,
+        )
+        .first()
+    )
+    if not isinstance(grant, StoreAccessGrant):
+        grant = StoreAccessGrant(
+            store_owner_user_id=owner_user_id,
+            viewer_user_id=viewer_user_id,
+            status="active",
+            revoked_at=None,
+        )
+        db.add(grant)
+    else:
+        grant.status = "active"
+        grant.revoked_at = None
+
+    db.add(
+        StoreAccessAuditEvent(
+            store_owner_user_id=owner_user_id,
+            viewer_user_id=viewer_user_id,
+            actor_user_id=actor_user_id,
+            action="grant",
+            created_at=now,
+        )
+    )
+    return grant
+
+
 def grant_store_access(db: Session, *, owner: User, grantee_email: str) -> StoreAccessGrant:
     email = (grantee_email or "").strip().lower()
     if not email:
@@ -131,35 +177,12 @@ def grant_store_access(db: Session, *, owner: User, grantee_email: str) -> Store
     if not isinstance(viewer, User):
         raise StoreAccessNotFoundError("User not found")
 
-    grant = (
-        db.query(StoreAccessGrant)
-        .filter(
-            StoreAccessGrant.store_owner_user_id == str(owner.id),
-            StoreAccessGrant.viewer_user_id == str(viewer.id),
-        )
-        .first()
-    )
-    now = utc_now()
-    if not isinstance(grant, StoreAccessGrant):
-        grant = StoreAccessGrant(
-            store_owner_user_id=str(owner.id),
-            viewer_user_id=str(viewer.id),
-            status="active",
-            revoked_at=None,
-        )
-        db.add(grant)
-    else:
-        grant.status = "active"
-        grant.revoked_at = None
-
-    db.add(
-        StoreAccessAuditEvent(
-            store_owner_user_id=str(owner.id),
-            viewer_user_id=str(viewer.id),
-            actor_user_id=str(owner.id),
-            action="grant",
-            created_at=now,
-        )
+    grant = activate_grant_no_commit(
+        db,
+        owner_user_id=str(owner.id),
+        viewer_user_id=str(viewer.id),
+        actor_user_id=str(owner.id),
+        now=utc_now(),
     )
     db.commit()
     db.refresh(grant)
