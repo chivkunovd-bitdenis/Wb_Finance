@@ -734,12 +734,16 @@ def _add_component(
     accrual_id: str,
 ) -> None:
     if sku is None:
+        # Not-tied amounts belong to the day (unallocated_amount), not to any SKU (contract: non-item charges are
+        # not distributed to articles). Only the unknown bucket (other_expenses) may belong to any SKU, so it alone
+        # blanks that field for the SKUs of the day; a known charge such as logistics stays at day level.
         daily["_sku_allocation_complete"] = False
-        daily["_unallocated_product_fields"].add(field)
-        for key, existing in products.items():
-            if key[0] == day and key[2] == currency:
-                existing[field] = None
-                existing["_uncertain_fields"].add(field)
+        if field == "other_expenses":
+            daily["_unallocated_product_fields"].add(field)
+            for key, existing in products.items():
+                if key[0] == day and key[2] == currency:
+                    existing[field] = None
+                    existing["_uncertain_fields"].add(field)
     metric_amount = _metric_amount(field, source_amount)
     _sum(daily, field, metric_amount)
     _record_contribution(daily, field)
@@ -1085,8 +1089,10 @@ def _normalize_accrual(
             if not isinstance(commission, dict):
                 complete = False
                 # Revenue and commission of the other postings stay known; only this posting's share is missing.
-                for field in ("revenue", "commission"):
-                    _mark_component_gap(daily, products, field, sku, day=day, currency=currency, accrual_id=accrual_id)
+                # A detail that declares no units is not a sale (a sale carries units): its revenue is zero, not unknown.
+                if _parse_quantity(detail.get("quantity")) is not None:
+                    for field in ("revenue", "commission"):
+                        _mark_component_gap(daily, products, field, sku, day=day, currency=currency, accrual_id=accrual_id)
                 # Units sold are stated only inside this block, so COGS for the SKU cannot be confirmed.
                 _mark_unknown(daily, products, "cogs", sku, day=day, currency=currency, accrual_id=accrual_id)
                 _mark_quantity_unknown(daily, products, sku, day=day, currency=currency, accrual_id=accrual_id)

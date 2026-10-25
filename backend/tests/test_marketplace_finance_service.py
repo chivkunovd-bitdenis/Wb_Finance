@@ -256,20 +256,20 @@ def test_ozon_settings_drive_only_ozon_tax_and_expenses(real_db_session, monkeyp
     )
     assert ozon["daily"][0]["tax"] == 12.0
     assert ozon["daily"][0]["operation_expenses"] == 5.0
-    # Margin sums the SKUs with a known cost (this SKU: net 185 − COGS 20 − tax 12 = 153) and subtracts entered
-    # operating expenses (5), with no confirmation gate: 148. The day-level net (150) is not used for profit.
-    assert ozon["daily"][0]["margin"] == 148.0
+    # Owner rule (2026-10-25): SKU margin = revenue 200 − charges (none on this SKU row) − COGS 20 − tax 12 = 168;
+    # day margin = 168 + not-tied 1 − entered expenses 5 = 164, with no confirmation gate.
+    assert ozon["daily"][0]["margin"] == 164.0
     assert ozon["accounting_basis"]["margin"] == "current_cost_estimate"
     assert ozon["accounting_basis"]["costs"] == "current_sku_cost_restates_all_dates"
     assert all_markets["accounting_basis"]["wb_fully_reconciled"] is False
     assert all_markets["accounting_basis"]["margin"] == "preliminary_wb_and_ozon"
     assert any("старый импорт WB" in warning for warning in all_markets["warnings"])
     assert ozon["products"][0]["daily"][0]["tax"] == 12.0
-    assert ozon["products"][0]["daily"][0]["margin"] == 153.0
+    assert ozon["products"][0]["daily"][0]["margin"] == 168.0  # 200 − 0 − 20 − 12
     assert ozon["products"][0]["daily"][0]["operation_expenses"] is None
     assert all_markets["daily"][0]["tax"] == 27.0
     assert all_markets["daily"][0]["operation_expenses"] == 8.0
-    assert all_markets["daily"][0]["margin"] == 250.0  # WB saved margin 102 + Ozon known-cost margin 148
+    assert all_markets["daily"][0]["margin"] == 266.0  # WB saved margin 102 + Ozon day margin 164
 
     # Ozon tax follows the owner’s existing WB setting on the next GET.
     owner.tax_rate = Decimal("0.08")
@@ -282,7 +282,7 @@ def test_ozon_settings_drive_only_ozon_tax_and_expenses(real_db_session, monkeyp
         date_to=day,
     )
     assert changed_rate["daily"][0]["tax"] == 16.0
-    assert changed_rate["daily"][0]["margin"] == 144.0  # 185 − 20 − 16 − 5
+    assert changed_rate["daily"][0]["margin"] == 160.0  # 200 − 20 − 16 + 1 − 5
     assert changed_rate["products"][0]["daily"][0]["tax"] == 16.0
     assert get_marketplace_settings(db=real_db_session, user_id=owner_id)["tax_rate"] == 0.08
     assert real_db_session.query(PnlDaily).filter_by(user_id=owner_id, date=day).one().tax == Decimal("15.00")
@@ -345,7 +345,8 @@ def test_ozon_margin_subtracts_entered_operating_expenses_without_a_confirmation
     assert result["daily"][0]["tax"] == 6.0
     assert result["daily"][0]["operation_expenses"] == 5.0
     assert result["daily"][0]["cogs"] == 20.0
-    assert result["daily"][0]["margin"] == 39.0  # 70 − 20 − 6 − 5
+    # SKU: 100 − charges 15 (commission 10, logistics 4, other 1) − COGS 20 − tax 6 = 59; day: 59 + not-tied 1 − 5 = 55.
+    assert result["daily"][0]["margin"] == 55.0
 
 
 def test_all_overview_marks_unconfigured_ozon_incomplete_but_retains_wb_snapshot(real_db_session):
@@ -480,7 +481,8 @@ def test_all_overview_combines_both_sources_once_and_keeps_products_separate(rea
     assert result["daily"][0]["commission"] == 35.0
     assert result["daily"][0]["operation_expenses"] == 3.0
     assert result["daily"][0]["tax"] == 21.0
-    assert result["daily"][0]["margin"] == 151.0
+    # WB saved margin 102 + Ozon day margin 63 (SKU 100 − acquiring 2 − COGS 30 − tax 6 + not-tied 1).
+    assert result["daily"][0]["margin"] == 165.0
     assert result["daily"][0]["acquiring"] is None
     assert result["daily"][0]["sold_quantity"] is None
     assert ozon_only["daily"][0]["acquiring"] == 2.0
