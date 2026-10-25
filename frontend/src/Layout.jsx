@@ -62,6 +62,14 @@ export default function Layout() {
   });
   const [dateToDraft, setDateToDraft] = useState(() => getDefaultRange().dateTo);
   const [marketplace, setMarketplace] = useState('wb');
+  // Until the store's marketplaces are known, WB first sync is not started: an Ozon-only store opens on Ozon instead.
+  const [marketplaceResolved, setMarketplaceResolved] = useState(false);
+  const marketplaceChosenRef = useRef(false);
+  const chooseMarketplace = useCallback((value) => {
+    marketplaceChosenRef.current = true;
+    setMarketplace(value);
+    setMarketplaceResolved(true);
+  }, []);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   // Marketplace sync progress asks the shared screens to reread, as the WB sync banners do.
   const requestScreenRefresh = useCallback(() => setRefreshTrigger((t) => t + 1), []);
@@ -124,12 +132,33 @@ export default function Layout() {
     setRefreshTrigger((t) => t + 1);
   }, [activeStoreOwnerId]);
 
+  // A store with Ozon connected and no WB data opens on Ozon, unless the user has already picked a marketplace.
+  useEffect(() => {
+    let cancelled = false;
+    marketplaceChosenRef.current = false;
+    setMarketplaceResolved(false);
+    Promise.all([
+      api.getMarketplaceConnection().catch(() => null),
+      api.getDashboardState().catch(() => null),
+    ]).then(([connection, state]) => {
+      if (cancelled) return;
+      if (!marketplaceChosenRef.current && connection?.configured && state && !state.has_data) {
+        setMarketplace('ozon');
+      }
+      setMarketplaceResolved(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStoreOwnerId]);
+
   // Инициализация как в GAS: проверяем состояние данных и при необходимости запускаем первую синхронизацию
   useEffect(() => {
     if (marketplace !== 'wb') {
       setInitialLoading(false);
       return undefined;
     }
+    if (!marketplaceResolved) return undefined;
     let cancelled = false;
     let attempts = 0;
 
@@ -139,6 +168,15 @@ export default function Layout() {
         if (cancelled) return;
         setDashboardState(state);
         attempts += 1;
+
+        if (!state.has_data && state.wb_auth_error) {
+          // Wildberries rejected the key on the last sync: say so at once, without a loader or another first sync.
+          setInitialError(
+            `Wildberries отклонил API-ключ (${state.wb_auth_error.replace('wb_http_', 'ошибка ')}). Замените ключ в разделе «Подписка» — после сохранения загрузка начнётся заново.`,
+          );
+          setInitialLoading(false);
+          return;
+        }
 
         if (!state.has_data && !initialTriggered) {
           // Новый пользователь — запускаем первую синхронизацию за последние 30 дней
@@ -213,7 +251,7 @@ export default function Layout() {
     return () => {
       cancelled = true;
     };
-  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId, marketplace]);
+  }, [initialTriggered, waitForFunnelAfterInitial, authLogout, clearCache, activeStoreOwnerId, marketplace, marketplaceResolved]);
 
   // Если данных 2026 ещё нет — запускаем фоновую догрузку 2026 (как в GAS loader-2026)
   useEffect(() => {
@@ -369,11 +407,16 @@ export default function Layout() {
           }}
           onOpenBilling={() => navigate('/billing')}
           marketplace={marketplace}
-          onMarketplaceChange={setMarketplace}
+          onMarketplaceChange={chooseMarketplace}
         />
 
         <div className="content">
-          {blockContentForSyncLoading ? (
+          {blockContentForSyncLoading && !marketplaceResolved ? (
+            <div className="loader-center">
+              <div className="loader-spinner" />
+              <p>Загрузка данных...</p>
+            </div>
+          ) : blockContentForSyncLoading ? (
             <div className="loader-center">
               <div className="loader-spinner" />
               <p style={{ fontWeight: 700 }}>Первая синхронизация данных с Wildberries...</p>

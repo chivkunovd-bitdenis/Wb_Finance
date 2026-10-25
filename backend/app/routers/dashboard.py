@@ -20,7 +20,7 @@ from app.models.article import Article
 from app.models.funnel_backfill_state import FunnelBackfillState
 from app.models.funnel_daily import FunnelDaily
 from app.models.finance_backfill_state import FinanceBackfillState
-from app.models.wb_orchestrator_state import WbOrchestratorState
+from app.models.wb_orchestrator_state import WB_AUTH_ERROR_STEPS, WbOrchestratorState
 from app.models.raw_sales import RawSale
 from app.models.sku_daily import SkuDaily
 from app.models.operational_expense import OperationalExpense
@@ -605,9 +605,22 @@ def get_dashboard_state(
     _repair_hollow_funnel_ytd(db, str(store_user.id), y, y_start, through_cap)
     # Историческую YTD-догрузку воронки больше не автозапускаем при входе:
     # воронка теперь rolling 7 дней, а приоритет у финансового контура.
-    funnel_tail_requested = _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
-    if not funnel_tail_requested:
-        funnel_tail_requested = _maybe_start_funnel_tail_repair(db, store_user, through_cap)
+    # The orchestrator stops with status "error" and last_step wb_http_401/403 when Wildberries rejects the key. Until
+    # the key is replaced (PUT /auth/wb-key clears the stop), a dashboard visit must not wake WB sync again, and the UI
+    # shows the error at once instead of a loader.
+    orchestrator = db.query(WbOrchestratorState).filter(WbOrchestratorState.user_id == str(store_user.id)).first()
+    wb_auth_error = (
+        orchestrator.last_step
+        if orchestrator is not None
+        and orchestrator.status == "error"
+        and orchestrator.last_step in WB_AUTH_ERROR_STEPS
+        else None
+    )
+    funnel_tail_requested = False
+    if wb_auth_error is None:
+        funnel_tail_requested = _maybe_start_finance_backfill(db, store_user, y, y_start, through_cap)
+        if not funnel_tail_requested:
+            funnel_tail_requested = _maybe_start_funnel_tail_repair(db, store_user, through_cap)
 
     fb_row = (
         db.query(FunnelBackfillState)
@@ -718,6 +731,7 @@ def get_dashboard_state(
 
     return {
         "has_data": has_data,
+        "wb_auth_error": wb_auth_error,
         "min_date": min_date.isoformat() if min_date else None,
         "max_date": max_date.isoformat() if max_date else None,
         "has_2025": has_2025,

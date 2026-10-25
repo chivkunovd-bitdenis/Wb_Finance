@@ -8,6 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
+# Terminal orchestrator steps that mean Wildberries rejected the seller's API key (see wb_orchestrator_tick).
+WB_AUTH_ERROR_STEPS = ("wb_http_401", "wb_http_403")
+
 
 class WbOrchestratorState(Base):
     """
