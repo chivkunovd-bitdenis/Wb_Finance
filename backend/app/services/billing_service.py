@@ -10,6 +10,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from app.models.license import License
+from app.models.ozon import OzonConnection
 from app.models.payment import Payment
 from app.models.promo_code import PromoCode
 from app.models.reminder_log import ReminderLog
@@ -124,12 +125,20 @@ def _is_lifetime(db: Session, user_id: str) -> bool:
     return bool(lic.status == "lifetime")
 
 
+def _has_ozon_connection(db: Session, user_id: str) -> bool:
+    return db.query(OzonConnection).filter(OzonConnection.user_id == user_id).first() is not None
+
+
 def start_trial_if_needed(db: Session, user: User) -> Subscription:
     """Не перезаписывать license на trial, если уже выдан lifetime (ручной/promo grant)."""
     if _is_lifetime(db, str(user.id)):
         return get_or_create_subscription(db, str(user.id))
     sub = get_or_create_subscription(db, str(user.id))
-    if sub.trial_started_at or not user.wb_api_key or not user.wb_api_key.strip():
+    if sub.trial_started_at or sub.status == "expired":
+        return sub
+    has_wb = bool(user.wb_api_key and user.wb_api_key.strip())
+    has_ozon = _has_ozon_connection(db, str(user.id))
+    if not has_wb and not has_ozon:
         return sub
     now = utc_now()
     sub.status = "trial"
@@ -201,11 +210,11 @@ def require_access(db: Session, user: User) -> None:
         return
     sub = get_or_create_subscription(db, str(user.id))
     now = utc_now()
-    if sub.status == "inactive" and not sub.trial_ends_at and not sub.current_period_end:
-        return
     valid_until = sub.current_period_end or sub.trial_ends_at
     if valid_until and valid_until > now and sub.status in {"trial", "active"}:
         return
+    if sub.status == "inactive" and not valid_until:
+        raise PermissionError("Подписка или демо-период истекли. Продлите доступ на странице оплаты.")
     sub.status = "expired"
     _upsert_license(db, str(user.id), "expired", valid_until, "subscription")
     db.commit()

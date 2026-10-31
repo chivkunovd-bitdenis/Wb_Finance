@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 from app.db import get_db
 from app.dependencies import get_store_context
+from app.services.billing_service import start_trial_if_needed
 from app.services.marketplace_finance_service import (
     MarketplaceFinanceError,
     build_marketplace_article_rows,
@@ -242,6 +243,9 @@ def put_ozon_connection(
         )
     except MarketplaceFinanceError as exc:
         raise _translate_service_error(exc) from exc
+    sub = start_trial_if_needed(db, store.store_owner)
+    if sub in db.new or db.is_modified(sub):
+        db.commit()
     # A saved connection starts the year-to-date backfill automatically; the save itself never waits for it.
     run = schedule_initial_backfill(db=db, user_id=user_id, today=_today())
     if run is not None:

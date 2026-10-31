@@ -86,7 +86,7 @@ def get_current_user(
             detail="Аккаунт деактивирован",
         )
     # Для существующих аккаунтов (созданных до billing) запускаем trial лениво,
-    # когда у пользователя уже есть WB API key.
+    # когда есть WB API key или сохранённое подключение Ozon.
     sub = start_trial_if_needed(db, user)
     if sub in db.new or db.is_modified(sub):
         db.commit()
@@ -98,6 +98,7 @@ def get_current_user(
         or path.startswith("/billing")
         or path.startswith("/health")
         or (request.method == "GET" and path == "/stores")
+        or path == "/dashboard/marketplace/connection"
     )
     if not allow_without_access:
         subject = _billing_subject(db, request, user)
