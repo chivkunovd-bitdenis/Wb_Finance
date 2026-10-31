@@ -14,6 +14,7 @@ from app.main import app
 from app.db import get_db
 from app.dependencies import get_store_context
 from app.services.store_access_service import StoreContext
+from tests.billing_fixtures import wire_mock_session_billing
 
 FAKE_HASH = "$2b$12$faketesthash"
 
@@ -45,8 +46,8 @@ def _mock_get_db_with_user():
             chain.first.return_value = user
         return chain
 
-    session.query.side_effect = _query
     session.get.return_value = user
+    wire_mock_session_billing(session, user.id, fallback_query=_query)
     try:
         yield session
     finally:
@@ -80,8 +81,13 @@ def _mock_get_db_with_user_no_key():
             chain.first.return_value = user
         return chain
 
-    session.query.side_effect = _query
     session.get.return_value = user
+    wire_mock_session_billing(
+        session,
+        user.id,
+        preactivated_trial=True,
+        fallback_query=_query,
+    )
     try:
         yield session
     finally:
@@ -147,8 +153,8 @@ def client_sync_sales_retry_scheduled():
                 chain.first.return_value = user
             return chain
 
-        session.query.side_effect = _query
         session.get.return_value = user
+        wire_mock_session_billing(session, user.id, fallback_query=_query)
         try:
             yield session
         finally:
@@ -200,8 +206,8 @@ def client_sync_sales_running():
                 chain.first.return_value = user
             return chain
 
-        session.query.side_effect = _query
         session.get.return_value = user
+        wire_mock_session_billing(session, user.id, fallback_query=_query)
         try:
             yield session
         finally:
@@ -254,8 +260,8 @@ def client_sync_granted():
             chain.first.return_value = viewer
             return chain
 
-        session.query.side_effect = _query
         session.get.return_value = viewer
+        wire_mock_session_billing(session, viewer.id, fallback_query=_query)
         try:
             yield session
         finally:

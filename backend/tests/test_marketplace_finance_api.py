@@ -22,6 +22,7 @@ from app.models.ozon import (
 )
 from app.models.store_access_grant import StoreAccessGrant
 from app.models.user import User
+from tests.billing_fixtures import grant_active_trial
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +147,7 @@ def test_read_endpoints_do_not_make_ozon_provider_calls(real_db_session, monkeyp
     owner = _user("ozon-no-get-provider@example.com")
     real_db_session.add(owner)
     real_db_session.commit()
+    grant_active_trial(real_db_session, str(owner.id))
     _install_db_override(real_db_session)
 
     class UnexpectedProviderCall:
@@ -185,6 +187,8 @@ def test_ozon_finance_settings_and_expenses_are_owner_scoped(real_db_session):
         )
     )
     real_db_session.commit()
+    grant_active_trial(real_db_session, str(owner.id))
+    grant_active_trial(real_db_session, str(other_owner.id))
     _install_db_override(real_db_session)
 
     try:

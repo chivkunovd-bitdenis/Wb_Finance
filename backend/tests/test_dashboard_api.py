@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.db import get_db
+from tests.billing_fixtures import wire_mock_session_billing
 
 FAKE_HASH = "$2b$12$faketesthash"
 
@@ -100,7 +101,7 @@ def _mock_get_db_dashboard():
             return op_chain
         return data_chain
 
-    session.query.side_effect = _query
+    wire_mock_session_billing(session, user.id, fallback_query=_query)
     try:
         yield session
     finally:

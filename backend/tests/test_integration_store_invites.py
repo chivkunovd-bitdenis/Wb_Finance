@@ -20,6 +20,7 @@ from app.main import app
 from app.models.store_access_audit_event import StoreAccessAuditEvent
 from app.models.store_invite import StoreInvite
 from app.models.user import User
+from tests.billing_fixtures import grant_active_trial
 
 
 @pytest.fixture
@@ -158,6 +159,7 @@ def test_accept_with_matching_email_grants_store_access(client_real_db, real_db_
     invitee = _mk_user("invitee-accept@example.com", wb_api_key=None)
     real_db_session.add_all([owner, invitee])
     real_db_session.commit()
+    grant_active_trial(real_db_session, str(invitee.id))
 
     body = _create_invite(client_real_db, owner, "invitee-accept@example.com")
     raw = _raw_token_from_path(body["invite_url_path"])
@@ -216,6 +218,7 @@ def test_accept_expired_invite_returns_410(client_real_db, real_db_session):
     invitee = _mk_user("invitee-7@example.com", wb_api_key=None)
     real_db_session.add_all([owner, invitee])
     real_db_session.commit()
+    grant_active_trial(real_db_session, str(invitee.id))
 
     body = _create_invite(client_real_db, owner, "invitee-7@example.com")
     raw = _raw_token_from_path(body["invite_url_path"])
@@ -232,6 +235,7 @@ def test_accept_revoked_invite_returns_400(client_real_db, real_db_session):
     invitee = _mk_user("invitee-8@example.com", wb_api_key=None)
     real_db_session.add_all([owner, invitee])
     real_db_session.commit()
+    grant_active_trial(real_db_session, str(invitee.id))
 
     body = _create_invite(client_real_db, owner, "invitee-8@example.com")
     raw = _raw_token_from_path(body["invite_url_path"])
