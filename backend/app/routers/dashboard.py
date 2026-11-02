@@ -907,12 +907,17 @@ def get_funnel(
         db.query(
             FunnelDaily,
             latest_vendor_code_sq.c.vendor_code.label("latest_vendor_code"),
+            Article.cost_price.label("order_unit_cost"),
         )
         .outerjoin(
             latest_vendor_code_sq,
             (latest_vendor_code_sq.c.user_id == FunnelDaily.user_id)
             & (latest_vendor_code_sq.c.nm_id == FunnelDaily.nm_id)
             & (latest_vendor_code_sq.c.rn == 1),
+        )
+        .outerjoin(
+            Article,
+            (Article.user_id == FunnelDaily.user_id) & (Article.nm_id == FunnelDaily.nm_id),
         )
         .filter(FunnelDaily.user_id == current_user.id)
     )
@@ -923,9 +928,14 @@ def get_funnel(
     rows = q.order_by(FunnelDaily.date, FunnelDaily.nm_id).all()
 
     result: list[FunnelDayResponse] = []
-    for r, latest_vendor_code in rows:
+    for r, latest_vendor_code, order_unit_cost in rows:
         day_vendor_code = _normalize_vendor_code(r.vendor_code)
         resolved_vendor_code = day_vendor_code or _normalize_vendor_code(latest_vendor_code)
+        order_cogs = (
+            0.0 if r.order_count == 0 else
+            float(order_unit_cost * r.order_count)
+            if r.order_count is not None and order_unit_cost is not None else None
+        )
         result.append(
             FunnelDayResponse(
                 date=r.date.isoformat(),
@@ -935,6 +945,7 @@ def get_funnel(
                 cart_count=r.cart_count,
                 order_count=r.order_count,
                 order_sum=_num(r.order_sum),
+                order_cogs=order_cogs,
                 buyout_percent=_num(r.buyout_percent),
                 cr_to_cart=_num(r.cr_to_cart),
                 cr_to_order=_num(r.cr_to_order),

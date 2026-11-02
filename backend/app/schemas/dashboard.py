@@ -66,6 +66,7 @@ class FunnelDayResponse(BaseModel):
     cart_count: int | None
     order_count: int | None
     order_sum: float | None
+    order_cogs: float | None
     buyout_percent: float | None
     cr_to_cart: float | None
     cr_to_order: float | None

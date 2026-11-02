@@ -7,6 +7,11 @@ import KpiCard from '../components/KpiCard';
 import TableExpandButton from '../components/TableExpandButton';
 import useFullscreenCard from '../components/useFullscreenCard';
 import { addKnown, isKnown, percentOf, sumKnown, toNumber } from '../marketplaceValues';
+import {
+  ORDER_COGS_SHARE_HEADER_TITLE,
+  buildOrderCogsShareByDate,
+  computePeriodOrderCogsShare,
+} from '../orderCogsShare';
 
 function computeCogsFromShare(revenue, sharePct) {
   const rev = Number(revenue);
@@ -69,7 +74,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
   const [funnelRows, setFunnelRows] = useState(() =>
     cache?.funnel && Array.isArray(cache.funnel) ? cache.funnel : [],
   );
-  const [_, setLoadingFunnel] = useState(() => !(cache?.funnel?.length));
+  const [loadingFunnel, setLoadingFunnel] = useState(() => !(cache?.funnel?.length));
   const daysCount = useMemo(() => {
     if (!dateFrom || !dateTo) return 0;
     const a = new Date(dateFrom + 'T00:00:00');
@@ -165,22 +170,24 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
     }
     if (!dateFrom || !dateTo) return;
     const reqStore = storeId;
+    let cancelled = false;
     setLoadingFunnel(true);
     setErrorFunnel('');
     api
       .getFunnel(dateFrom, dateTo)
       .then((data) => {
-        if (isStaleStoreResponse(reqStore, storeId)) return;
+        if (cancelled || isStaleStoreResponse(reqStore, storeId)) return;
         const list = Array.isArray(data) ? data : [];
         setFunnelRows(list);
         if (typeof updateCache === 'function') updateCache('funnel', list, reqStore);
       })
       .catch((e) => {
-        if (!isStaleStoreResponse(reqStore, storeId)) setErrorFunnel(e.message || 'Ошибка загрузки');
+        if (!cancelled && !isStaleStoreResponse(reqStore, storeId)) setErrorFunnel(e.message || 'Ошибка загрузки');
       })
       .finally(() => {
-        if (!isStaleStoreResponse(reqStore, storeId)) setLoadingFunnel(false);
+        if (!cancelled && !isStaleStoreResponse(reqStore, storeId)) setLoadingFunnel(false);
       });
+    return () => { cancelled = true; };
   }, [dateFrom, dateTo, refreshTrigger, updateCache, storeId, isWb]);
 
   const filtered = useMemo(() => {
@@ -240,6 +247,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
   }, [filtered, planFactOn]);
 
   const STORAGE_KEY = 'wb_finance_dashboard_columns_v1';
+  const ORDER_COGS_SHARE_COLUMN_KEY = 'order_cogs_share';
 
   const mandatoryKeys = useMemo(() => (['revenue', 'margin', 'margin_pct']), []);
 
@@ -255,6 +263,13 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
       // "Себес" считается от "Доля себеса" и выручки плана (read-only).
       { label: 'Себес', key: 'cogs', isPercent: false, editable: false },
       { label: 'Доля себеса', key: 'cogs_share', isPercent: true, editable: true },
+      {
+        label: 'Доля себеса заказов',
+        key: ORDER_COGS_SHARE_COLUMN_KEY,
+        isPercent: true,
+        editable: false,
+        headerTitle: ORDER_COGS_SHARE_HEADER_TITLE,
+      },
       { label: 'Налог', key: 'tax', isPercent: false, editable: true },
       { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
       { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
@@ -275,6 +290,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
   }, [allColumns, mandatoryKeys]);
 
   const [visibleColumnKeys, setVisibleColumnKeys] = useState(() => allColumns.map((c) => c.key));
+  const [orderCogsShareColumnMigrated, setOrderCogsShareColumnMigrated] = useState(true);
 
   // Dropdown state for columns settings (gear).
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
@@ -288,11 +304,20 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
       const parsed = JSON.parse(raw);
       const keys = Array.isArray(parsed?.visibleColumnKeys) ? parsed.visibleColumnKeys : null;
       const pf = typeof parsed?.planFactEnabled === 'boolean' ? parsed.planFactEnabled : null;
+      const migrated = parsed?.order_cogs_share_column_migrated === true;
 
       const allowed = new Set(allColumns.map((c) => c.key));
-      const nextKeys = Array.isArray(keys) ? keys.filter((k) => allowed.has(k)) : null;
+      let nextKeys = Array.isArray(keys) ? keys.filter((k) => allowed.has(k)) : null;
 
-      if (nextKeys && nextKeys.length) setVisibleColumnKeys(nextKeys);
+      if (nextKeys && nextKeys.length) {
+        if (!migrated && !nextKeys.includes(ORDER_COGS_SHARE_COLUMN_KEY)) {
+          nextKeys = [...nextKeys, ORDER_COGS_SHARE_COLUMN_KEY];
+          setOrderCogsShareColumnMigrated(true);
+        } else if (migrated) {
+          setOrderCogsShareColumnMigrated(true);
+        }
+        setVisibleColumnKeys(nextKeys);
+      }
       if (pf !== null) setPlanFactEnabled(pf);
     } catch {
       // ignore malformed storage
@@ -307,12 +332,14 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
         JSON.stringify({
           visibleColumnKeys,
           planFactEnabled,
+          order_cogs_share_column_migrated:
+            orderCogsShareColumnMigrated || visibleColumnKeys.includes(ORDER_COGS_SHARE_COLUMN_KEY),
         }),
       );
     } catch {
       // ignore storage quota / private mode
     }
-  }, [visibleColumnKeys, planFactEnabled]);
+  }, [visibleColumnKeys, planFactEnabled, orderCogsShareColumnMigrated]);
 
   // Close menu on outside click / ESC.
   useEffect(() => {
@@ -471,6 +498,23 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
     }
     return map;
   }, [funnelRows, dateFrom, dateTo]);
+
+  const orderCogsShareReady = isWb && !loadingFunnel && !errorFunnel;
+
+  const periodDates = useMemo(
+    () => (filtered || []).map((r) => r.date).filter(Boolean),
+    [filtered],
+  );
+
+  const orderCogsShareByDate = useMemo(() => {
+    if (!orderCogsShareReady) return {};
+    return buildOrderCogsShareByDate(funnelRows, dateFrom, dateTo);
+  }, [orderCogsShareReady, funnelRows, dateFrom, dateTo]);
+
+  const periodOrderCogsShare = useMemo(() => {
+    if (!orderCogsShareReady) return null;
+    return computePeriodOrderCogsShare(orderCogsShareByDate, periodDates);
+  }, [orderCogsShareReady, orderCogsShareByDate, periodDates]);
 
   const labels = filtered.map((r) => formatDate(r.date));
   // An unknown day is a gap in the line, not a point at zero.
@@ -631,7 +675,9 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
               <tr>
                 <th className="left">Дата</th>
                 {cols.map((c) => (
-                  <th key={c.key}>{c.label}</th>
+                  <th key={c.key} title={c.headerTitle || undefined}>
+                    {c.label}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -694,6 +740,10 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
                       const marginPct = percentOf(margin, revenue);
                       const roi = cogs == null || margin == null ? null : (cogs > 0 ? (margin / cogs) * 100 : 0);
 
+                      const orderCogsShareDay = orderCogsShareReady
+                        ? (orderCogsShareByDate[r.date]?.share ?? null)
+                        : null;
+
                       const valueByKey = {
                         revenue,
                         orders_sum: orders,
@@ -704,6 +754,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
                         penalties,
                         cogs,
                         cogs_share: percentOf(cogs, revenue),
+                        order_cogs_share: isWb ? orderCogsShareDay : null,
                         tax,
                         ads_spend: ads,
                         ads_pct: reklPct,
@@ -889,6 +940,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
                           penalties: totals.penalties,
                           cogs: totals.cogs,
                           cogs_share: percentOf(totals.cogs, totals.revenue),
+                          order_cogs_share: isWb ? periodOrderCogsShare : null,
                           tax: totals.tax,
                           ads_spend: totals.ads,
                           ads_pct: percentOf(totals.ads, totals.revenue),

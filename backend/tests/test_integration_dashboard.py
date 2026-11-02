@@ -72,7 +72,7 @@ SKU_DAY_KEYS = {
 ARTICLE_KEYS = {"nm_id", "vendor_code", "name", "subject_name", "cost_price"}
 FUNNEL_DAY_KEYS = {
     "date", "nm_id", "vendor_code", "open_count", "cart_count", "order_count",
-    "order_sum", "buyout_percent", "cr_to_cart", "cr_to_order",
+    "order_sum", "order_cogs", "buyout_percent", "cr_to_cart", "cr_to_order",
 }
 
 PLAN_FACT_MONTH_KEYS = {"month", "metrics"}
@@ -882,6 +882,36 @@ def test_dashboard_funnel_response_structure(authenticated_client):
     assert items[0]["nm_id"] == 222
     assert items[0]["order_count"] == 5
     assert items[0]["buyout_percent"] == 80.0
+    assert items[0]["order_cogs"] is None
+
+
+def test_funnel_order_cost_uses_store_article_and_propagates_missing_data(authenticated_client):
+    client, session, user_id, token = authenticated_client
+    other_id = "a0000000-0000-4000-8000-000000000002"
+    session.add(User(id=other_id, email="other-funnel@example.com", password_hash="fake", is_active=True))
+    session.flush()
+    session.add_all([
+        Article(user_id=user_id, nm_id=1, cost_price=125.5),
+        Article(user_id=other_id, nm_id=1, cost_price=999),
+        Article(user_id=other_id, nm_id=2, cost_price=999),
+        Article(user_id=user_id, nm_id=4, cost_price=0),
+        Article(user_id=user_id, nm_id=5, cost_price=100),
+        Article(user_id=user_id, nm_id=6, cost_price=100),
+    ])
+    for nm_id, count in [(1, 3), (2, 2), (3, 0), (4, 2), (5, 1), (6, 1)]:
+        session.add(FunnelDaily(user_id=user_id, date=date(2025, 3, 14), nm_id=nm_id,
+                                order_count=count, order_sum=1000))
+    session.commit()
+    # Defaults on inserts mask NULL; force a genuinely unknown quantity.
+    session.query(FunnelDaily).filter_by(user_id=user_id, nm_id=5).update({FunnelDaily.order_count: None})
+    session.query(Article).filter_by(user_id=user_id, nm_id=6).update({Article.cost_price: None})
+    session.commit()
+
+    response = client.get("/dashboard/funnel", params={"date_from": "2025-03-14", "date_to": "2025-03-14"},
+                          headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    costs = {row["nm_id"]: row["order_cogs"] for row in response.json()}
+    assert costs == {1: 376.5, 2: None, 3: 0.0, 4: 0.0, 5: None, 6: None}
 
 
 def test_dashboard_funnel_vendor_code_fallback_from_latest_non_null(authenticated_client):
