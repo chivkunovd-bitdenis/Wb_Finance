@@ -97,6 +97,75 @@ function columnIndex(headerTexts, name) {
   return headerTexts.findIndex((t) => (t || '').trim() === name);
 }
 
+test.describe('Dashboard: сумма себеса заказов в рублях', () => {
+  const LABEL = 'Себес заказов';
+
+  async function tableCard(page) {
+    const card = page.locator('.table-card', { has: page.locator('h3', { hasText: 'Детализация' }) });
+    await expect.poll(async () => columnIndex(await card.locator('thead th').allTextContents(), LABEL)).toBeGreaterThan(-1);
+    return card;
+  }
+
+  test('WB: стоит рядом с долей, считает дни и итог в рублях', async ({ page }) => {
+    await mockDashboard(page, { funnel: FUNNEL_OK });
+    await openWbDashboard(page);
+    const card = await tableCard(page);
+    const header = await card.locator('thead th').allTextContents();
+    const idx = columnIndex(header, LABEL);
+    expect(idx).toBe(columnIndex(header, 'Доля себеса заказов') + 1);
+
+    await expect(card.locator('tbody tr', { hasText: '10.10' }).locator('td').nth(idx)).toHaveText('150');
+    await expect(card.locator('tbody tr', { hasText: '11.10' }).locator('td').nth(idx)).toHaveText('0');
+    await expect(card.locator('tr', { hasText: 'ИТОГО' }).locator('td').nth(idx)).toHaveText('150');
+    await expect(card.locator('thead th').nth(idx)).toHaveAttribute('title', /Себестоимость единицы/);
+  });
+
+  test('неизвестный себес товара — прочерк в дне и в итоге', async ({ page }) => {
+    await mockDashboard(page, { funnel: FUNNEL_WITH_GAP });
+    await openWbDashboard(page);
+    const card = await tableCard(page);
+    const idx = columnIndex(await card.locator('thead th').allTextContents(), LABEL);
+    await expect(card.locator('tbody tr', { hasText: '11.10' }).locator('td').nth(idx)).toHaveText('—');
+    await expect(card.locator('tr', { hasText: 'ИТОГО' }).locator('td').nth(idx)).toHaveText('—');
+  });
+
+  test('день ещё не загружен: в нём прочерк, итог по загруженным дням', async ({ page }) => {
+    await mockDashboard(page, { funnel: FUNNEL_OK.filter((row) => row.date === '2026-10-10') });
+    await openWbDashboard(page);
+    const card = await tableCard(page);
+    const idx = columnIndex(await card.locator('thead th').allTextContents(), LABEL);
+    await expect(card.locator('tbody tr', { hasText: '11.10' }).locator('td').nth(idx)).toHaveText('—');
+    await expect(card.locator('tr', { hasText: 'ИТОГО' }).locator('td').nth(idx)).toHaveText('150');
+  });
+
+  test('появляется у тех, кто уже сохранил настройки столбцов', async ({ page }) => {
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem('seeded')) return;
+      sessionStorage.setItem('seeded', '1');
+      localStorage.setItem('wb_finance_dashboard_columns_v1', JSON.stringify({
+        visibleColumnKeys: ['revenue', 'orders_sum', 'cogs', 'order_cogs_share', 'margin', 'margin_pct'],
+        planFactEnabled: false,
+        order_cogs_share_column_migrated: true,
+      }));
+    });
+    await mockDashboard(page);
+    await openWbDashboard(page);
+    await tableCard(page);
+  });
+
+  test('скрытый столбец не возвращается после перезагрузки', async ({ page }) => {
+    await mockDashboard(page);
+    await openWbDashboard(page);
+    await tableCard(page);
+    await page.getByRole('button', { name: 'Настройки таблицы' }).click();
+    await page.getByRole('menu', { name: 'Настройки таблицы' }).getByText(LABEL).click();
+    await expect(page.getByRole('columnheader', { name: LABEL, exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByText('Детализация по дням').first()).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: LABEL, exact: true })).toHaveCount(0);
+  });
+});
+
 test.describe('Dashboard: доля себеса заказов', () => {
   test('скрытие новой колонки сохраняется после перезагрузки', async ({ page }) => {
     await mockDashboard(page);

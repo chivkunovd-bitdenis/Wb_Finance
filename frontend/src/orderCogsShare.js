@@ -63,6 +63,37 @@ export function computePeriodOrderCogsShare(byDate, datesInPeriod) {
   return (totalCogs / totalOrderSum) * 100;
 }
 
+/**
+ * «Себес заказов» за день в рублях. Неизвестен, если день не загружен или у товара с заказами нет себестоимости.
+ * @param {ReturnType<typeof aggregateFunnelDay> | undefined} agg
+ * @returns {number | null}
+ */
+export function dayOrderCogsSum(agg) {
+  return agg?.valid ? agg.sumCogs : null;
+}
+
+/**
+ * Итог «Себес заказов» в рублях. Ещё не загруженный день пропускается, как и в итоге «Заказы ₽» рядом.
+ * День с неизвестной себестоимостью даёт прочерк: заниженная сумма хуже отсутствующей.
+ * @param {Record<string, ReturnType<typeof aggregateFunnelDay>>} byDate
+ * @param {string[]} datesInPeriod
+ * @returns {number | null}
+ */
+export function computePeriodOrderCogsSum(byDate, datesInPeriod) {
+  let total = 0;
+  let anyDayKnown = false;
+
+  for (const d of datesInPeriod || []) {
+    const agg = byDate?.[d];
+    if (!agg) continue;
+    if (!agg.valid) return null;
+    total += agg.sumCogs;
+    anyDayKnown = true;
+  }
+
+  return anyDayKnown ? total : null;
+}
+
 /** @param {Array<{ date?: string }>} funnelRows */
 export function buildOrderCogsShareByDate(funnelRows, dateFrom, dateTo) {
   const grouped = {};
@@ -84,3 +115,6 @@ export function buildOrderCogsShareByDate(funnelRows, dateFrom, dateTo) {
 
 export const ORDER_COGS_SHARE_HEADER_TITLE =
   'Сумма себестоимости заказов ÷ сумма заказов × 100% за день. Себестоимость единицы — актуальная из карточки товара (количество заказов × себестоимость).';
+
+export const ORDER_COGS_SUM_HEADER_TITLE =
+  'Сумма себестоимости заказов за день, ₽: количество заказов × себестоимость. Себестоимость единицы — актуальная из карточки товара. Итог считается по загруженным дням.';

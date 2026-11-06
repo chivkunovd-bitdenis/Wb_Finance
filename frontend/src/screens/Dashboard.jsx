@@ -9,8 +9,11 @@ import useFullscreenCard from '../components/useFullscreenCard';
 import { addKnown, isKnown, percentOf, sumKnown, toNumber } from '../marketplaceValues';
 import {
   ORDER_COGS_SHARE_HEADER_TITLE,
+  ORDER_COGS_SUM_HEADER_TITLE,
   buildOrderCogsShareByDate,
   computePeriodOrderCogsShare,
+  computePeriodOrderCogsSum,
+  dayOrderCogsSum,
 } from '../orderCogsShare';
 
 function computeCogsFromShare(revenue, sharePct) {
@@ -248,6 +251,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
 
   const STORAGE_KEY = 'wb_finance_dashboard_columns_v1';
   const ORDER_COGS_SHARE_COLUMN_KEY = 'order_cogs_share';
+  const ORDER_COGS_SUM_COLUMN_KEY = 'order_cogs_sum';
 
   const mandatoryKeys = useMemo(() => (['revenue', 'margin', 'margin_pct']), []);
 
@@ -270,6 +274,13 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
         editable: false,
         headerTitle: ORDER_COGS_SHARE_HEADER_TITLE,
       },
+      {
+        label: 'Себес заказов',
+        key: ORDER_COGS_SUM_COLUMN_KEY,
+        isPercent: false,
+        editable: false,
+        headerTitle: ORDER_COGS_SUM_HEADER_TITLE,
+      },
       { label: 'Налог', key: 'tax', isPercent: false, editable: true },
       { label: 'Реклама', key: 'ads_spend', isPercent: false, editable: false }, // derived from % рекламы
       { label: '% рекл', key: 'ads_pct', isPercent: true, editable: true },
@@ -291,6 +302,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
 
   const [visibleColumnKeys, setVisibleColumnKeys] = useState(() => allColumns.map((c) => c.key));
   const [orderCogsShareColumnMigrated, setOrderCogsShareColumnMigrated] = useState(true);
+  const [orderCogsSumColumnMigrated, setOrderCogsSumColumnMigrated] = useState(true);
 
   // Dropdown state for columns settings (gear).
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
@@ -305,6 +317,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
       const keys = Array.isArray(parsed?.visibleColumnKeys) ? parsed.visibleColumnKeys : null;
       const pf = typeof parsed?.planFactEnabled === 'boolean' ? parsed.planFactEnabled : null;
       const migrated = parsed?.order_cogs_share_column_migrated === true;
+      const sumMigrated = parsed?.order_cogs_sum_column_migrated === true;
 
       const allowed = new Set(allColumns.map((c) => c.key));
       let nextKeys = Array.isArray(keys) ? keys.filter((k) => allowed.has(k)) : null;
@@ -316,6 +329,11 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
         } else if (migrated) {
           setOrderCogsShareColumnMigrated(true);
         }
+        // Настройки сохранены в браузере: без этого новый столбец не появится у тех, кто уже настраивал таблицу.
+        if (!sumMigrated && !nextKeys.includes(ORDER_COGS_SUM_COLUMN_KEY)) {
+          nextKeys = [...nextKeys, ORDER_COGS_SUM_COLUMN_KEY];
+        }
+        setOrderCogsSumColumnMigrated(true);
         setVisibleColumnKeys(nextKeys);
       }
       if (pf !== null) setPlanFactEnabled(pf);
@@ -334,12 +352,14 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
           planFactEnabled,
           order_cogs_share_column_migrated:
             orderCogsShareColumnMigrated || visibleColumnKeys.includes(ORDER_COGS_SHARE_COLUMN_KEY),
+          order_cogs_sum_column_migrated:
+            orderCogsSumColumnMigrated || visibleColumnKeys.includes(ORDER_COGS_SUM_COLUMN_KEY),
         }),
       );
     } catch {
       // ignore storage quota / private mode
     }
-  }, [visibleColumnKeys, planFactEnabled, orderCogsShareColumnMigrated]);
+  }, [visibleColumnKeys, planFactEnabled, orderCogsShareColumnMigrated, orderCogsSumColumnMigrated]);
 
   // Close menu on outside click / ESC.
   useEffect(() => {
@@ -514,6 +534,11 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
   const periodOrderCogsShare = useMemo(() => {
     if (!orderCogsShareReady) return null;
     return computePeriodOrderCogsShare(orderCogsShareByDate, periodDates);
+  }, [orderCogsShareReady, orderCogsShareByDate, periodDates]);
+
+  const periodOrderCogsSum = useMemo(() => {
+    if (!orderCogsShareReady) return null;
+    return computePeriodOrderCogsSum(orderCogsShareByDate, periodDates);
   }, [orderCogsShareReady, orderCogsShareByDate, periodDates]);
 
   const labels = filtered.map((r) => formatDate(r.date));
@@ -755,6 +780,9 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
                         cogs,
                         cogs_share: percentOf(cogs, revenue),
                         order_cogs_share: isWb ? orderCogsShareDay : null,
+                        order_cogs_sum: isWb && orderCogsShareReady
+                          ? dayOrderCogsSum(orderCogsShareByDate[r.date])
+                          : null,
                         tax,
                         ads_spend: ads,
                         ads_pct: reklPct,
@@ -941,6 +969,7 @@ export default function Dashboard({ range, refreshTrigger, cache, updateCache, m
                           cogs: totals.cogs,
                           cogs_share: percentOf(totals.cogs, totals.revenue),
                           order_cogs_share: isWb ? periodOrderCogsShare : null,
+                          order_cogs_sum: isWb ? periodOrderCogsSum : null,
                           tax: totals.tax,
                           ads_spend: totals.ads,
                           ads_pct: percentOf(totals.ads, totals.revenue),

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateFunnelDay, buildOrderCogsShareByDate, computePeriodOrderCogsShare } from './orderCogsShare.js';
+import {
+  aggregateFunnelDay,
+  buildOrderCogsShareByDate,
+  computePeriodOrderCogsShare,
+  computePeriodOrderCogsSum,
+  dayOrderCogsSum,
+} from './orderCogsShare.js';
 
 const row = (date, count, sum, cogs) => ({ date, order_count: count, order_sum: sum, order_cogs: cogs });
 
@@ -49,4 +55,48 @@ test('явный нулевой заказ без стоимости не дел
   ]);
   assert.equal(day.valid, true);
   assert.equal(day.share, 20);
+});
+
+test('сумма себеса заказов за день — сумма по товарам в рублях', () => {
+  const byDate = buildOrderCogsShareByDate([
+    row('2026-01-01', 2, 500, 100),
+    row('2026-01-01', 1, 500, 50),
+  ], '2026-01-01', '2026-01-01');
+  assert.equal(dayOrderCogsSum(byDate['2026-01-01']), 150);
+});
+
+test('день без заказов — ноль рублей, а не прочерк', () => {
+  const day = aggregateFunnelDay([row('2026-01-01', 0, 0, 0)]);
+  assert.equal(dayOrderCogsSum(day), 0);
+});
+
+test('сумма за день неизвестна, если нет данных или себес товара не задан', () => {
+  assert.equal(dayOrderCogsSum(undefined), null);
+  const day = aggregateFunnelDay([row('2026-01-01', 1, 100, null)]);
+  assert.equal(dayOrderCogsSum(day), null);
+});
+
+test('итог суммы — сложение дней', () => {
+  const byDate = buildOrderCogsShareByDate([
+    row('2026-01-01', 1, 100, 50),
+    row('2026-01-02', 1, 800, 80),
+  ], '2026-01-01', '2026-01-02');
+  assert.equal(computePeriodOrderCogsSum(byDate, ['2026-01-01', '2026-01-02']), 130);
+});
+
+test('ещё не загруженный день не обнуляет итог суммы: как итог заказов рядом', () => {
+  const byDate = buildOrderCogsShareByDate([row('2026-01-01', 1, 100, 50)], '2026-01-01', '2026-01-02');
+  assert.equal(computePeriodOrderCogsSum(byDate, ['2026-01-01', '2026-01-02']), 50);
+});
+
+test('неизвестный себес товара даёт прочерк в итоге, а не заниженную сумму', () => {
+  const byDate = buildOrderCogsShareByDate([
+    row('2026-01-01', 1, 100, 50),
+    row('2026-01-02', 1, 100, null),
+  ], '2026-01-01', '2026-01-02');
+  assert.equal(computePeriodOrderCogsSum(byDate, ['2026-01-01', '2026-01-02']), null);
+});
+
+test('если ни один день не загружен, итог суммы неизвестен', () => {
+  assert.equal(computePeriodOrderCogsSum({}, ['2026-01-01']), null);
 });
