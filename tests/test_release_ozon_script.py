@@ -47,6 +47,7 @@ class ReleaseOzonScriptTests(unittest.TestCase):
 
         self.bin = self.base / "bin"
         self.bin.mkdir()
+        (self.base / "docker-root").mkdir()
         self.log = self.base / "docker.log"
         self.rollback_marker = self.base / "rolled-back"
         self.new_api_marker = self.base / "new-api"
@@ -66,6 +67,9 @@ class ReleaseOzonScriptTests(unittest.TestCase):
                 "FAKE_PROBE_MARKER": str(self.probe_marker),
                 "FAKE_EXPECTED_SHA": self.release_sha,
                 "FAKE_SERVER_ROOT": str(self.server),
+                "FAKE_DOCKER_ROOT": str(self.base / "docker-root"),
+                "FAKE_FREE_KB": str(50 * 1024 * 1024),
+                "WB_FINANCE_MIN_FREE_GB": "6",
             }
         )
         self._write_fake_commands()
@@ -119,6 +123,38 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertNotIn(" stop ", f" {log} ")
         self.assertNotIn(" up ", f" {log} ")
 
+    def test_low_docker_disk_space_stops_before_backup_build_or_services(self) -> None:
+        self.env["FAKE_FREE_KB"] = str(2 * 1024 * 1024)
+        result = self._run(self.release_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only 2048 MB free for Docker", result.stderr)
+        self.assertIn("needs at least 6 GB", result.stderr)
+        self.assertIn("Nothing was backed up, built, or stopped", result.stderr)
+        self.assertEqual(list((self.base / "backups" / "releases").iterdir()), [])
+        self.assertFalse((self.base / "image-tags.log").exists())
+        log = self.log.read_text()
+        for side_effect in (" pg_dump ", " build ", " tag ", " stop ", " up ", " run "):
+            self.assertNotIn(side_effect, f" {log} ")
+        self.assertIn(f"df -Pk {self.base / 'docker-root'}", (self.base / "df.log").read_text())
+
+    def test_invalid_free_space_threshold_is_rejected_before_docker_changes(self) -> None:
+        self.env["WB_FINANCE_MIN_FREE_GB"] = "lots"
+        result = self._run(self.release_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WB_FINANCE_MIN_FREE_GB must be a whole number", result.stderr)
+        self.assertEqual(list((self.base / "backups" / "releases").iterdir()), [])
+
+    def test_image_build_failure_does_not_tag_workers_or_stop_services(self) -> None:
+        self.env["FAKE_BUILD_FAIL"] = "1"
+        result = self._run(self.release_sha)
+        self.assertNotEqual(result.returncode, 0)
+        log = self.log.read_text()
+        self.assertIn(" build ", f" {log} ")
+        self.assertNotIn("wb-finance-worker:", self._image_tag_lines(log))
+        self.assertNotIn(" stop ", f" {log} ")
+        self.assertNotIn(" up ", f" {log} ")
+        self.assertFalse(self.rollback_marker.exists())
+
     def test_api_preflight_failure_does_not_stop_running_services_or_leak_dsn(self) -> None:
         self.env["FAKE_PROBE_FAIL"] = "1"
         result = self._run(self.release_sha)
@@ -156,6 +192,50 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertIn(self.release_sha, manifest["release_worktree"])
         self.assertNotIn("FLUSHDB", log)
 
+    def test_release_image_is_built_once_and_tagged_for_workers(self) -> None:
+        self.env["FAKE_HEALTH_SUCCESS"] = "1"
+        result = self._run(self.release_sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.log.read_text().splitlines()
+        backup_dir = next((self.base / "backups" / "releases").iterdir())
+        run_id = backup_dir.name.removeprefix(f"{self.release_sha}-")
+        api_image = f"wb-finance-api:{self.release_sha}-{run_id}"
+        worker_image = f"wb-finance-worker:{self.release_sha}-{run_id}"
+        beat_image = f"wb-finance-beat:{self.release_sha}-{run_id}"
+
+        builds = [index for index, line in enumerate(lines) if " build " in f" {line} "]
+        self.assertEqual(len(builds), 1, lines)
+        build_line = lines[builds[0]]
+        self.assertTrue(build_line.endswith(f"build --build-arg VCS_REF={self.release_sha} api"), build_line)
+        self.assertNotIn("celery_worker", build_line)
+        self.assertNotIn("celery_beat", build_line)
+
+        def first(text: str) -> int:
+            return next(index for index, line in enumerate(lines) if text in line)
+
+        free_space_check = first("info --format {{.DockerRootDir}}")
+        dump = first(" pg_dump ")
+        rollback_tag = first("wb-finance-rollback-api:")
+        worker_tag = first(f"image tag {api_image} {worker_image}")
+        beat_tag = first(f"image tag {api_image} {beat_image}")
+        probe = first("run --rm --no-deps --entrypoint python api -c")
+        stop = first(" stop -t 60 ")
+        api_up = first("up -d --no-deps --no-build api")
+        workers_up = first("up -d --no-deps --no-build celery_worker celery_beat")
+        self.assertLess(free_space_check, dump)
+        self.assertLess(dump, rollback_tag)
+        self.assertLess(rollback_tag, builds[0])
+        self.assertLess(builds[0], worker_tag)
+        self.assertLess(worker_tag, probe)
+        self.assertLess(beat_tag, probe)
+        self.assertLess(probe, stop)
+        self.assertLess(stop, api_up)
+        self.assertLess(api_up, workers_up)
+        for tag in (worker_tag, beat_tag):
+            label_check = first(f"org.opencontainers.image.revision\" }}}} {lines[tag].split()[-1]}")
+            self.assertLess(tag, label_check)
+            self.assertLess(label_check, probe)
+
     def test_failed_api_health_restores_previous_images_and_source(self) -> None:
         result = self._run(self.release_sha)
         self.assertNotEqual(result.returncode, 0)
@@ -174,6 +254,10 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("automatic code rollback did not pass", result.stderr)
         self.assertNotIn("previous API and workers are healthy", result.stderr)
+
+    @staticmethod
+    def _image_tag_lines(log: str) -> str:
+        return "\n".join(line for line in log.splitlines() if line.startswith("image tag "))
 
     def _run(self, sha: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -213,7 +297,12 @@ class ReleaseOzonScriptTests(unittest.TestCase):
         docker = r'''#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+if [[ "$1" == info ]]; then
+  printf '%s\n' "$FAKE_DOCKER_ROOT"
+  exit 0
+fi
 if [[ "$1" == compose ]]; then
+  if [[ " $* " == *" build "* && "${FAKE_BUILD_FAIL:-0}" == 1 ]]; then exit 33; fi
   [[ "$*" == *rollback-compose.yml\ up\ * ]] && touch "$FAKE_ROLLBACK_MARKER"
   [[ "$*" == *deploy-compose.yml\ up\ * ]] && touch "$FAKE_NEW_API_MARKER"
   if [[ " $* " == *" pg_dump "* ]]; then
@@ -270,6 +359,7 @@ if [[ "$1" == image && "$2" == inspect ]]; then
   exit 0
 fi
 if [[ "$1" == image && "$2" == tag ]]; then
+  [[ "$3" == wb-finance-api:* ]] && exit 0
   case "$3" in
     *container-api) service=api ;;
     *container-celery_worker) service=celery_worker ;;
@@ -286,9 +376,14 @@ if [[ -e "$FAKE_ROLLBACK_MARKER" ]]; then exit 0; fi
 if [[ -e "$FAKE_NEW_API_MARKER" && "${FAKE_HEALTH_SUCCESS:-0}" != 1 ]]; then exit 22; fi
 exit 0
 '''
+        df = r'''#!/usr/bin/env bash
+printf 'df %s\n' "$*" >> "$(dirname "$FAKE_DOCKER_LOG")/df.log"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/fake 52428800 1 %s 96%% /\n' "$FAKE_FREE_KB"
+'''
         sleep = "#!/usr/bin/env bash\nexit 0\n"
         flock = "#!/usr/bin/env bash\nexit 0\n"
-        for name, content in (("docker", docker), ("curl", curl), ("sleep", sleep), ("flock", flock)):
+        for name, content in (("docker", docker), ("curl", curl), ("df", df), ("sleep", sleep), ("flock", flock)):
             path = self.bin / name
             path.write_text(content)
             path.chmod(0o755)
